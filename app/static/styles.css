@@ -1,0 +1,316 @@
+:root {
+  color-scheme: light;
+  font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+  background: #f4f6fb;
+  color: #132238;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #f4f6fb;
+}
+
+.app-shell {
+  max-width: 1680px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.topbar h1,
+.panel-header h2 {
+  margin: 0;
+}
+
+.topbar p,
+.panel-header p {
+  margin: 6px 0 0;
+  color: #5f6c84;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: end;
+}
+
+.tab-group {
+  display: inline-flex;
+  padding: 4px;
+  border-radius: 8px;
+  background: #e7edf8;
+}
+
+.tab-button,
+.primary-button,
+select {
+  border: none;
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 14px;
+}
+
+.tab-button {
+  background: transparent;
+  cursor: pointer;
+  color: #33415c;
+}
+
+.tab-button.active {
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12);
+}
+
+.control-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: #5f6c84;
+  font-size: 12px;
+}
+
+input {
+  border: 1px solid #d8e2f0;
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 14px;
+  background: #ffffff;
+}
+
+select {
+  background: #ffffff;
+  border: 1px solid #d8e2f0;
+}
+
+.primary-button {
+  cursor: pointer;
+  background: #1f6feb;
+  color: #ffffff;
+}
+
+.secondary-button {
+  padding: 10px 14px;
+}
+
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr);
+  gap: 16px;
+}
+
+.sidebar,
+.content,
+.detail-layout,
+.tables-layout {
+  display: grid;
+  gap: 16px;
+}
+
+.content {
+  align-content: start;
+}
+
+.detail-layout,
+.tables-layout {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.panel {
+  background: #ffffff;
+  border: 1px solid #dce4f2;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+  padding: 16px;
+}
+
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.rank-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.rank-item {
+  width: 100%;
+  text-align: left;
+  border: 1px solid #e4ebf5;
+  background: #ffffff;
+  border-radius: 8px;
+  padding: 12px;
+  cursor: pointer;
+}
+
+.rank-item.active {
+  border-color: #1f6feb;
+  background: #eef5ff;
+}
+
+.rank-item-header,
+.rank-item-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.rank-item-title {
+  font-weight: 600;
+}
+
+.rank-item-subtitle {
+  margin-top: 4px;
+  color: #5f6c84;
+  font-size: 13px;
+}
+
+.chart {
+  width: 100%;
+}
+
+.large-chart {
+  height: 430px;
+}
+
+.small-chart {
+  height: 280px;
+}
+
+.detail-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.badge {
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: #f1f5fb;
+  font-size: 12px;
+  color: #33415c;
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  row-gap: 10px;
+  column-gap: 10px;
+  margin: 0;
+}
+
+.detail-grid dt {
+  color: #5f6c84;
+}
+
+.detail-grid dd {
+  margin: 0;
+  font-weight: 600;
+}
+
+.table-wrap {
+  overflow: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  padding: 10px 8px;
+  text-align: left;
+  border-bottom: 1px solid #edf2f7;
+  white-space: nowrap;
+}
+
+th {
+  color: #5f6c84;
+}
+
+.positive {
+  color: #d92d20;
+}
+
+.negative {
+  color: #087443;
+}
+
+.neutral {
+  color: #33415c;
+}
+
+.empty-state {
+  color: #5f6c84;
+  padding: 12px 0;
+}
+
+.settings-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.settings-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: #5f6c84;
+  font-size: 12px;
+}
+
+.watchlist-entry {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: #eef5ff;
+  color: #1c4ea0;
+  font-size: 13px;
+}
+
+.chip button {
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+}
+
+@media (max-width: 1320px) {
+  .dashboard-grid,
+  .detail-layout,
+  .tables-layout {
+    grid-template-columns: 1fr;
+  }
+}
