@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 from sqlalchemy import select
@@ -14,20 +15,22 @@ class HistoryCacheService:
 
     def ensure_daily_history(self, session: Session, sector_type: str, sector_names: list[str]) -> None:
         for sector_name in sector_names:
-            existing = session.scalar(
-                select(FundFlowDailyHistory.id)
-                .where(FundFlowDailyHistory.sector_type == sector_type, FundFlowDailyHistory.sector_name == sector_name)
-                .limit(1)
+            existing_dates = set(
+                session.scalars(
+                    select(FundFlowDailyHistory.trading_date).where(
+                        FundFlowDailyHistory.sector_type == sector_type,
+                        FundFlowDailyHistory.sector_name == sector_name,
+                    )
+                )
             )
-            if existing:
-                continue
             frame = self.gateway.fetch_daily_history(sector_type, sector_name)
             if frame.empty:
                 continue
             rows = []
             for record in frame.to_dict(orient="records"):
                 trading_date = record.get("日期")
-                if trading_date is None:
+                trading_date = self._to_date(trading_date)
+                if trading_date is None or trading_date in existing_dates:
                     continue
                 rows.append(
                     FundFlowDailyHistory(
@@ -47,6 +50,14 @@ class HistoryCacheService:
         if value is None or value == "":
             return None
         return float(value)
+
+    @staticmethod
+    def _to_date(value: Any) -> date | None:
+        if value is None or value == "":
+            return None
+        if isinstance(value, date):
+            return value
+        return date.fromisoformat(str(value))
 
     @staticmethod
     def _to_ratio(value: Any) -> float | None:

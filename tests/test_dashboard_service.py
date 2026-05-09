@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from app.models import FundFlowDailyHistory, FundFlowSnapshot
 from app.services.dashboard import DashboardService
@@ -123,6 +123,20 @@ def seed_snapshots(db_session) -> None:
                 leading_stock_price=10.0,
             ),
             FundFlowSnapshot(
+                sector_type="industry",
+                sector_name="Gamma",
+                captured_at=day2.replace(hour=15, minute=1),
+                inflow=180.0,
+                outflow=20.0,
+                net_amount=160.0,
+                sector_index=930.0,
+                change_percent=3.2,
+                company_count=8,
+                leading_stock="G1",
+                leading_stock_change=4.1,
+                leading_stock_price=10.2,
+            ),
+            FundFlowSnapshot(
                 sector_type="concept",
                 sector_name="Concept-X",
                 captured_at=day2,
@@ -178,7 +192,10 @@ def test_comparison_series_returns_multiple_sectors_for_minute_view(db_session) 
     assert result["metric"] == "net_strength"
     assert result["granularity"] == "minute"
     assert [series["sector_name"] for series in result["series"]] == ["Gamma", "Alpha"]
-    assert result["series"][0]["points"][-1]["value"] == 0.6
+    assert result["series"][0]["points"][0]["value"] == 0.0
+    assert result["series"][0]["points"][0]["raw_value"] == 0.0
+    assert result["series"][0]["points"][-1]["raw_value"] == 0.6
+    assert all("15:01" not in point["label"] for point in result["series"][0]["points"])
 
 
 def test_comparison_series_returns_daily_points(db_session) -> None:
@@ -232,8 +249,38 @@ def test_sector_history_supports_multi_day_and_day_granularity(db_session) -> No
     )
 
     assert len(minute_history["points"]) == 3
-    assert minute_history["points"][-1]["value"] == 0.4
+    assert minute_history["points"][0]["value"] == 0.0
+    assert minute_history["points"][-1]["raw_value"] == 0.4
+    assert all("15:01" not in point["label"] for point in minute_history["points"])
     assert [point["label"] for point in day_history["points"]] == ["2026-05-06", "2026-05-07"]
+
+
+def test_sector_history_can_filter_specific_trading_date(db_session) -> None:
+    seed_snapshots(db_session)
+    service = DashboardService()
+
+    minute_history = service.get_sector_history(
+        db_session,
+        sector_type="industry",
+        sector_name="Alpha",
+        metric="net_strength",
+        granularity="minute",
+        lookback_days=30,
+        trading_date=date(2026, 5, 6),
+    )
+
+    assert [point["label"] for point in minute_history["points"]] == ["2026-05-06 10:00"]
+
+
+def test_rankings_support_all_limit_and_available_dates(db_session) -> None:
+    seed_snapshots(db_session)
+    service = DashboardService()
+
+    rankings = service.get_latest_rankings(db_session, sector_type="industry", limit=0)
+    dates = service.get_available_trading_dates(db_session, sector_type="industry")
+
+    assert len(rankings["leaders"]) == 3
+    assert dates == ["2026-05-07", "2026-05-06"]
 
 
 def test_is_trading_time_handles_market_sessions() -> None:

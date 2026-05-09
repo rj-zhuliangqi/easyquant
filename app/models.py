@@ -1,6 +1,5 @@
-from datetime import datetime
-
 from datetime import date
+from datetime import datetime
 
 from sqlalchemy import Date, DateTime, Float, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
@@ -36,3 +35,49 @@ class FundFlowDailyHistory(Base):
     trading_date: Mapped[date] = mapped_column(Date, index=True)
     main_net_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
     main_net_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class SectorStockSnapshot(Base):
+    __tablename__ = "sector_stock_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "sector_type",
+            "sector_name",
+            "trading_date",
+            "captured_at",
+            "stock_code",
+            name="uq_sector_stock_snapshot",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    sector_type: Mapped[str] = mapped_column(String(20), index=True)
+    sector_name: Mapped[str] = mapped_column(String(120), index=True)
+    trading_date: Mapped[date] = mapped_column(Date, index=True)
+    captured_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    stock_code: Mapped[str] = mapped_column(String(20), index=True)
+    stock_name: Mapped[str] = mapped_column(String(120))
+    latest_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    change_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    main_net_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class IndividualStockSnapshot(Base):
+    __tablename__ = "individual_stock_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "trading_date",
+            "captured_at",
+            "stock_code",
+            name="uq_individual_stock_snapshot",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    trading_date: Mapped[date] = mapped_column(Date, index=True)
+    captured_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    stock_code: Mapped[str] = mapped_column(String(20), index=True)
+    stock_name: Mapped[str] = mapped_column(String(120))
+    latest_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    change_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    net_amount: Mapped[float | None] = mapped_column(Float, nullable=True)

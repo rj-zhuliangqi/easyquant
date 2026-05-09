@@ -16,6 +16,12 @@ uv sync
 uv run uvicorn app.main:app --host 127.0.0.1 --port 8010
 ```
 
+或使用重启脚本（已启动则重启，未启动则直接启动）：
+
+```bash
+bash start.sh
+```
+
 浏览器打开：
 
 `http://127.0.0.1:8010`
