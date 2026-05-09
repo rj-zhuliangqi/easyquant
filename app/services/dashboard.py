@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from datetime import date, datetime, time, timedelta
+from collections import defaultdict
+from datetime import date, datetime
 from typing import Iterable
 
-from sqlalchemy import select
+from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
 from app.models import FundFlowDailyHistory, FundFlowSnapshot
@@ -59,11 +60,7 @@ class DashboardService:
             ranked_sector_names = self._merge_included(ranked_sector_names, include_sector_names or [])
             series = [
                 self._build_daily_history_series(
-                    session=session,
-                    sector_type=sector_type,
-                    sector_name=sector_name,
-                    metric=metric,
-                    lookback_days=lookback_days,
+                    session, sector_type=sector_type, sector_name=sector_name, metric=metric, lookback_days=lookback_days
                 )
                 for sector_name in ranked_sector_names
             ]
@@ -81,10 +78,11 @@ class DashboardService:
             ]
             ranked_sector_names = self._merge_included(ranked_sector_names, include_sector_names or [])
             series = [
-                self._build_minute_series(
-                    rows=[row for row in rows if row.sector_name == sector_name],
+                self._build_series(
+                    [row for row in rows if row.sector_name == sector_name],
                     sector_name=sector_name,
                     metric=metric,
+                    granularity=granularity,
                 )
                 for sector_name in ranked_sector_names
             ]
@@ -107,20 +105,14 @@ class DashboardService:
     ) -> dict:
         if granularity == "day":
             return self._build_daily_history_series(
-                session=session,
-                sector_type=sector_type,
-                sector_name=sector_name,
-                metric=metric,
-                lookback_days=lookback_days,
+                session, sector_type=sector_type, sector_name=sector_name, metric=metric, lookback_days=lookback_days
             )
-        rows = self._rows_for_sector_history(
-            session=session,
-            sector_type=sector_type,
-            sector_name=sector_name,
-            lookback_days=lookback_days,
-            trading_date=trading_date,
-        )
-        return self._build_minute_series(rows=rows, sector_name=sector_name, metric=metric)
+        rows = [
+            row
+            for row in self._rows_for_lookback(session, sector_type, lookback_days, trading_date=trading_date)
+            if row.sector_name == sector_name
+        ]
+        return self._build_series(rows, sector_name=sector_name, metric=metric, granularity=granularity)
 
     def get_sector_snapshot(
         self,
@@ -130,47 +122,19 @@ class DashboardService:
         metric: str = "net_strength",
         trading_date: date | None = None,
     ) -> dict | None:
-        stmt = (
-            select(FundFlowSnapshot)
-            .where(FundFlowSnapshot.sector_type == sector_type, FundFlowSnapshot.sector_name == sector_name)
-            .order_by(FundFlowSnapshot.captured_at.desc())
+        rows = list(
+            session.scalars(
+                select(FundFlowSnapshot)
+                .where(FundFlowSnapshot.sector_type == sector_type, FundFlowSnapshot.sector_name == sector_name)
+                .order_by(FundFlowSnapshot.captured_at.desc())
+            )
         )
         if trading_date is not None:
-            start_at, end_at = self._date_bounds(trading_date)
-            stmt = stmt.where(FundFlowSnapshot.captured_at >= start_at, FundFlowSnapshot.captured_at < end_at)
-        row = session.scalars(stmt.limit(1)).first()
+            rows = [row for row in rows if row.captured_at.date() == trading_date]
+        row = rows[0] if rows else None
         if row is None:
             return None
         return self._snapshot_to_dict(row, metric)
-
-    def get_sector_workspace(
-        self,
-        session: Session,
-        sector_type: str,
-        sector_name: str,
-        metric: str,
-        granularity: str,
-        lookback_days: int,
-        trading_date: date | None = None,
-    ) -> dict:
-        return {
-            "detail": self.get_sector_snapshot(
-                session=session,
-                sector_type=sector_type,
-                sector_name=sector_name,
-                metric=metric,
-                trading_date=trading_date,
-            ),
-            "history": self.get_sector_history(
-                session=session,
-                sector_type=sector_type,
-                sector_name=sector_name,
-                metric=metric,
-                granularity=granularity,
-                lookback_days=lookback_days,
-                trading_date=trading_date,
-            ),
-        }
 
     def get_alerts(
         self,
@@ -230,36 +194,23 @@ class DashboardService:
             return []
         return [row.sector_name for row in self._rows_at_timestamp(session, sector_type, latest_time)]
 
-    def _build_minute_series(self, rows: list[FundFlowSnapshot], sector_name: str, metric: str) -> dict:
+    def _build_series(self, rows: list[FundFlowSnapshot], sector_name: str, metric: str, granularity: str) -> dict:
         ordered_rows = sorted(rows, key=lambda row: row.captured_at)
-        if not ordered_rows:
-            return {"sector_name": sector_name, "metric": metric, "granularity": "minute", "points": []}
-
-        baseline = self._metric_value(ordered_rows[0], metric)
-        points = []
-        for row in ordered_rows:
-            raw_value = self._metric_value(row, metric)
-            points.append(
-                {
-                    "label": row.captured_at.strftime("%Y-%m-%d %H:%M"),
-                    "captured_at": row.captured_at.isoformat(),
-                    "value": round(raw_value - baseline, 6),
-                    "raw_value": raw_value,
-                    "baseline_value": baseline,
-                    "net_amount": row.net_amount,
-                    "inflow": row.inflow,
-                    "outflow": row.outflow,
-                }
-            )
-        return {"sector_name": sector_name, "metric": metric, "granularity": "minute", "points": points}
+        points = [
+            {
+                "label": row.captured_at.strftime("%Y-%m-%d %H:%M"),
+                "captured_at": row.captured_at.isoformat(),
+                "value": self._metric_value(row, metric),
+                "net_amount": row.net_amount,
+                "inflow": row.inflow,
+                "outflow": row.outflow,
+            }
+            for row in ordered_rows
+        ]
+        return {"sector_name": sector_name, "metric": metric, "granularity": granularity, "points": points}
 
     def _build_daily_history_series(
-        self,
-        session: Session,
-        sector_type: str,
-        sector_name: str,
-        metric: str,
-        lookback_days: int,
+        self, session: Session, sector_type: str, sector_name: str, metric: str, lookback_days: int
     ) -> dict:
         rows = list(
             session.scalars(
@@ -295,43 +246,20 @@ class DashboardService:
         lookback_days: int,
         trading_date: date | None = None,
     ) -> list[FundFlowSnapshot]:
-        stmt = select(FundFlowSnapshot).where(FundFlowSnapshot.sector_type == sector_type)
+        all_rows = list(
+            session.scalars(
+                select(FundFlowSnapshot)
+                .where(FundFlowSnapshot.sector_type == sector_type)
+                .order_by(FundFlowSnapshot.captured_at.asc())
+            )
+        )
         if trading_date is not None:
-            start_at, end_at = self._date_bounds(trading_date)
-            stmt = stmt.where(FundFlowSnapshot.captured_at >= start_at, FundFlowSnapshot.captured_at < end_at)
-            rows = list(session.scalars(stmt.order_by(FundFlowSnapshot.captured_at.asc(), FundFlowSnapshot.sector_name.asc())))
-            return [row for row in rows if self._is_market_minute(row.captured_at)]
-
-        all_rows = [row for row in session.scalars(stmt.order_by(FundFlowSnapshot.captured_at.asc())) if self._is_market_minute(row.captured_at)]
+            return [row for row in all_rows if row.captured_at.date() == trading_date]
         unique_days = sorted({row.captured_at.date() for row in all_rows})
         selected_days = set(unique_days[-lookback_days:])
         return [row for row in all_rows if row.captured_at.date() in selected_days]
 
-    def _rows_for_sector_history(
-        self,
-        session: Session,
-        sector_type: str,
-        sector_name: str,
-        lookback_days: int,
-        trading_date: date | None = None,
-    ) -> list[FundFlowSnapshot]:
-        stmt = select(FundFlowSnapshot).where(
-            FundFlowSnapshot.sector_type == sector_type,
-            FundFlowSnapshot.sector_name == sector_name,
-        )
-        if trading_date is not None:
-            start_at, end_at = self._date_bounds(trading_date)
-            stmt = stmt.where(FundFlowSnapshot.captured_at >= start_at, FundFlowSnapshot.captured_at < end_at)
-            return [row for row in session.scalars(stmt.order_by(FundFlowSnapshot.captured_at.asc())) if self._is_market_minute(row.captured_at)]
-
-        rows = [row for row in session.scalars(stmt.order_by(FundFlowSnapshot.captured_at.asc())) if self._is_market_minute(row.captured_at)]
-        unique_days = sorted({row.captured_at.date() for row in rows})
-        selected_days = set(unique_days[-lookback_days:])
-        return [row for row in rows if row.captured_at.date() in selected_days]
-
     def _rows_at_timestamp(self, session: Session, sector_type: str, captured_at: datetime) -> list[FundFlowSnapshot]:
-        if not self._is_market_minute(captured_at):
-            return []
         return list(
             session.scalars(
                 select(FundFlowSnapshot)
@@ -341,21 +269,28 @@ class DashboardService:
         )
 
     def _latest_timestamp(self, session: Session, sector_type: str, trading_date: date | None = None) -> datetime | None:
-        stmt = select(FundFlowSnapshot.captured_at).where(FundFlowSnapshot.sector_type == sector_type)
+        timestamps = list(
+            session.scalars(
+                select(FundFlowSnapshot.captured_at)
+                .where(FundFlowSnapshot.sector_type == sector_type)
+                .order_by(FundFlowSnapshot.captured_at.desc())
+            )
+        )
         if trading_date is not None:
-            start_at, end_at = self._date_bounds(trading_date)
-            stmt = stmt.where(FundFlowSnapshot.captured_at >= start_at, FundFlowSnapshot.captured_at < end_at)
-        for timestamp in session.scalars(stmt.order_by(FundFlowSnapshot.captured_at.desc())):
-            if self._is_market_minute(timestamp):
-                return timestamp
-        return None
+            timestamps = [timestamp for timestamp in timestamps if timestamp.date() == trading_date]
+        return timestamps[0] if timestamps else None
 
     def _latest_two_timestamps(self, session: Session, sector_type: str, trading_date: date | None = None) -> list[datetime]:
-        stmt = select(FundFlowSnapshot.captured_at).where(FundFlowSnapshot.sector_type == sector_type)
+        timestamps = list(
+            session.scalars(
+                select(FundFlowSnapshot.captured_at)
+                .where(FundFlowSnapshot.sector_type == sector_type)
+                .distinct()
+                .order_by(FundFlowSnapshot.captured_at.desc())
+            )
+        )
         if trading_date is not None:
-            start_at, end_at = self._date_bounds(trading_date)
-            stmt = stmt.where(FundFlowSnapshot.captured_at >= start_at, FundFlowSnapshot.captured_at < end_at)
-        timestamps = [ts for ts in session.scalars(stmt.distinct().order_by(FundFlowSnapshot.captured_at.desc())) if self._is_market_minute(ts)]
+            timestamps = [timestamp for timestamp in timestamps if timestamp.date() == trading_date]
         return timestamps[:2]
 
     def _rank_map(self, rows: Iterable[FundFlowSnapshot], metric: str) -> dict[str, int]:
@@ -407,18 +342,3 @@ class DashboardService:
         if limit <= 0:
             return total
         return min(limit, total)
-
-    @staticmethod
-    def _date_bounds(target_date: date) -> tuple[datetime, datetime]:
-        start_at = datetime.combine(target_date, time.min)
-        end_at = start_at + timedelta(days=1)
-        return start_at, end_at
-
-    @staticmethod
-    def _is_market_minute(value: datetime) -> bool:
-        clock = value.time()
-        morning_start = time(9, 30)
-        morning_end = time(11, 30)
-        afternoon_start = time(13, 0)
-        afternoon_end = time(15, 0)
-        return (morning_start <= clock <= morning_end) or (afternoon_start <= clock <= afternoon_end)

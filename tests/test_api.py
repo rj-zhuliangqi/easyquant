@@ -12,14 +12,6 @@ from app.models import FundFlowDailyHistory, FundFlowSnapshot
 
 
 class FakeGateway:
-    def __init__(self, catalog_by_type: dict[str, list[str]] | None = None) -> None:
-        self.catalog_by_type = catalog_by_type or {
-            "concept": ["Concept-X", "商业航天"],
-            "industry": ["Alpha", "Beta"],
-        }
-        self.sector_stock_calls = 0
-        self.individual_calls = 0
-
     def fetch_industry_realtime(self) -> pd.DataFrame:
         return pd.DataFrame(
             [
@@ -57,40 +49,40 @@ class FakeGateway:
         )
 
     def fetch_sector_stocks(self, sector_type: str, sector_name: str) -> pd.DataFrame:
-        self.sector_stock_calls += 1
         if sector_type == "concept":
             return pd.DataFrame(
                 [
-                    {"代码": "300001", "名称": "C1", "最新价": 88.88, "今日主力净流入-净额": "1.2亿", "今日涨跌幅": "2.22%"},
+                    {"代码": "300001", "名称": "C1", "最新价": 88.88, "今日主力净流入-净额": "1.2亿", "今天涨跌幅": "2.22%"},
                 ]
             )
         return pd.DataFrame(
             [
-                {"代码": "002371", "名称": "A1", "最新价": 320.55, "今日主力净流入-净额": 6.8, "今日涨跌幅": 4.12},
-                {"代码": "688256", "名称": "A2", "最新价": 188.18, "今日主力净流入-净额": 3.5, "今日涨跌幅": 2.22},
+                {"代码": "002371", "名称": "A1", "最新价": 320.55, "今日主力净流入-净额": 6.8, "今天涨跌幅": 4.12},
+                {"代码": "688256", "名称": "A2", "最新价": 188.18, "今日主力净流入-净额": 3.5, "今天涨跌幅": 2.22},
             ]
         )
 
     def fetch_individual_realtime(self) -> pd.DataFrame:
-        self.individual_calls += 1
         return pd.DataFrame(
             [{"股票代码": "002371", "股票简称": "A1", "最新价": 320.55, "净额": 6.8, "涨跌幅": 4.12}]
         )
 
     def fetch_sector_catalog(self, sector_type: str) -> list[str]:
-        return list(self.catalog_by_type.get(sector_type, []))
+        if sector_type == "concept":
+            return ["Concept-X", "商业航天"]
+        return ["Alpha", "Beta"]
 
 
-def build_client_and_gateway(catalog_by_type: dict[str, list[str]] | None = None) -> tuple[TestClient, FakeGateway]:
+def build_client() -> TestClient:
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
         future=True,
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
-    testing_session_local = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+    TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
     Base.metadata.create_all(engine)
-    with testing_session_local() as session:
+    with TestingSessionLocal() as session:
         session.add_all(
             [
                 FundFlowSnapshot(
@@ -160,19 +152,13 @@ def build_client_and_gateway(catalog_by_type: dict[str, list[str]] | None = None
         )
         session.commit()
 
-    gateway = FakeGateway(catalog_by_type=catalog_by_type)
     app = create_app(
-        session_factory=testing_session_local,
-        gateway=gateway,
+        session_factory=TestingSessionLocal,
+        gateway=FakeGateway(),
         enable_scheduler=False,
         now_provider=lambda: datetime(2026, 5, 7, 16, 0, 0),
     )
-    return TestClient(app), gateway
-
-
-def build_client() -> TestClient:
-    client, _ = build_client_and_gateway()
-    return client
+    return TestClient(app)
 
 
 def test_overview_endpoint_returns_rankings_by_strength() -> None:
@@ -283,93 +269,3 @@ def test_sector_catalog_endpoint_returns_full_catalog() -> None:
     assert concept_catalog.json()["sectors"] == ["Concept-X", "商业航天"]
     assert industry_catalog.status_code == 200
     assert industry_catalog.json()["sectors"] == ["Alpha", "Beta"]
-
-
-def test_sector_catalog_falls_back_to_snapshot_names_when_gateway_catalog_is_empty() -> None:
-    client, _ = build_client_and_gateway(catalog_by_type={"industry": [], "concept": []})
-
-    response = client.get("/api/sector-catalog", params={"sector_type": "industry"})
-
-    assert response.status_code == 200
-    assert response.json()["sectors"] == ["Alpha", "Beta"]
-
-
-def test_sector_and_individual_endpoints_read_from_cache_after_first_request() -> None:
-    client, gateway = build_client_and_gateway()
-
-    first_sector = client.get("/api/sector-stocks", params={"sector_type": "industry", "sector_name": "Alpha"})
-    second_sector = client.get("/api/sector-stocks", params={"sector_type": "industry", "sector_name": "Alpha"})
-    first_individual = client.get("/api/individual-rankings", params={"limit": 1})
-    second_individual = client.get("/api/individual-rankings", params={"limit": 1})
-
-    assert first_sector.status_code == 200
-    assert second_sector.status_code == 200
-    assert first_individual.status_code == 200
-    assert second_individual.status_code == 200
-    assert gateway.sector_stock_calls == 1
-    assert gateway.individual_calls == 1
-    assert first_sector.json()["updated_at"] == "2026-05-07T16:00:00"
-    assert first_individual.json()["updated_at"] == "2026-05-07T16:00:00"
-
-
-def test_sector_workspace_endpoint_returns_detail_and_history_together() -> None:
-    client = build_client()
-
-    response = client.get(
-        "/api/sector-workspace",
-        params={
-            "sector_type": "industry",
-            "sector_name": "Alpha",
-            "metric": "net_strength",
-            "granularity": "minute",
-            "lookback_days": 2,
-            "trading_date": "2026-05-07",
-        },
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["detail"]["sector_name"] == "Alpha"
-    assert payload["history"]["sector_name"] == "Alpha"
-    assert payload["history"]["points"][0]["value"] == 0.0
-
-
-def test_sector_stocks_endpoint_exposes_sort_and_pagination_metadata() -> None:
-    client = build_client()
-
-    response = client.get(
-        "/api/sector-stocks",
-        params={
-            "sector_type": "industry",
-            "sector_name": "Alpha",
-            "sort_by": "change_percent",
-            "sort_order": "asc",
-            "page": 2,
-            "page_size": 1,
-        },
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["sort_by"] == "change_percent"
-    assert payload["sort_order"] == "asc"
-    assert payload["page"] == 2
-    assert payload["page_size"] == 1
-    assert payload["total"] == 2
-
-
-def test_individual_rankings_endpoint_exposes_sort_and_pagination_metadata() -> None:
-    client, _ = build_client_and_gateway()
-
-    response = client.get(
-        "/api/individual-rankings",
-        params={"sort_by": "change_percent", "sort_order": "desc", "page": 1, "page_size": 1, "limit": 0},
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["sort_by"] == "change_percent"
-    assert payload["sort_order"] == "desc"
-    assert payload["page"] == 1
-    assert payload["page_size"] == 1
-    assert payload["total"] == 1
