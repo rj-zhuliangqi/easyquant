@@ -2,3 +2,8 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .venv/
+.venv_linux/
+data/*.log
+data/*.err.log
+data/*.out.log
+data/uvicorn.pid
