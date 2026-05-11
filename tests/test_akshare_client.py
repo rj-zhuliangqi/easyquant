@@ -5,7 +5,7 @@ import pandas as pd
 from app.akshare_client import AkshareGateway
 
 
-def test_resolve_concept_symbol_supports_fuzzy_board_name_match() -> None:
+def test_resolve_concept_name_supports_alias_match() -> None:
     gateway = AkshareGateway()
     gateway._concept_board_index = pd.DataFrame(
         [
@@ -14,10 +14,10 @@ def test_resolve_concept_symbol_supports_fuzzy_board_name_match() -> None:
         ]
     )
 
-    assert gateway._resolve_concept_symbol("国资云") == "BK1008"
+    assert gateway.resolve_sector_name("concept", "国资云") == "国资云概念"
 
 
-def test_resolve_industry_symbol_supports_alias_name_match() -> None:
+def test_resolve_industry_name_supports_fuzzy_match() -> None:
     gateway = AkshareGateway()
     gateway._industry_board_index = pd.DataFrame(
         [
@@ -26,7 +26,7 @@ def test_resolve_industry_symbol_supports_alias_name_match() -> None:
         ]
     )
 
-    assert gateway._resolve_industry_symbol("公路铁路运输") == "铁路公路"
+    assert gateway.resolve_sector_name("industry", "公路铁路运输") == "铁路公路"
 
 
 def test_fetch_individual_realtime_uses_last_cache_when_fetch_failed() -> None:
@@ -97,13 +97,9 @@ def test_fetch_sector_stocks_uses_ths_fallback_for_missing_concept_members() -> 
             )
 
     gateway = StubGateway()
-    gateway._concept_board_index = pd.DataFrame(
-        [
-            {"板块名称": "商业航天", "板块代码": "BK0963"},
-        ]
-    )
+    gateway._concept_board_index = pd.DataFrame([{"板块名称": "商业航天", "板块代码": "BK0963"}])
 
     result = gateway.fetch_sector_stocks("concept", "成飞概念")
 
     assert len(result) == 2
-    assert set(result.columns.tolist()) == {"代码", "名称", "最新价", "今天涨跌幅", "今日主力净流入-净额"}
+    assert set(result.columns.tolist()) == {"代码", "名称", "最新价", "今日涨跌幅", "今日主力净流入-净额"}

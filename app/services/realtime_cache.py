@@ -6,13 +6,15 @@ from typing import Any
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.models import IndividualStockSnapshot, SectorStockSnapshot
+from app.models import IndividualStockSnapshot, SectorStockSnapshot, WatchedSector
 
 
 class RealtimeCacheService:
     def __init__(self, gateway: Any, now_provider: Any | None = None) -> None:
         self.gateway = gateway
         self.now_provider = now_provider or datetime.now
+        self.individual_ttl_seconds = 90
+        self.sector_stock_ttl_seconds = 90
 
     def get_sector_stocks(
         self,
@@ -21,48 +23,58 @@ class RealtimeCacheService:
         sector_name: str,
         trading_date: date | None = None,
         force_refresh: bool = False,
+        prefer_cache: bool = True,
         sort_by: str = "net_amount",
         sort_order: str = "desc",
         page: int = 1,
         page_size: int = 10,
     ) -> dict:
-        target_date = trading_date or self.now_provider().date()
-        latest_time = None if force_refresh else self._latest_sector_stock_timestamp(session, sector_type, sector_name, target_date)
+        current_time = self.now_provider().replace(second=0, microsecond=0)
+        target_date = trading_date or current_time.date()
+        canonical_name = self.gateway.resolve_sector_name(sector_type, sector_name) or sector_name
+        latest_time = None if force_refresh else self._latest_sector_stock_timestamp(session, sector_type, canonical_name, target_date)
         source_status = "cache_hit"
 
-        if latest_time is None:
-            latest_time = self.refresh_sector_stocks(session, sector_type=sector_type, sector_name=sector_name, trading_date=target_date)
+        is_stale = self._is_stale(latest_time, current_time, target_date, self.sector_stock_ttl_seconds)
+        should_refresh = force_refresh or latest_time is None or (is_stale and not prefer_cache)
+        if should_refresh and target_date == current_time.date():
+            latest_time = self.refresh_sector_stocks(
+                session,
+                sector_type=sector_type,
+                sector_name=canonical_name,
+                trading_date=target_date,
+            )
             source_status = "fetched" if latest_time is not None else "unavailable"
+        elif is_stale and latest_time is not None:
+            source_status = "stale_cache"
 
-        rows = self._sector_stock_rows(session, sector_type, sector_name, target_date, latest_time) if latest_time else []
-        actual_date = target_date
-
-        if not rows:
-            fallback = self._latest_sector_stock_any_date(session, sector_type, sector_name)
-            if fallback is not None:
-                actual_date, latest_time = fallback
-                rows = self._sector_stock_rows(session, sector_type, sector_name, actual_date, latest_time)
+        if latest_time is None and not force_refresh:
+            latest_time = self._latest_sector_stock_timestamp(session, sector_type, canonical_name, target_date)
+            if latest_time is not None:
                 source_status = "stale_cache"
 
+        rows = self._sector_stock_rows(session, sector_type, canonical_name, target_date, latest_time) if latest_time else []
         total = len(rows)
         rows = self._sort_sector_stock_rows(rows, sort_by=sort_by, sort_order=sort_order)
         rows = self._paginate_rows(rows, page=page, page_size=page_size)
 
         payload = {
             "sector_type": sector_type,
-            "sector_name": sector_name,
-            "trading_date": actual_date.isoformat(),
+            "sector_name": canonical_name,
+            "requested_sector_name": sector_name,
+            "trading_date": target_date.isoformat(),
             "updated_at": latest_time.isoformat() if latest_time else None,
-            "source_status": source_status,
+            "source_status": source_status if rows else "unavailable",
             "sort_by": sort_by,
             "sort_order": sort_order,
             "page": page,
             "page_size": page_size,
             "total": total,
+            "refresh_recommended": source_status == "stale_cache" and target_date == current_time.date(),
             "stocks": [self._sector_stock_to_dict(row) for row in rows],
         }
         if not rows:
-            payload["message"] = "板块成分股资金流暂不可用，缓存缺失且本次实时抓取未拿到数据。"
+            payload["message"] = "该板块成分股资金流当前不可用，可能尚未完成预采样，或该交易日没有存档。"
         return payload
 
     def refresh_sector_stocks(
@@ -75,7 +87,7 @@ class RealtimeCacheService:
         captured_at = self.now_provider().replace(second=0, microsecond=0)
         target_date = trading_date or captured_at.date()
         frame = self.gateway.fetch_sector_stocks(sector_type, sector_name).fillna("")
-        rows = []
+        rows: list[SectorStockSnapshot] = []
 
         for record in frame.to_dict(orient="records"):
             stock_code = self._to_str(record.get("代码")) or ""
@@ -117,48 +129,69 @@ class RealtimeCacheService:
         limit: int,
         trading_date: date | None = None,
         force_refresh: bool = False,
+        prefer_cache: bool = True,
         sort_by: str = "net_amount",
         sort_order: str = "desc",
         page: int = 1,
         page_size: int = 15,
     ) -> dict:
-        target_date = trading_date or self.now_provider().date()
+        current_time = self.now_provider().replace(second=0, microsecond=0)
+        target_date = trading_date or current_time.date()
         latest_time = None if force_refresh else self._latest_individual_timestamp(session, target_date)
         source_status = "cache_hit"
 
-        if latest_time is None:
+        is_stale = self._is_stale(latest_time, current_time, target_date, self.individual_ttl_seconds)
+        should_refresh = force_refresh or latest_time is None or (is_stale and not prefer_cache)
+        if should_refresh and target_date == current_time.date():
             latest_time = self.refresh_individual_rankings(session, trading_date=target_date)
             source_status = "fetched" if latest_time is not None else "unavailable"
+        elif is_stale and latest_time is not None:
+            source_status = "stale_cache"
+
+        if latest_time is None and not force_refresh:
+            latest_time = self._latest_individual_timestamp(session, target_date)
+            if latest_time is not None:
+                source_status = "stale_cache"
 
         rows = self._individual_rows(session, target_date, latest_time) if latest_time else []
         rows = self._sort_individual_rows(rows, sort_by=sort_by, sort_order=sort_order)
+        total = len(rows)
         if limit > 0:
             rows = rows[:limit]
-        total = len(rows)
+            total = len(rows)
         rows = self._paginate_rows(rows, page=page, page_size=page_size)
-        return {
+        payload = {
             "trading_date": target_date.isoformat(),
             "updated_at": latest_time.isoformat() if latest_time else None,
-            "source_status": source_status,
+            "source_status": source_status if rows else "unavailable",
             "sort_by": sort_by,
             "sort_order": sort_order,
             "page": page,
             "page_size": page_size,
             "total": total,
+            "refresh_recommended": source_status == "stale_cache" and target_date == current_time.date(),
             "stocks": [self._individual_stock_to_dict(row) for row in rows],
         }
+        if not rows:
+            payload["message"] = "当前个股资金榜暂无可用缓存。"
+        return payload
 
     def refresh_individual_rankings(self, session: Session, trading_date: date | None = None) -> datetime | None:
         captured_at = self.now_provider().replace(second=0, microsecond=0)
         target_date = trading_date or captured_at.date()
         frame = self.gateway.fetch_individual_realtime().fillna("")
-        rows = []
+        rows: list[IndividualStockSnapshot] = []
+        seen_codes: set[str] = set()
 
         for record in frame.to_dict(orient="records"):
             stock_code = self._to_str(record.get("股票代码")) or ""
             stock_name = self._to_str(record.get("股票简称")) or ""
             if not stock_code and not stock_name:
                 continue
+            if stock_code and stock_code in seen_codes:
+                continue
+            if stock_code:
+                seen_codes.add(stock_code)
             rows.append(
                 IndividualStockSnapshot(
                     trading_date=target_date,
@@ -184,6 +217,104 @@ class RealtimeCacheService:
         session.commit()
         return captured_at
 
+    def list_watched_sectors(self, session: Session, sector_type: str | None = None) -> list[dict]:
+        stmt = select(WatchedSector).where(WatchedSector.enabled.is_(True)).order_by(WatchedSector.sector_type.asc(), WatchedSector.sector_name.asc())
+        if sector_type:
+            stmt = stmt.where(WatchedSector.sector_type == sector_type)
+        rows = list(session.scalars(stmt))
+        return [{"sector_type": row.sector_type, "sector_name": row.sector_name, "enabled": row.enabled} for row in rows]
+
+    def sync_watched_sectors(self, session: Session, items: list[dict[str, Any]]) -> list[dict]:
+        normalized_items = []
+        seen = set()
+        for item in items:
+            sector_type = "concept" if item.get("sector_type") == "concept" else "industry"
+            requested_name = self._to_str(item.get("sector_name")) or ""
+            canonical_name = self.gateway.resolve_sector_name(sector_type, requested_name) or requested_name
+            key = (sector_type, canonical_name)
+            if not canonical_name or key in seen:
+                continue
+            seen.add(key)
+            normalized_items.append({"sector_type": sector_type, "sector_name": canonical_name, "enabled": True})
+
+        session.execute(delete(WatchedSector))
+        session.add_all([WatchedSector(**item) for item in normalized_items])
+        session.commit()
+        return normalized_items
+
+    def refresh_watched_sector_stocks(self, session: Session, trading_date: date | None = None) -> dict[str, int]:
+        count = 0
+        for item in self.list_watched_sectors(session):
+            refreshed_at = self.refresh_sector_stocks(
+                session,
+                sector_type=item["sector_type"],
+                sector_name=item["sector_name"],
+                trading_date=trading_date,
+            )
+            if refreshed_at is not None:
+                count += 1
+        return {"prefetched": count}
+
+    def prefetch_sector_batch(self, session: Session, items: list[dict[str, Any]], trading_date: date | None = None) -> int:
+        deduped: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for item in items:
+            sector_type = "concept" if item.get("sector_type") == "concept" else "industry"
+            requested_name = self._to_str(item.get("sector_name")) or ""
+            canonical_name = self.gateway.resolve_sector_name(sector_type, requested_name) or requested_name
+            key = (sector_type, canonical_name)
+            if not canonical_name or key in seen:
+                continue
+            seen.add(key)
+            deduped.append(key)
+
+        refreshed = 0
+        for sector_type, sector_name in deduped:
+            captured_at = self.refresh_sector_stocks(
+                session,
+                sector_type=sector_type,
+                sector_name=sector_name,
+                trading_date=trading_date,
+            )
+            if captured_at is not None:
+                refreshed += 1
+        return refreshed
+
+    def rotate_sector_batch(
+        self,
+        session: Session,
+        sector_type: str,
+        sector_names: list[str],
+        trading_date: date | None,
+        batch_size: int,
+        offset_seed: int | None = None,
+    ) -> list[str]:
+        canonical_names = [
+            self.gateway.resolve_sector_name(sector_type, sector_name) or sector_name
+            for sector_name in sector_names
+            if sector_name
+        ]
+        normalized = []
+        seen = set()
+        for name in canonical_names:
+            if name in seen:
+                continue
+            seen.add(name)
+            normalized.append(name)
+        if not normalized or batch_size <= 0:
+            return []
+
+        seed = offset_seed if offset_seed is not None else self.now_provider().minute
+        start = (seed * batch_size) % len(normalized)
+        rotated = normalized[start:] + normalized[:start]
+        selected = rotated[: min(batch_size, len(rotated))]
+        self.prefetch_sector_batch(
+            session,
+            [{"sector_type": sector_type, "sector_name": sector_name} for sector_name in selected],
+            trading_date=trading_date,
+        )
+        return selected
+
     def _latest_sector_stock_timestamp(
         self,
         session: Session,
@@ -200,25 +331,6 @@ class RealtimeCacheService:
             )
             .order_by(SectorStockSnapshot.captured_at.desc())
         )
-
-    def _latest_sector_stock_any_date(
-        self,
-        session: Session,
-        sector_type: str,
-        sector_name: str,
-    ) -> tuple[date, datetime] | None:
-        row = session.execute(
-            select(SectorStockSnapshot.trading_date, SectorStockSnapshot.captured_at)
-            .where(
-                SectorStockSnapshot.sector_type == sector_type,
-                SectorStockSnapshot.sector_name == sector_name,
-            )
-            .order_by(SectorStockSnapshot.trading_date.desc(), SectorStockSnapshot.captured_at.desc())
-            .limit(1)
-        ).first()
-        if row is None:
-            return None
-        return row[0], row[1]
 
     def _latest_individual_timestamp(self, session: Session, trading_date: date) -> datetime | None:
         return session.scalar(
@@ -313,6 +425,14 @@ class RealtimeCacheService:
         start = (safe_page - 1) * safe_page_size
         end = start + safe_page_size
         return rows[start:end]
+
+    @staticmethod
+    def _is_stale(latest_time: datetime | None, current_time: datetime, target_date: date, ttl_seconds: int) -> bool:
+        if latest_time is None:
+            return True
+        if target_date != current_time.date():
+            return False
+        return (current_time - latest_time).total_seconds() > ttl_seconds
 
     @staticmethod
     def _sort_rows_with_nulls_last(

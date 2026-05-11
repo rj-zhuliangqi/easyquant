@@ -28,8 +28,7 @@ class HistoryCacheService:
                 continue
             rows = []
             for record in frame.to_dict(orient="records"):
-                trading_date = record.get("日期")
-                trading_date = self._to_date(trading_date)
+                trading_date = self._to_date(record.get("日期"))
                 if trading_date is None or trading_date in existing_dates:
                     continue
                 rows.append(

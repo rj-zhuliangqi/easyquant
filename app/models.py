@@ -1,7 +1,7 @@
 from datetime import date
 from datetime import datetime
 
-from sqlalchemy import Date, DateTime, Float, Integer, String, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, Float, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -81,3 +81,15 @@ class IndividualStockSnapshot(Base):
     latest_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     change_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
     net_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class WatchedSector(Base):
+    __tablename__ = "watched_sectors"
+    __table_args__ = (UniqueConstraint("sector_type", "sector_name", name="uq_watched_sector"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    sector_type: Mapped[str] = mapped_column(String(20), index=True)
+    sector_name: Mapped[str] = mapped_column(String(120), index=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)

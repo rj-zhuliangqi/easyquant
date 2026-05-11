@@ -3,85 +3,89 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>板块资金对比监控台</title>
+    <title>板块资金监控工作台</title>
     <link rel="stylesheet" href="/static/styles.css" />
     <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
   </head>
   <body>
     <div class="app-shell">
-      <header class="topbar">
+      <header class="hero">
         <div>
-          <h1>板块资金对比监控台</h1>
+          <div class="eyebrow">SECTOR FLOW MONITOR</div>
+          <h1>板块资金监控工作台</h1>
           <p id="status-text">正在加载监控状态...</p>
-        </div>
-        <div class="toolbar">
-          <div class="tab-group" id="sector-tabs">
-            <button class="tab-button active" data-sector-type="industry">行业板块</button>
-            <button class="tab-button" data-sector-type="concept">概念板块</button>
-          </div>
-          <div class="control-group">
-            <label for="granularity-select">周期</label>
-            <select id="granularity-select">
-              <option value="minute">分钟</option>
-              <option value="day">天级</option>
-            </select>
-          </div>
-          <div class="control-group hidden" id="trading-date-control">
-            <label for="trading-date-select">交易日</label>
-            <select id="trading-date-select"></select>
-          </div>
-          <div class="control-group" id="lookback-control">
-            <label for="lookback-select">范围</label>
-            <select id="lookback-select">
-              <option value="1">1日</option>
-              <option value="3">3日</option>
-              <option value="5">5日</option>
-              <option value="10">10日</option>
-              <option value="20">20日</option>
-              <option value="30">30日</option>
-            </select>
-          </div>
-          <div class="control-group">
-            <label for="metric-select">口径</label>
-            <select id="metric-select">
-              <option value="net_strength">净流入强度</option>
-              <option value="net_amount">净流入绝对值</option>
-            </select>
-          </div>
-          <div class="control-group">
-            <label for="limit-select">Top N</label>
-            <select id="limit-select">
-              <option value="6">6</option>
-              <option value="8" selected>8</option>
-              <option value="12">12</option>
-              <option value="20">20</option>
-              <option value="0">全部</option>
-            </select>
-          </div>
-          <button id="refresh-button" class="primary-button">立即采样</button>
         </div>
       </header>
 
-      <section class="panel watchlist-panel">
+      <section class="panel config-panel">
         <div class="panel-header">
           <div>
             <h2>自选板块池</h2>
-            <p>从行业或概念列表里直接选择，点击自选标签可快速切换。</p>
+            <p>把观察参数和自选板块放在同一个工作区，便于快速切换和预采样。</p>
           </div>
         </div>
-        <div class="watchlist-toolbar">
-          <div class="control-group">
-            <label for="watchlist-type-select">类型</label>
-            <select id="watchlist-type-select">
-              <option value="industry">行业板块</option>
-              <option value="concept">概念板块</option>
-            </select>
+        <div class="config-grid">
+          <div class="config-block">
+            <div class="tab-group" id="sector-tabs">
+              <button class="tab-button active" data-sector-type="industry">行业板块</button>
+              <button class="tab-button" data-sector-type="concept">概念板块</button>
+            </div>
+            <label class="control-group">
+              <span>周期</span>
+              <select id="granularity-select">
+                <option value="minute">分钟</option>
+                <option value="day">天级</option>
+              </select>
+            </label>
+            <label class="control-group" id="trading-date-control">
+              <span>交易日</span>
+              <select id="trading-date-select"></select>
+            </label>
+            <label class="control-group hidden" id="lookback-control">
+              <span>范围</span>
+              <select id="lookback-select">
+                <option value="1">1日</option>
+                <option value="3">3日</option>
+                <option value="5">5日</option>
+                <option value="10">10日</option>
+                <option value="20">20日</option>
+                <option value="30">30日</option>
+              </select>
+            </label>
+            <label class="control-group">
+              <span>口径</span>
+              <select id="metric-select">
+                <option value="net_strength">净流入强度</option>
+                <option value="net_amount">净流入绝对值</option>
+              </select>
+            </label>
+            <label class="control-group">
+              <span>Top N</span>
+              <select id="limit-select">
+                <option value="6">6</option>
+                <option value="8" selected>8</option>
+                <option value="12">12</option>
+                <option value="20">20</option>
+                <option value="0">全部</option>
+              </select>
+            </label>
           </div>
-          <div class="control-group watchlist-sector-picker">
-            <label for="watchlist-sector-select">板块</label>
-            <select id="watchlist-sector-select"></select>
+
+          <div class="config-block">
+            <label class="control-group">
+              <span>类型</span>
+              <select id="watchlist-type-select">
+                <option value="industry">行业板块</option>
+                <option value="concept">概念板块</option>
+              </select>
+            </label>
+            <label class="control-group grow">
+              <span>板块</span>
+              <select id="watchlist-sector-select"></select>
+            </label>
+            <button id="refresh-button" class="primary-button">立即采样</button>
+            <button id="watchlist-add-button" class="ghost-button">加入自选</button>
           </div>
-          <button id="watchlist-add-button" class="primary-button secondary-button">加入自选</button>
         </div>
         <div id="watchlist-chips" class="chip-list"></div>
       </section>
@@ -89,29 +93,31 @@
       <main class="dashboard-grid">
         <aside class="sidebar">
           <section class="panel">
-            <div class="panel-header"><h2>资金流入榜</h2></div>
+            <div class="panel-header">
+              <div>
+                <h2>资金流入榜</h2>
+                <p>点击板块后会联动右侧分析区。</p>
+              </div>
+            </div>
             <div id="leaders-list" class="rank-list"></div>
           </section>
           <section class="panel">
-            <div class="panel-header"><h2>资金流出榜</h2></div>
+            <div class="panel-header">
+              <div>
+                <h2>资金流出榜</h2>
+                <p>快速定位走弱板块。</p>
+              </div>
+            </div>
             <div id="laggards-list" class="rank-list"></div>
           </section>
           <section class="panel">
-            <div class="panel-header"><h2>板块异动告警</h2></div>
-            <div id="alerts-list" class="rank-list"></div>
-          </section>
-          <section class="panel">
-            <div class="panel-header"><h2>告警参数</h2></div>
-            <div class="settings-grid">
-              <label>
-                <span>强度变化阈值(%)</span>
-                <input id="delta-threshold-input" type="number" min="0" step="0.1" value="1.5" />
-              </label>
-              <label>
-                <span>排名跃迁阈值</span>
-                <input id="rank-threshold-input" type="number" min="0" step="1" value="2" />
-              </label>
+            <div class="panel-header">
+              <div>
+                <h2>监控信号</h2>
+                <p>优先显示加速度和背离更明显的板块。</p>
+              </div>
             </div>
+            <div id="signals-list" class="rank-list"></div>
           </section>
         </aside>
 
@@ -119,39 +125,96 @@
           <section class="panel">
             <div class="panel-header">
               <div>
-                <h2 id="comparison-title">全板块净流入强度对比</h2>
-                <p id="comparison-subtitle">默认展示最新 Top N 板块</p>
+                <h2 id="comparison-title">全板块净流入强度对比走势</h2>
+                <p id="comparison-subtitle">分钟线按当日首个采样点归一到 0。</p>
               </div>
-              <div id="comparison-badges" class="detail-badges"></div>
+              <div class="panel-meta">
+                <div id="comparison-badges" class="detail-badges"></div>
+                <div id="comparison-state" class="panel-state">加载中</div>
+              </div>
             </div>
             <div id="comparison-chart" class="chart large-chart"></div>
           </section>
 
-          <section class="detail-layout">
-            <section class="panel">
-              <div class="panel-header">
-                <div>
-                  <h2 id="detail-title">板块详情</h2>
-                  <p id="detail-subtitle">点击榜单中的板块查看详细历史</p>
-                </div>
+          <section class="panel analysis-panel">
+            <div class="panel-header">
+              <div>
+                <h2 id="analysis-title">板块分析区</h2>
+                <p id="analysis-subtitle">点击左侧板块后，在这里看信号、趋势和成分股结构。</p>
               </div>
-              <dl id="sector-detail" class="detail-grid"></dl>
-            </section>
+              <div id="detail-state" class="panel-state">未选择</div>
+            </div>
 
-            <section class="panel">
-              <div class="panel-header">
-                <div>
-                  <h2 id="history-title">板块历史曲线</h2>
-                  <p id="history-subtitle">显示选中板块的分钟/天级历史</p>
+            <div class="analysis-grid">
+              <section class="analysis-card">
+                <div class="analysis-card-header">
+                  <h3>核心摘要</h3>
+                  <span id="analysis-summary-meta" class="analysis-meta">等待板块选择</span>
                 </div>
-              </div>
-              <div id="detail-chart" class="chart small-chart"></div>
-            </section>
+                <div id="analysis-summary" class="summary-metrics"></div>
+              </section>
+
+              <section class="analysis-card">
+                <div class="analysis-card-header">
+                  <h3>信号判断</h3>
+                  <span id="analysis-signal-meta" class="analysis-meta">未加载</span>
+                </div>
+                <div id="analysis-signals" class="signal-stack"></div>
+              </section>
+
+              <section class="analysis-card analysis-card-wide">
+                <div class="analysis-card-header">
+                  <h3 id="history-title">分钟趋势</h3>
+                  <span id="history-state" class="panel-state">未加载</span>
+                </div>
+                <p id="history-subtitle" class="analysis-caption">分钟图只展示交易时段，并从当日首个有效点归一化。</p>
+                <div id="detail-chart" class="chart medium-chart"></div>
+              </section>
+
+              <section class="analysis-card">
+                <div class="analysis-card-header">
+                  <h3>成分股结构</h3>
+                  <span id="analysis-structure-meta" class="analysis-meta">未加载</span>
+                </div>
+                <div id="analysis-structure" class="summary-metrics compact-metrics"></div>
+                <div id="analysis-structure-notes" class="signal-stack subtle-stack"></div>
+              </section>
+            </div>
           </section>
 
-          <section class="tables-layout">
+          <section class="tables-grid">
             <section class="panel">
-              <div class="panel-header"><h2>板块成分股资金流</h2></div>
+              <div class="panel-header">
+                <div>
+                  <h2>板块成分股资金流</h2>
+                  <p id="sector-stocks-meta">按板块缓存读取，优先展示最新入库结果。</p>
+                </div>
+                <div id="sector-stocks-state" class="panel-state">未加载</div>
+              </div>
+              <div class="table-controls">
+                <label class="control-group compact">
+                  <span>排序</span>
+                  <select id="sector-stocks-sort-by">
+                    <option value="net_amount">按净流入</option>
+                    <option value="change_percent">按涨跌幅</option>
+                  </select>
+                </label>
+                <label class="control-group compact">
+                  <span>方向</span>
+                  <select id="sector-stocks-sort-order">
+                    <option value="desc">从高到低</option>
+                    <option value="asc">从低到高</option>
+                  </select>
+                </label>
+                <label class="control-group compact">
+                  <span>每页</span>
+                  <select id="sector-stocks-page-size">
+                    <option value="10">10</option>
+                    <option value="20">20</option>
+                    <option value="50">50</option>
+                  </select>
+                </label>
+              </div>
               <div class="table-wrap">
                 <table>
                   <thead>
@@ -166,10 +229,47 @@
                   <tbody id="sector-stocks-body"></tbody>
                 </table>
               </div>
+              <div class="table-footer">
+                <div id="sector-stocks-pagination" class="pagination-status">第 1 / 1 页</div>
+                <div class="pagination-actions">
+                  <button id="sector-stocks-prev" class="ghost-button small-button">上一页</button>
+                  <button id="sector-stocks-next" class="ghost-button small-button">下一页</button>
+                </div>
+              </div>
             </section>
 
             <section class="panel">
-              <div class="panel-header"><h2>个股实时资金榜</h2></div>
+              <div class="panel-header">
+                <div>
+                  <h2>全市场个股资金榜</h2>
+                  <p id="individual-meta">该榜单独立于板块切换，展示全市场最新缓存。</p>
+                </div>
+                <div id="individual-state" class="panel-state">未加载</div>
+              </div>
+              <div class="table-controls">
+                <label class="control-group compact">
+                  <span>排序</span>
+                  <select id="individual-sort-by">
+                    <option value="net_amount">按净流入</option>
+                    <option value="change_percent">按涨跌幅</option>
+                  </select>
+                </label>
+                <label class="control-group compact">
+                  <span>方向</span>
+                  <select id="individual-sort-order">
+                    <option value="desc">从高到低</option>
+                    <option value="asc">从低到高</option>
+                  </select>
+                </label>
+                <label class="control-group compact">
+                  <span>每页</span>
+                  <select id="individual-page-size">
+                    <option value="15" selected>15</option>
+                    <option value="30">30</option>
+                    <option value="50">50</option>
+                  </select>
+                </label>
+              </div>
               <div class="table-wrap">
                 <table>
                   <thead>
@@ -184,11 +284,18 @@
                   <tbody id="individual-body"></tbody>
                 </table>
               </div>
+              <div class="table-footer">
+                <div id="individual-pagination" class="pagination-status">第 1 / 1 页</div>
+                <div class="pagination-actions">
+                  <button id="individual-prev" class="ghost-button small-button">上一页</button>
+                  <button id="individual-next" class="ghost-button small-button">下一页</button>
+                </div>
+              </div>
             </section>
           </section>
         </section>
       </main>
     </div>
-    <script src="/static/app.js?v=20260508-3"></script>
+    <script src="/static/app.js?v=20260511-2"></script>
   </body>
 </html>
