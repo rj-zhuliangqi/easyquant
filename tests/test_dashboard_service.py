@@ -260,6 +260,24 @@ def test_comparison_series_returns_daily_points(db_session) -> None:
     assert [point["label"] for point in result["series"][0]["points"]] == ["2026-05-07"]
 
 
+def test_comparison_series_supports_laggards_rank_view(db_session) -> None:
+    seed_snapshots(db_session)
+    service = DashboardService(gateway=StubGateway())
+
+    result = service.get_comparison_series(
+        db_session,
+        sector_type="industry",
+        metric="net_strength",
+        granularity="minute",
+        lookback_days=2,
+        limit=2,
+        trading_date=date(2026, 5, 7),
+        rank_view="laggards",
+    )
+
+    assert [series["sector_name"] for series in result["series"]] == ["Beta", "Alpha"]
+
+
 def test_alerts_detect_strength_jump_and_rank_change(db_session) -> None:
     seed_snapshots(db_session)
     service = DashboardService()
@@ -340,6 +358,28 @@ def test_monitor_signals_exposes_acceleration_persistence_and_divergence(db_sess
     assert result["items"][0]["persistence"] == 3
     assert result["items"][0]["divergence"] == "bullish_flow_vs_price"
     assert result["items"][1]["sector_name"] == "Gamma"
+
+
+def test_sector_workspace_exposes_cache_metadata_and_structure_shell(db_session) -> None:
+    seed_snapshots(db_session)
+    service = DashboardService()
+
+    result = service.get_sector_workspace(
+        db_session,
+        sector_type="industry",
+        sector_name="Alpha",
+        metric="net_strength",
+        granularity="minute",
+        lookback_days=30,
+        trading_date=date(2026, 5, 7),
+    )
+
+    assert result["resolved_trading_date"] == "2026-05-07"
+    assert result["source_status"] == "cache_hit"
+    assert result["cache_meta"]["requested_trading_date"] == "2026-05-07"
+    assert result["analysis_cache"]["detail_updated_at"] == "2026-05-07T10:01:00"
+    assert result["structure"]["metrics"] == []
+    assert result["structure"]["notes"] == []
 
 
 def test_is_trading_time_handles_market_sessions() -> None:

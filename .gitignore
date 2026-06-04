@@ -3,7 +3,15 @@ __pycache__/
 .pytest_cache/
 .venv/
 .venv_linux/
+artifacts/
+server-*.log
+*.trace.zip
+test-results/
 data/*.log
 data/*.err.log
 data/*.out.log
+data/*.db
+data/*.db-*
 data/uvicorn.pid
+data/playwright-nav-check/
+data/playwright-*.png

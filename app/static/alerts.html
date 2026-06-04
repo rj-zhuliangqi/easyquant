@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>盘中预警中心</title>
+    <link rel="stylesheet" href="/static/alerts.css?v=20260602-navrestore" />
+      <link rel="stylesheet" href="/static/global-sidebar.css?v=20260602-navrestore" />
+  </head>
+  <body>
+    <div class="alerts-shell">
+                  <aside class="global-sidebar">
+        <div class="global-brand">
+          <h1 class="global-title">&#39044;&#35686;&#20013;&#24515;</h1>
+        </div>
+
+        <nav class="global-nav" aria-label="Main navigation">
+          <a class="global-link" href="/">&#39318;&#39029;</a>
+          <a class="global-link active" href="/alerts">&#39044;&#35686;&#20013;&#24515;</a>
+          <a class="global-link" href="/opportunity-pool">&#26426;&#20250;&#27744;</a>
+          <a class="global-link" href="/sector-monitor">&#26495;&#22359;&#36164;&#37329;&#30417;&#25511;</a>
+          <a class="global-link" href="/limit-up-ladder">A&#32929;&#36830;&#26495;&#26799;&#38431;</a>
+          <a class="global-link" href="/ai-center">AI &#20013;&#21488;</a>
+          <a class="global-link" href="/workspace">&#20010;&#20154;&#35266;&#23519;&#21488;</a>
+        </nav>
+      </aside>
+
+      <main class="alerts-main">
+        <header class="hero-panel">
+          <div>
+            <h2>&#30424;&#20013;&#39044;&#35686;</h2>
+          </div>
+          <div id="alerts-status" class="hero-state">加载中</div>
+        </header>
+
+        <section class="filters-panel">
+          <label>
+            <span>信号类型</span>
+            <select id="alerts-type-select">
+              <option value="all">全部</option>
+              <option value="market">市场</option>
+              <option value="sector">板块</option>
+              <option value="limit_up">连板</option>
+              <option value="stock">个股</option>
+            </select>
+          </label>
+          <label>
+            <span>强度</span>
+            <select id="alerts-strength-select">
+              <option value="all">全部</option>
+              <option value="high-priority">高优先级</option>
+              <option value="confirmed">仅确认信号</option>
+            </select>
+          </label>
+          <label>
+            <span>时间窗</span>
+            <select id="alerts-window-select">
+              <option value="today">今日</option>
+              <option value="30m">近30分钟</option>
+              <option value="15m">近15分钟</option>
+              <option value="5m">近5分钟</option>
+            </select>
+          </label>
+        </section>
+
+        <section id="alerts-summary-grid" class="summary-grid"></section>
+
+        <section class="content-grid">
+          <section class="feed-panel">
+            <div class="panel-head">
+              <h3>预警时间流</h3>
+            </div>
+            <div id="alerts-feed" class="alerts-feed"></div>
+          </section>
+
+          <aside id="alerts-detail-panel" class="detail-panel">
+            <div class="panel-head">
+              <h3>信号详情</h3>
+            </div>
+            <div id="alerts-detail-content" class="detail-card empty">等待选择预警</div>
+          </aside>
+        </section>
+      </main>
+    </div>
+
+    <script src="/static/alerts.js?v=20260602-navrestore"></script>
+  </body>
+</html>

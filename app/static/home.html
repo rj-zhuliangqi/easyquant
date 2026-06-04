@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>市场总览驾驶舱</title>
+    <link rel="stylesheet" href="/static/home.css?v=20260602-navrestore" />
+    <script defer src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+      <link rel="stylesheet" href="/static/global-sidebar.css?v=20260602-navrestore" />
+  </head>
+  <body>
+    <div class="home-shell">
+                  <aside class="global-sidebar home-sidebar" id="home-sidebar">
+        <div class="global-brand">
+          <h1 class="global-title">&#39318;&#39029;</h1>
+        </div>
+
+        <nav class="global-nav" aria-label="Main navigation">
+          <a class="global-link active" href="/">&#39318;&#39029;</a>
+          <a class="global-link" href="/alerts">&#39044;&#35686;&#20013;&#24515;</a>
+          <a class="global-link" href="/opportunity-pool">&#26426;&#20250;&#27744;</a>
+          <a class="global-link" href="/sector-monitor">&#26495;&#22359;&#36164;&#37329;&#30417;&#25511;</a>
+          <a class="global-link" href="/limit-up-ladder">A&#32929;&#36830;&#26495;&#26799;&#38431;</a>
+          <a class="global-link" href="/ai-center">AI &#20013;&#21488;</a>
+          <a class="global-link" href="/workspace">&#20010;&#20154;&#35266;&#23519;&#21488;</a>
+        </nav>
+      </aside>
+
+      <main class="home-main" id="home-main">
+        <section class="hero-panel market-panel" id="market-overview-panel">
+          <h2>&#24066;&#22330;&#24635;&#35272;</h2>
+          <div class="hero-status">
+            <div class="status-pill" id="home-market-status">正在加载市场状态...</div>
+            <div class="status-meta" id="home-status-meta">等待首页聚合数据</div>
+          </div>
+        </section>
+
+        <section class="pulse-strip" id="market-pulse-strip" aria-label="市场脉冲">
+          <article class="pulse-card">
+            <span>市场倾向</span>
+            <strong id="pulse-bias">--</strong>
+            <em id="pulse-bias-meta">等待数据</em>
+          </article>
+          <article class="pulse-card">
+            <span>最强流入板块</span>
+            <strong id="pulse-strong-sector">--</strong>
+            <em id="pulse-strong-sector-meta">等待数据</em>
+          </article>
+          <article class="pulse-card">
+            <span>最弱流出板块</span>
+            <strong id="pulse-weak-sector">--</strong>
+            <em id="pulse-weak-sector-meta">等待数据</em>
+          </article>
+          <article class="pulse-card">
+            <span>连板空间</span>
+            <strong id="pulse-highest-board">--</strong>
+            <em id="pulse-highest-board-meta">等待数据</em>
+          </article>
+          <article class="pulse-card accent">
+            <span>当前建议</span>
+            <strong id="pulse-priority">--</strong>
+            <em id="pulse-priority-meta">等待数据</em>
+          </article>
+        </section>
+
+        <section class="market-signal-grid" id="market-signal-grid" aria-label="市场信号">
+          <article class="signal-card">
+            <span>市场活跃度</span>
+            <strong id="signal-activity">--</strong>
+            <em id="signal-activity-meta">等待数据</em>
+          </article>
+          <article class="signal-card">
+            <span>连板晋级率</span>
+            <strong id="signal-promotion">--</strong>
+            <em id="signal-promotion-meta">等待数据</em>
+          </article>
+          <article class="signal-card">
+            <span>高标数量</span>
+            <strong id="signal-high-board">--</strong>
+            <em id="signal-high-board-meta">等待数据</em>
+          </article>
+          <article class="signal-card">
+            <span>首板数量</span>
+            <strong id="signal-first-board">--</strong>
+            <em id="signal-first-board-meta">等待数据</em>
+          </article>
+          <article class="signal-card">
+            <span>自选监控</span>
+            <strong id="signal-watchlist">--</strong>
+            <em id="signal-watchlist-meta">等待数据</em>
+          </article>
+          <article class="signal-card">
+            <span>最强方向</span>
+            <strong id="signal-focus">--</strong>
+            <em id="signal-focus-meta">等待数据</em>
+          </article>
+        </section>
+
+        <section class="source-strip market-panel" id="home-source-strip" aria-label="数据来源状态">
+          <article class="source-card" id="source-indices-card">
+            <span>指数数据</span>
+            <strong id="source-indices-label">--</strong>
+            <em id="source-indices-meta">等待来源信息</em>
+          </article>
+          <article class="source-card" id="source-breadth-card">
+            <span>市场宽度</span>
+            <strong id="source-breadth-label">--</strong>
+            <em id="source-breadth-meta">等待来源信息</em>
+          </article>
+          <article class="source-card" id="source-summary-card">
+            <span>摘要聚合</span>
+            <strong id="source-summary-label">--</strong>
+            <em id="source-summary-meta">等待来源信息</em>
+          </article>
+        </section>
+
+        <section class="temperature-strip market-panel" id="home-temperature-strip" aria-label="甯傚満鎯呯华澶嶆牳">
+          <article class="temperature-strip-card primary">
+            <span>甯傚満娓╁害</span>
+            <strong id="home-temperature-score">--</strong>
+            <em id="home-temperature-score-meta">绛夊緟鎯呯华澶嶆牳</em>
+          </article>
+          <article class="temperature-strip-card">
+            <span>褰撳墠鍒嗘。</span>
+            <strong id="home-temperature-band">--</strong>
+            <em id="home-temperature-band-meta">绛夊緟鍒ゆ柇</em>
+          </article>
+          <article class="temperature-strip-card wide">
+            <span>鎯呯华鍙ュ瓙</span>
+            <strong id="home-temperature-summary">--</strong>
+            <em id="home-temperature-risk">绛夊緟椋庨櫓鎻愮ず</em>
+          </article>
+        </section>
+
+        <section class="action-rail" id="home-action-rail" aria-label="行动摘要">
+          <a class="action-card" id="action-priority-card" href="/sector-monitor">
+            <span class="action-kicker">优先行动</span>
+            <strong id="action-priority-title">等待行动建议</strong>
+            <em id="action-priority-copy">系统会先告诉你先看哪边，以及为什么。</em>
+          </a>
+          <a class="action-card" id="action-alerts-card" href="/alerts">
+            <span class="action-kicker">预警摘要</span>
+            <strong id="action-alerts-title">等待预警摘要</strong>
+            <em id="action-alerts-copy">等待高优先级信号</em>
+          </a>
+          <a class="action-card" id="action-opportunities-card" href="/opportunity-pool">
+            <span class="action-kicker">机会池摘要</span>
+            <strong id="action-opportunities-title">等待候选摘要</strong>
+            <em id="action-opportunities-copy">等待系统筛好的候选</em>
+          </a>
+        </section>
+
+        <section class="home-grid">
+          <section class="chart-panel market-panel" id="market-chart-panel">
+            <div class="panel-header">
+              <div>
+                <div class="panel-kicker">指数焦点</div>
+                <h3 id="market-chart-title">上证指数走势</h3>
+              </div>
+              <div class="panel-meta" id="market-chart-meta">默认展示上证指数近 20 个交易日收盘走势</div>
+            </div>
+
+            <div class="index-switcher" id="market-index-switcher" aria-label="指数切换"></div>
+            <div id="market-chart" class="market-chart" aria-label="核心指数走势"></div>
+          </section>
+
+          <div class="home-side-stack">
+            <section class="breadth-panel market-panel">
+              <div class="panel-header">
+                <div>
+                  <div class="panel-kicker">涨跌结构</div>
+                  <h3>市场宽度</h3>
+                </div>
+                <div class="panel-meta" id="breadth-updated-at">等待更新</div>
+              </div>
+
+              <div class="breadth-grid" id="market-breadth-grid">
+                <article class="metric-card rise">
+                  <span>上涨家数</span>
+                  <strong id="up-count">--</strong>
+                </article>
+                <article class="metric-card fall">
+                  <span>下跌家数</span>
+                  <strong id="down-count">--</strong>
+                </article>
+                <article class="metric-card balance">
+                  <span>涨跌比</span>
+                  <strong id="updown-ratio">--</strong>
+                </article>
+                <article class="metric-card neutral">
+                  <span>平盘家数</span>
+                  <strong id="flat-count">--</strong>
+                </article>
+                <article class="metric-card accent">
+                  <span>涨停 / 跌停</span>
+                  <strong id="limit-pair">--</strong>
+                </article>
+                <article class="metric-card accent turnover">
+                  <span>市场成交额</span>
+                  <strong id="market-turnover">--</strong>
+                </article>
+              </div>
+              <div class="breadth-footnote" id="market-activity-text">活跃度等待更新</div>
+            </section>
+
+            <section class="decision-panel market-panel" id="decision-panel">
+              <div class="panel-header">
+                <div>
+                  <div class="panel-kicker">下一步</div>
+                  <h3 id="decision-title">先决定从哪一侧展开</h3>
+                </div>
+                <div class="panel-meta" id="decision-meta">根据首页信号自动整理</div>
+              </div>
+
+              <div class="decision-callout">
+                <div class="decision-chip" id="decision-chip">等待判断</div>
+                <p id="decision-copy">首页会根据涨跌结构、板块强弱和连板空间，给出今天更适合优先打开的工作台。</p>
+              </div>
+
+              <div class="decision-actions">
+                <a class="decision-link primary" id="decision-primary-link" href="/sector-monitor">
+                  <span class="decision-link-kicker">优先行动</span>
+                  <strong id="decision-primary-title">板块资金监控</strong>
+                  <em id="decision-primary-copy">等待判断</em>
+                </a>
+                <a class="decision-link" id="decision-secondary-link" href="/limit-up-ladder">
+                  <span class="decision-link-kicker">补充确认</span>
+                  <strong id="decision-secondary-title">A股连板梯度</strong>
+                  <em id="decision-secondary-copy">等待判断</em>
+                </a>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section class="summary-grid intel-grid" id="system-summary-grid">
+          <a class="summary-card" id="sector-summary-card" href="/sector-monitor">
+            <div class="card-head">
+              <div>
+                <div class="panel-kicker">板块资金</div>
+                <h3>板块资金监控</h3>
+              </div>
+              <span class="summary-link">进入工作台</span>
+            </div>
+            <div class="summary-body compact-body">
+              <div class="summary-stat">
+                <span>最强流入</span>
+                <strong id="sector-strongest">--</strong>
+              </div>
+              <div class="summary-stat">
+                <span>最弱流出</span>
+                <strong id="sector-weakest">--</strong>
+              </div>
+              <div class="summary-stat">
+                <span>自选板块</span>
+                <strong id="sector-watchlist-count">--</strong>
+              </div>
+            </div>
+            <div class="summary-rows">
+              <div class="summary-row">
+                <span>最近采样</span>
+                <strong id="sector-summary-updated">--</strong>
+              </div>
+              <div class="summary-row">
+                <span>当前建议</span>
+                <strong id="sector-summary-hint">等待摘要</strong>
+              </div>
+            </div>
+            <p class="summary-copy" id="sector-summary-copy">等待板块资金摘要</p>
+          </a>
+
+          <a class="summary-card warm" id="limitup-summary-card" href="/limit-up-ladder">
+            <div class="card-head">
+              <div>
+                <div class="panel-kicker">连板情绪</div>
+                <h3>A股连板梯度</h3>
+              </div>
+              <span class="summary-link">进入工作台</span>
+            </div>
+            <div class="summary-body compact-body">
+              <div class="summary-stat">
+                <span>最高板</span>
+                <strong id="limitup-highest">--</strong>
+              </div>
+              <div class="summary-stat">
+                <span>连板总数</span>
+                <strong id="limitup-total">--</strong>
+              </div>
+              <div class="summary-stat">
+                <span>炸板数</span>
+                <strong id="limitup-broken">--</strong>
+              </div>
+            </div>
+            <div class="summary-rows">
+              <div class="summary-row">
+                <span>交易日</span>
+                <strong id="limitup-summary-updated">--</strong>
+              </div>
+              <div class="summary-row">
+                <span>情绪提示</span>
+                <strong id="limitup-summary-hint">等待摘要</strong>
+              </div>
+            </div>
+            <p class="summary-copy" id="limitup-summary-copy">等待连板情绪摘要</p>
+          </a>
+        </section>
+
+        <section class="quick-entry-grid entry-ribbon" id="quick-entry-grid">
+          <a class="quick-entry-card" id="entry-sector-card" href="/sector-monitor">
+            <div class="entry-kicker">立即执行</div>
+            <h3>进入板块资金工作台</h3>
+            <p id="entry-sector-copy">继续查看净流入对比走势、成分股承接和自选板块结构。</p>
+          </a>
+          <a class="quick-entry-card" id="entry-limitup-card" href="/limit-up-ladder">
+            <div class="entry-kicker">交叉确认</div>
+            <h3>进入连板梯度工作台</h3>
+            <p id="entry-limitup-copy">继续查看空间板、炸板池、追板承接和同层强弱对比。</p>
+          </a>
+        </section>
+      </main>
+    </div>
+
+    <script defer src="/static/home.js?v=20260602-navrestore"></script>
+  </body>
+</html>

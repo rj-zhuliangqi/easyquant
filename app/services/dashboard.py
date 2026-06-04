@@ -4,7 +4,7 @@ from collections import defaultdict
 from datetime import date, datetime, time, timedelta
 from typing import Any, Iterable
 
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
 from app.models import FundFlowDailyHistory, FundFlowSnapshot
@@ -46,10 +46,12 @@ class DashboardService:
         granularity: str,
         lookback_days: int,
         limit: int,
+        rank_view: str = "leaders",
         include_sector_names: list[str] | None = None,
         trading_date: date | None = None,
     ) -> dict:
         include_sector_names = include_sector_names or []
+        descending = rank_view != "laggards"
         if granularity == "day":
             latest_time = self._latest_timestamp(session, sector_type)
             if latest_time is None:
@@ -66,7 +68,7 @@ class DashboardService:
             effective_limit = self._normalize_limit(limit, len(latest_rows))
             ranked_sector_names = [
                 row.sector_name
-                for row in sorted(latest_rows, key=lambda row: self._metric_value(row, metric), reverse=True)[:effective_limit]
+                for row in sorted(latest_rows, key=lambda row: self._metric_value(row, metric), reverse=descending)[:effective_limit]
             ]
             resolved = self._resolve_included_sector_names(session, sector_type, latest_rows, include_sector_names)
             ranked_sector_names = self._merge_included(ranked_sector_names, resolved["valid"])
@@ -90,8 +92,8 @@ class DashboardService:
                 "missing_labels_count": 0,
             }
 
-        rows = self._rows_for_lookback(session, sector_type, lookback_days, trading_date=trading_date)
-        if not rows:
+        target_date = trading_date or self._latest_trading_date(session, sector_type)
+        if target_date is None:
             return {
                 "updated_at": None,
                 "metric": metric,
@@ -101,17 +103,31 @@ class DashboardService:
                 "missing_labels_count": 0,
             }
 
-        latest_time = max(row.captured_at for row in rows)
-        latest_rows = [row for row in rows if row.captured_at == latest_time]
+        latest_time = self._latest_timestamp(session, sector_type, trading_date=target_date)
+        if latest_time is None:
+            return {
+                "updated_at": None,
+                "metric": metric,
+                "granularity": granularity,
+                "series": [],
+                "invalid_watchlist": include_sector_names,
+                "missing_labels_count": 0,
+            }
+        latest_rows = self._rows_at_timestamp(session, sector_type, latest_time)
         effective_limit = self._normalize_limit(limit, len(latest_rows))
         ranked_sector_names = [
             row.sector_name
-            for row in sorted(latest_rows, key=lambda row: self._metric_value(row, metric), reverse=True)[:effective_limit]
+            for row in sorted(latest_rows, key=lambda row: self._metric_value(row, metric), reverse=descending)[:effective_limit]
         ]
         resolved = self._resolve_included_sector_names(session, sector_type, latest_rows, include_sector_names)
         ranked_sector_names = self._merge_included(ranked_sector_names, resolved["valid"])
 
-        target_date = trading_date or latest_time.date()
+        rows = self._rows_for_sector_names_on_date(
+            session,
+            sector_type=sector_type,
+            sector_names=ranked_sector_names,
+            trading_date=target_date,
+        )
         timeline = self._build_minute_timeline(rows, target_date=target_date)
         series = [
             self._build_minute_series(
@@ -144,7 +160,7 @@ class DashboardService:
         lookback_days: int,
         trading_date: date | None = None,
     ) -> dict:
-        canonical_name = self.resolve_sector_name(sector_type, sector_name)
+        canonical_name = self._resolve_sector_name(session, sector_type, sector_name)
         if canonical_name is None:
             return {"sector_name": sector_name, "metric": metric, "granularity": granularity, "points": []}
         if granularity == "day":
@@ -156,11 +172,13 @@ class DashboardService:
                 lookback_days=lookback_days,
             )
 
-        rows = [
-            row
-            for row in self._rows_for_lookback(session, sector_type, lookback_days, trading_date=trading_date)
-            if row.sector_name == canonical_name
-        ]
+        rows = self._sector_rows_for_lookback(
+            session,
+            sector_type=sector_type,
+            sector_name=canonical_name,
+            lookback_days=lookback_days,
+            trading_date=trading_date,
+        )
         if not rows:
             return {"sector_name": canonical_name, "metric": metric, "granularity": granularity, "points": []}
         timeline = self._build_minute_timeline(rows, target_date=trading_date or rows[-1].captured_at.date())
@@ -174,7 +192,7 @@ class DashboardService:
         metric: str = "net_strength",
         trading_date: date | None = None,
     ) -> dict | None:
-        canonical_name = self.resolve_sector_name(sector_type, sector_name)
+        canonical_name = self._resolve_sector_name(session, sector_type, sector_name)
         if canonical_name is None:
             return None
         stmt = (
@@ -201,13 +219,15 @@ class DashboardService:
         lookback_days: int,
         trading_date: date | None = None,
     ) -> dict:
-        canonical_name = self.resolve_sector_name(sector_type, sector_name)
+        canonical_name = self._resolve_sector_name(session, sector_type, sector_name)
+        resolved_trading_date = self._resolve_trading_date(session, sector_type, trading_date)
+        effective_trading_date = resolved_trading_date
         detail = self.get_sector_snapshot(
             session,
             sector_type=sector_type,
             sector_name=sector_name,
             metric=metric,
-            trading_date=trading_date,
+            trading_date=effective_trading_date,
         )
         history = self.get_sector_history(
             session,
@@ -216,13 +236,32 @@ class DashboardService:
             metric=metric,
             granularity=granularity,
             lookback_days=lookback_days,
-            trading_date=trading_date,
+            trading_date=effective_trading_date,
         )
+        source_status = "cache_hit"
+        if trading_date is not None and resolved_trading_date is not None and resolved_trading_date != trading_date:
+            source_status = "stale_cache"
+        elif detail is None:
+            source_status = "unavailable"
         return {
             "detail": detail,
             "history": history,
             "resolved_sector_name": canonical_name,
             "requested_sector_name": sector_name,
+            "requested_trading_date": trading_date.isoformat() if trading_date else None,
+            "resolved_trading_date": resolved_trading_date.isoformat() if resolved_trading_date else None,
+            "source_status": source_status,
+            "analysis_cache": {
+                "detail_updated_at": detail["captured_at"] if detail else None,
+                "history_points": len(history.get("points", [])) if history else 0,
+                "fallback_reason": "latest_cached_trading_date" if source_status == "stale_cache" else None,
+            },
+            "structure": {"metrics": [], "notes": []},
+            "cache_meta": {
+                "requested_trading_date": trading_date.isoformat() if trading_date else None,
+                "resolved_trading_date": resolved_trading_date.isoformat() if resolved_trading_date else None,
+                "fallback_reason": "latest_cached_trading_date" if source_status == "stale_cache" else None,
+            },
         }
 
     def get_alerts(
@@ -279,7 +318,8 @@ class DashboardService:
         if target_date is None:
             return {"updated_at": None, "metric": metric, "items": []}
 
-        rows = self._rows_for_lookback(session, sector_type, lookback_days=30, trading_date=target_date)
+        timestamps = self._recent_timestamps(session, sector_type=sector_type, trading_date=target_date, limit=8)
+        rows = self._rows_at_timestamps(session, sector_type=sector_type, timestamps=timestamps)
         if not rows:
             return {"updated_at": None, "metric": metric, "items": []}
 
@@ -329,14 +369,13 @@ class DashboardService:
         }
 
     def get_available_trading_dates(self, session: Session, sector_type: str) -> list[str]:
-        rows = list(
-            session.scalars(
-                select(FundFlowSnapshot.captured_at)
-                .where(FundFlowSnapshot.sector_type == sector_type)
-                .order_by(FundFlowSnapshot.captured_at.desc())
-            )
+        rows = session.scalars(
+            select(func.date(FundFlowSnapshot.captured_at))
+            .where(FundFlowSnapshot.sector_type == sector_type)
+            .distinct()
+            .order_by(desc(func.date(FundFlowSnapshot.captured_at)))
         )
-        return [item.isoformat() for item in sorted({row.date() for row in rows}, reverse=True)]
+        return [str(row) for row in rows if row is not None]
 
     def get_sector_names(self, session: Session, sector_type: str, trading_date: date | None = None) -> list[str]:
         latest_time = self._latest_timestamp(session, sector_type, trading_date=trading_date)
@@ -348,6 +387,22 @@ class DashboardService:
         if self.gateway is None:
             return sector_name
         return self.gateway.resolve_sector_name(sector_type, sector_name)
+
+    def _resolve_sector_name(self, session: Session, sector_type: str, sector_name: str) -> str | None:
+        if self._sector_name_exists(session, sector_type, sector_name):
+            return sector_name
+        return self.resolve_sector_name(sector_type, sector_name)
+
+    @staticmethod
+    def _sector_name_exists(session: Session, sector_type: str, sector_name: str) -> bool:
+        return (
+            session.scalar(
+                select(FundFlowSnapshot.sector_name)
+                .where(FundFlowSnapshot.sector_type == sector_type, FundFlowSnapshot.sector_name == sector_name)
+                .limit(1)
+            )
+            is not None
+        )
 
     def _resolve_included_sector_names(
         self,
@@ -466,13 +521,52 @@ class DashboardService:
         lookback_days: int,
         trading_date: date | None = None,
     ) -> list[FundFlowSnapshot]:
-        stmt = select(FundFlowSnapshot).where(FundFlowSnapshot.sector_type == sector_type).order_by(FundFlowSnapshot.captured_at.asc())
-        rows = list(session.scalars(stmt))
         if trading_date is not None:
-            return [row for row in rows if row.captured_at.date() == trading_date]
-        unique_days = sorted({row.captured_at.date() for row in rows})
-        selected_days = set(unique_days[-lookback_days:])
-        return [row for row in rows if row.captured_at.date() in selected_days]
+            start_at, end_at = self._date_bounds(trading_date)
+            stmt = (
+                select(FundFlowSnapshot)
+                .where(
+                    FundFlowSnapshot.sector_type == sector_type,
+                    FundFlowSnapshot.captured_at >= start_at,
+                    FundFlowSnapshot.captured_at < end_at,
+                )
+                .order_by(FundFlowSnapshot.captured_at.asc())
+            )
+            return list(session.scalars(stmt))
+
+        selected_days = self._latest_trading_dates(session, sector_type, limit=lookback_days)
+        if not selected_days:
+            return []
+        start_at = datetime.combine(selected_days[-1], time(0, 0))
+        stmt = (
+            select(FundFlowSnapshot)
+            .where(FundFlowSnapshot.sector_type == sector_type, FundFlowSnapshot.captured_at >= start_at)
+            .order_by(FundFlowSnapshot.captured_at.asc())
+        )
+        return [row for row in session.scalars(stmt) if row.captured_at.date() in set(selected_days)]
+
+    def _sector_rows_for_lookback(
+        self,
+        session: Session,
+        sector_type: str,
+        sector_name: str,
+        lookback_days: int,
+        trading_date: date | None = None,
+    ) -> list[FundFlowSnapshot]:
+        filters = [FundFlowSnapshot.sector_type == sector_type, FundFlowSnapshot.sector_name == sector_name]
+        if trading_date is not None:
+            start_at, end_at = self._date_bounds(trading_date)
+            filters.extend([FundFlowSnapshot.captured_at >= start_at, FundFlowSnapshot.captured_at < end_at])
+        else:
+            selected_days = self._latest_trading_dates(session, sector_type, limit=lookback_days)
+            if not selected_days:
+                return []
+            filters.append(FundFlowSnapshot.captured_at >= datetime.combine(selected_days[-1], time(0, 0)))
+        rows = list(session.scalars(select(FundFlowSnapshot).where(*filters).order_by(FundFlowSnapshot.captured_at.asc())))
+        if trading_date is None:
+            selected = set(selected_days)
+            rows = [row for row in rows if row.captured_at.date() in selected]
+        return rows
 
     def _rows_at_timestamp(self, session: Session, sector_type: str, captured_at: datetime) -> list[FundFlowSnapshot]:
         return list(
@@ -483,16 +577,63 @@ class DashboardService:
             )
         )
 
+    def _rows_at_timestamps(self, session: Session, sector_type: str, timestamps: list[datetime]) -> list[FundFlowSnapshot]:
+        if not timestamps:
+            return []
+        return list(
+            session.scalars(
+                select(FundFlowSnapshot)
+                .where(FundFlowSnapshot.sector_type == sector_type, FundFlowSnapshot.captured_at.in_(timestamps))
+                .order_by(FundFlowSnapshot.captured_at.asc(), FundFlowSnapshot.sector_name.asc())
+            )
+        )
+
+    def _rows_for_sector_names_on_date(
+        self,
+        session: Session,
+        sector_type: str,
+        sector_names: list[str],
+        trading_date: date,
+    ) -> list[FundFlowSnapshot]:
+        if not sector_names:
+            return []
+        start_at, end_at = self._date_bounds(trading_date)
+        return list(
+            session.scalars(
+                select(FundFlowSnapshot)
+                .where(
+                    FundFlowSnapshot.sector_type == sector_type,
+                    FundFlowSnapshot.sector_name.in_(sector_names),
+                    FundFlowSnapshot.captured_at >= start_at,
+                    FundFlowSnapshot.captured_at < end_at,
+                )
+                .order_by(FundFlowSnapshot.captured_at.asc(), FundFlowSnapshot.sector_name.asc())
+            )
+        )
+
     def _latest_trading_date(self, session: Session, sector_type: str) -> date | None:
         latest_time = self._latest_timestamp(session, sector_type)
         return latest_time.date() if latest_time is not None else None
 
     def _latest_timestamp(self, session: Session, sector_type: str, trading_date: date | None = None) -> datetime | None:
-        stmt = select(FundFlowSnapshot.captured_at).where(FundFlowSnapshot.sector_type == sector_type).order_by(desc(FundFlowSnapshot.captured_at))
-        timestamps = list(session.scalars(stmt))
         if trading_date is not None:
-            timestamps = [timestamp for timestamp in timestamps if timestamp.date() == trading_date]
-        return timestamps[0] if timestamps else None
+            start_at, end_at = self._date_bounds(trading_date)
+            return session.scalar(
+                select(FundFlowSnapshot.captured_at)
+                .where(
+                    FundFlowSnapshot.sector_type == sector_type,
+                    FundFlowSnapshot.captured_at >= start_at,
+                    FundFlowSnapshot.captured_at < end_at,
+                )
+                .order_by(desc(FundFlowSnapshot.captured_at))
+                .limit(1)
+            )
+        return session.scalar(
+            select(FundFlowSnapshot.captured_at)
+            .where(FundFlowSnapshot.sector_type == sector_type)
+            .order_by(desc(FundFlowSnapshot.captured_at))
+            .limit(1)
+        )
 
     def _latest_two_timestamps(self, session: Session, sector_type: str, trading_date: date | None = None) -> list[datetime]:
         stmt = (
@@ -501,10 +642,59 @@ class DashboardService:
             .distinct()
             .order_by(desc(FundFlowSnapshot.captured_at))
         )
-        timestamps = list(session.scalars(stmt))
         if trading_date is not None:
-            timestamps = [timestamp for timestamp in timestamps if timestamp.date() == trading_date]
-        return timestamps[:2]
+            start_at, end_at = self._date_bounds(trading_date)
+            stmt = stmt.where(FundFlowSnapshot.captured_at >= start_at, FundFlowSnapshot.captured_at < end_at)
+        return list(session.scalars(stmt.limit(2)))
+
+    def _recent_timestamps(self, session: Session, sector_type: str, trading_date: date, limit: int) -> list[datetime]:
+        start_at, end_at = self._date_bounds(trading_date)
+        return list(
+            reversed(
+                list(
+                    session.scalars(
+                        select(FundFlowSnapshot.captured_at)
+                        .where(
+                            FundFlowSnapshot.sector_type == sector_type,
+                            FundFlowSnapshot.captured_at >= start_at,
+                            FundFlowSnapshot.captured_at < end_at,
+                        )
+                        .distinct()
+                        .order_by(desc(FundFlowSnapshot.captured_at))
+                        .limit(max(limit, 1))
+                    )
+                )
+            )
+        )
+
+    def _resolve_trading_date(self, session: Session, sector_type: str, trading_date: date | None) -> date | None:
+        if trading_date is not None and self._latest_timestamp(session, sector_type, trading_date=trading_date) is not None:
+            return trading_date
+        if trading_date is None:
+            latest = self._latest_timestamp(session, sector_type)
+            return latest.date() if latest is not None else None
+        dates = self._latest_trading_dates(session, sector_type, limit=1)
+        return dates[0] if dates else None
+
+    def _latest_trading_dates(self, session: Session, sector_type: str, limit: int) -> list[date]:
+        rows = session.scalars(
+            select(func.date(FundFlowSnapshot.captured_at))
+            .where(FundFlowSnapshot.sector_type == sector_type)
+            .distinct()
+            .order_by(desc(func.date(FundFlowSnapshot.captured_at)))
+            .limit(max(limit, 1))
+        )
+        result: list[date] = []
+        for row in rows:
+            if row is None:
+                continue
+            result.append(row if isinstance(row, date) else date.fromisoformat(str(row)))
+        return result
+
+    @staticmethod
+    def _date_bounds(trading_date: date) -> tuple[datetime, datetime]:
+        start_at = datetime.combine(trading_date, time(0, 0))
+        return start_at, start_at + timedelta(days=1)
 
     def _build_minute_timeline(self, rows: list[FundFlowSnapshot], target_date: date) -> list[datetime]:
         if not rows:
