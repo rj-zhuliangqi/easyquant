@@ -3,6 +3,7 @@ __pycache__/
 .pytest_cache/
 .venv/
 .venv_linux/
+node_modules/
 artifacts/
 server-*.log
 *.trace.zip

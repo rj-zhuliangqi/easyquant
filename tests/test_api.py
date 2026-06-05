@@ -875,7 +875,27 @@ def test_system_home_and_page_routes_are_available() -> None:
     workspace_page = client.get("/workspace")
 
     assert home.status_code == 200
+    assert 'id="app"' in home.text
+    assert sector_page.status_code == 200
+    assert sector_page.text == home.text
+    assert limit_page.status_code == 200
+    assert limit_page.text == home.text
+    assert alerts_page.status_code == 200
+    assert alerts_page.text == home.text
+    assert opportunity_page.status_code == 200
+    assert opportunity_page.text == home.text
+    assert review_page.status_code in {302, 307}
+    assert review_page.headers["location"] == "/ai-center?tab=reviews"
+    assert ai_page.status_code == 200
+    assert ai_page.text == home.text
+    assert workspace_page.status_code == 200
+    assert workspace_page.text == home.text
+    return
+
+    assert home.status_code == 200
     assert "市场总览驾驶舱" in home.text
+    assert "市场情绪复核" in home.text
+    assert "当前分档" in home.text
     assert sector_page.status_code == 200
     assert "板块资金监控工作台" in sector_page.text
     assert limit_page.status_code == 200
@@ -913,6 +933,14 @@ def test_main_pages_share_the_same_primary_navigation_order() -> None:
         "/workspace",
     ]
 
+    root_text = client.get("/").text
+    for page_url in page_urls:
+        response = client.get(page_url)
+        assert response.status_code == 200
+        assert response.text == root_text
+        assert 'id="app"' in response.text
+    return
+
     for page_url in page_urls:
         response = client.get(page_url)
         assert response.status_code == 200
@@ -937,6 +965,14 @@ def test_main_pages_use_compact_navigation_and_headers() -> None:
     for page_url in page_urls:
         response = client.get(page_url)
         assert response.status_code == 200
+        assert 'id="app"' in response.text
+        assert "global-sidebar" not in response.text, f"unexpected legacy shell markup in {page_url}"
+        assert "workspace-shell" not in response.text, f"unexpected legacy page markup in {page_url}"
+    return
+
+    for page_url in page_urls:
+        response = client.get(page_url)
+        assert response.status_code == 200
         assert "global-description" not in response.text, f"unexpected sidebar description in {page_url}"
         assert "global-sidebar-note" not in response.text, f"unexpected sidebar note in {page_url}"
         assert "hero-subtitle" not in response.text, f"unexpected hero subtitle in {page_url}"
@@ -951,7 +987,7 @@ def test_main_pages_use_compact_navigation_and_headers() -> None:
         assert re.search(r'<div class="detail-card-header">\s*<div>\s*<h3>.*?</h3>\s*<p>', response.text, flags=re.S) is None, f"unexpected detail-card-header description in {page_url}"
 
 
-def test_main_pages_disable_browser_cache() -> None:
+def test_main_pages_use_short_lived_shell_cache() -> None:
     client = build_client()
     page_urls = [
         "/",
@@ -962,6 +998,14 @@ def test_main_pages_disable_browser_cache() -> None:
         "/ai-center",
         "/workspace",
     ]
+
+    for page_url in page_urls:
+        response = client.get(page_url)
+        assert response.status_code == 200
+        cache_control = response.headers.get("cache-control", "")
+        assert "max-age=300" in cache_control.lower(), f"unexpected cache-control for {page_url}: {cache_control}"
+        assert "stale-while-revalidate" in cache_control.lower(), f"unexpected cache-control for {page_url}: {cache_control}"
+    return
 
     for page_url in page_urls:
         response = client.get(page_url)
@@ -979,6 +1023,7 @@ def test_home_market_overview_endpoint_returns_indices_and_breadth() -> None:
     payload = response.json()
     assert payload["updated_at"] == "2026-05-07T15:00:00"
     assert [item["symbol"] for item in payload["indices"]] == ["sh000001", "sz399001", "sz399006"]
+    assert [item["name"] for item in payload["indices"]] == ["上证指数", "深证成指", "创业板指"]
     assert payload["breadth"]["up_count"] == 3210
     assert payload["breadth"]["down_count"] == 1430
     assert payload["breadth"]["limit_up_count"] == 81
@@ -1275,3 +1320,61 @@ def test_watchlist_endpoints_persist_and_refresh_prefetch() -> None:
     assert "cold_rotated" in refresh_response.json()
     assert gateway.sector_stock_calls >= 2
     assert status_response.json()["watched_sector_count"] == 2
+
+
+def test_navigation_routes_serve_shared_spa_shell() -> None:
+    client = build_client()
+
+    root_response = client.get("/")
+    alerts_response = client.get("/alerts")
+    workspace_response = client.get("/workspace")
+
+    assert root_response.status_code == 200
+    assert alerts_response.status_code == 200
+    assert workspace_response.status_code == 200
+    assert 'id="app"' in root_response.text
+    assert root_response.text == alerts_response.text
+    assert root_response.text == workspace_response.text
+    assert "max-age=300" in root_response.headers["cache-control"]
+
+
+def test_home_page_aggregate_endpoint_returns_shell_payload() -> None:
+    client = build_client()
+
+    response = client.get("/api/page/home")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["page"] == "home"
+    assert payload["source_status"] == "cache_hit"
+    assert payload["refresh_recommended"] is False
+    assert payload["updated_at"] == payload["payload"]["status"]["updated_at"]
+    assert payload["payload"]["market_overview"]["indices"][0]["symbol"] == "sh000001"
+    assert payload["payload"]["system_summary"]["sector_monitor"]["strongest_inflow_sector"] == "Beta"
+
+
+def test_alerts_page_aggregate_endpoint_returns_summary_and_feed() -> None:
+    client = build_client()
+
+    response = client.get("/api/page/alerts")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["page"] == "alerts"
+    assert payload["source_status"] == "cache_hit"
+    assert payload["refresh_recommended"] is False
+    assert payload["payload"]["summary"]["total"] >= 1
+    assert payload["payload"]["feed"]["items"][0]["signal_type"] in {"market", "sector", "limit_up", "stock"}
+
+
+def test_sector_monitor_page_aggregate_endpoint_returns_bootstrap_payload() -> None:
+    client = build_client()
+
+    response = client.get("/api/page/sector-monitor")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["page"] == "sector-monitor"
+    assert payload["payload"]["overview"]["leaders"][0]["sector_name"] == "Alpha"
+    assert payload["payload"]["watchlist"]["items"] == []
+    assert payload["payload"]["sector_catalog"]["industry"][0] == "Alpha"

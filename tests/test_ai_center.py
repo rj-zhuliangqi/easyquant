@@ -287,7 +287,7 @@ def test_ai_center_page_route_is_available() -> None:
     response = client.get("/ai-center")
 
     assert response.status_code == 200
-    assert "AI" in response.text
+    assert 'id="app"' in response.text
 
 
 def test_ai_center_bootstraps_builtin_job_registry() -> None:

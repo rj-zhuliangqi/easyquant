@@ -34,12 +34,24 @@ from app.services.limit_up import LimitUpService
 from app.services.market_signal import MarketSignalService
 from app.services.market_temperature import MarketTemperatureService
 from app.services.market_time import is_trading_time
+from app.services.page_payloads import PagePayloadService
 from app.services.realtime_cache import RealtimeCacheService
 from app.services.workspace import WorkspaceService
 
 
 logger = logging.getLogger(__name__)
 STATIC_ASSET_VERSION = "20260602-navrestore"
+SPA_SHELL_CACHE_CONTROL = "public, max-age=300, stale-while-revalidate=86400"
+SPA_SHELL_FILENAME = "spa/frontend/index.html"
+SPA_NAVIGATION_PATHS = (
+    "/",
+    "/alerts",
+    "/opportunity-pool",
+    "/sector-monitor",
+    "/limit-up-ladder",
+    "/ai-center",
+    "/workspace",
+)
 
 
 def create_session_factory(database_url: str = DEFAULT_DATABASE_URL) -> sessionmaker[Session]:
@@ -114,6 +126,12 @@ def build_static_page_response(filename: str) -> FileResponse:
     return response
 
 
+def build_spa_shell_response() -> FileResponse:
+    response = FileResponse(Path(__file__).parent / "static" / SPA_SHELL_FILENAME)
+    response.headers["Cache-Control"] = SPA_SHELL_CACHE_CONTROL
+    return response
+
+
 def _ensure_home_summary_ready(
     session: Session,
     dashboard: DashboardService,
@@ -133,6 +151,19 @@ def _ensure_home_summary_ready(
     if snapshot.get("updated_at"):
         return
     collector.collect_snapshot(session, captured_at=now.replace(second=0, microsecond=0))
+
+
+def _warm_page_payload_cache(
+    page_payloads: PagePayloadService,
+    session_factory: sessionmaker[Session],
+    pages: tuple[str, ...] = ("home", "alerts", "sector-monitor", "limit-up-ladder", "opportunity-pool", "ai-center", "workspace"),
+) -> None:
+    with session_factory() as session:
+        for page_name in pages:
+            try:
+                page_payloads.get_page_payload(page_name, session)
+            except Exception:
+                logger.exception("page payload warmup failed for %s", page_name)
 
 
 def create_app(
@@ -183,6 +214,18 @@ def create_app(
             logger.warning("ai center builtin registry bootstrap skipped because local database schema is behind")
     home_dashboard.market_temperature = market_temperature
     home_dashboard.market_signal = market_signal
+    page_payloads = PagePayloadService(
+        dashboard=dashboard,
+        home_dashboard=home_dashboard,
+        history_cache=history_cache,
+        market_signal=market_signal,
+        limit_up=limit_up,
+        realtime_cache=realtime_cache,
+        workspace=workspace,
+        ai_center=ai_center,
+        now_provider=now_provider,
+        gateway=gateway,
+    )
     scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
 
     def get_db():
@@ -276,6 +319,24 @@ def create_app(
                 coalesce=True,
                 misfire_grace_time=60,
             )
+            scheduler.add_job(
+                lambda: _warm_page_payload_cache(page_payloads, session_factory),
+                "date",
+                run_date=now_provider(),
+                id="page-payload-warmup-startup",
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=60,
+            )
+            scheduler.add_job(
+                lambda: _warm_page_payload_cache(page_payloads, session_factory),
+                "interval",
+                minutes=3,
+                id="page-payload-warmup",
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=120,
+            )
             scheduler.start()
         yield
         if scheduler.running:
@@ -286,23 +347,23 @@ def create_app(
 
     @app.get("/")
     def index() -> FileResponse:
-        return build_static_page_response("home.html")
+        return build_spa_shell_response()
 
     @app.get("/sector-monitor")
     def sector_monitor_page() -> FileResponse:
-        return build_static_page_response("index.html")
+        return build_spa_shell_response()
 
     @app.get("/limit-up-ladder")
     def limit_up_ladder_page() -> FileResponse:
-        return build_static_page_response("limit-up.html")
+        return build_spa_shell_response()
 
     @app.get("/alerts")
     def alerts_page() -> FileResponse:
-        return build_static_page_response("alerts.html")
+        return build_spa_shell_response()
 
     @app.get("/opportunity-pool")
     def opportunity_pool_page() -> FileResponse:
-        return build_static_page_response("opportunity-pool.html")
+        return build_spa_shell_response()
 
     @app.get("/review-center")
     def review_center_page() -> RedirectResponse:
@@ -314,11 +375,46 @@ def create_app(
 
     @app.get("/workspace")
     def workspace_page() -> FileResponse:
-        return build_static_page_response("workspace.html")
+        return build_spa_shell_response()
 
     @app.get("/ai-center")
     def ai_center_page() -> FileResponse:
+        return build_spa_shell_response()
+
+    @app.get("/legacy/home")
+    def legacy_home_page() -> FileResponse:
+        return build_static_page_response("home.html")
+
+    @app.get("/legacy/alerts")
+    def legacy_alerts_page() -> FileResponse:
+        return build_static_page_response("alerts.html")
+
+    @app.get("/legacy/opportunity-pool")
+    def legacy_opportunity_pool_page() -> FileResponse:
+        return build_static_page_response("opportunity-pool.html")
+
+    @app.get("/legacy/sector-monitor")
+    def legacy_sector_monitor_page() -> FileResponse:
+        return build_static_page_response("index.html")
+
+    @app.get("/legacy/limit-up-ladder")
+    def legacy_limit_up_ladder_page() -> FileResponse:
+        return build_static_page_response("limit-up.html")
+
+    @app.get("/legacy/ai-center")
+    def legacy_ai_center_page() -> FileResponse:
         return build_static_page_response("ai-center.html")
+
+    @app.get("/legacy/workspace")
+    def legacy_workspace_page() -> FileResponse:
+        return build_static_page_response("workspace.html")
+
+    @app.get("/api/page/{page_name}")
+    def page_bootstrap(page_name: str, db: Session = Depends(get_db)) -> dict:
+        try:
+            return page_payloads.get_page_payload(page_name, db)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"unknown page: {page_name}") from exc
 
     @app.get("/api/overview")
     def overview(
