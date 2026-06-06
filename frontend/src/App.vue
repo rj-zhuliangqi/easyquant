@@ -4,11 +4,15 @@ import { RouterView, useRoute } from "vue-router";
 import AppSidebar from "./components/AppSidebar.vue";
 
 const route = useRoute();
+const isLoginPage = computed(() => route.path === "/login");
 const keepAliveNames = computed(() => ["home", "alerts", "opportunity-pool", "sector-monitor", "limit-up-ladder", "ai-center", "workspace"]);
 </script>
 
 <template>
-  <div class="app-shell">
+  <div v-if="isLoginPage" class="login-shell">
+    <RouterView />
+  </div>
+  <div v-else class="app-shell">
     <AppSidebar />
     <main class="main-shell">
       <RouterView v-slot="{ Component }">

@@ -24,7 +24,11 @@ from app.config import AI_CENTER_INBOX_DIR
 from app.config import AI_CENTER_PROCESSED_DIR
 from app.config import DEFAULT_DATABASE_URL
 from app.database import Base
+from app.dependencies import AuthMiddleware
 from app.models import FundFlowSnapshot
+from app.models_auth import User
+from app.routers import auth as auth_router
+from app.services.auth import AuthService
 from app.services.collector import FundFlowCollector
 from app.services.ai_center import AiCenterService
 from app.services.dashboard import DashboardService
@@ -41,10 +45,11 @@ from app.services.workspace import WorkspaceService
 
 logger = logging.getLogger(__name__)
 STATIC_ASSET_VERSION = "20260602-navrestore"
-SPA_SHELL_CACHE_CONTROL = "public, max-age=300, stale-while-revalidate=86400"
+SPA_SHELL_CACHE_CONTROL = "no-cache, max-age=0"
 SPA_SHELL_FILENAME = "spa/frontend/index.html"
 SPA_NAVIGATION_PATHS = (
     "/",
+    "/login",
     "/alerts",
     "/opportunity-pool",
     "/sector-monitor",
@@ -91,6 +96,17 @@ def ensure_indexes(engine: Engine) -> None:
 
 def ensure_ai_center_schema(engine: Engine) -> None:
     inspector = inspect(engine)
+
+    # Ensure auth schema (is_admin column on users table)
+    if "users" in inspector.get_table_names():
+        existing_user_cols = {row[1] for row in engine.connect().execute(text("PRAGMA table_info(users)")).fetchall()}
+        if "is_admin" not in existing_user_cols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE users ADD COLUMN is_admin BOOLEAN DEFAULT 0"))
+            # Set first user as admin if is_admin not present
+            with engine.begin() as conn:
+                conn.execute(text("UPDATE users SET is_admin = 1 WHERE id = (SELECT MIN(id) FROM users)"))
+
     if "ai_jobs" not in inspector.get_table_names() or "ai_runs" not in inspector.get_table_names():
         return
 
@@ -206,12 +222,18 @@ def create_app(
         now_provider=now_provider,
     )
     ai_center = AiCenterService(gateway=gateway, now_provider=now_provider)
+    auth_service = AuthService()
     with session_factory() as bootstrap_session:
         try:
             ai_center.ensure_builtin_registry(bootstrap_session)
         except OperationalError:
             bootstrap_session.rollback()
             logger.warning("ai center builtin registry bootstrap skipped because local database schema is behind")
+        try:
+            auth_service.ensure_default_admin(bootstrap_session)
+        except OperationalError:
+            bootstrap_session.rollback()
+            logger.warning("auth default admin bootstrap skipped because local database schema is behind")
     home_dashboard.market_temperature = market_temperature
     home_dashboard.market_signal = market_signal
     page_payloads = PagePayloadService(
@@ -343,10 +365,32 @@ def create_app(
             scheduler.shutdown(wait=False)
 
     app = FastAPI(title="Sector Fund Monitor", lifespan=lifespan)
+
+    # Store auth service and session factory for middleware access
+    app.state.auth_service = auth_service
+    app.state.session_factory = session_factory
+
+    # Auth middleware (protects /api/ except /api/auth/)
+    app.add_middleware(AuthMiddleware)
+
+    # Auth routes
+    app.include_router(auth_router.router)
+
+    # Helper for auth router to access service
+    def get_auth_service():
+        return auth_service
+
+    # Expose get_db for auth router
+    app.state.get_db = get_db
+
     app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
 
     @app.get("/")
     def index() -> FileResponse:
+        return build_spa_shell_response()
+
+    @app.get("/login")
+    def login_page() -> FileResponse:
         return build_spa_shell_response()
 
     @app.get("/sector-monitor")
@@ -379,6 +423,10 @@ def create_app(
 
     @app.get("/ai-center")
     def ai_center_page() -> FileResponse:
+        return build_spa_shell_response()
+
+    @app.get("/user-mgmt")
+    def user_mgmt_page() -> FileResponse:
         return build_spa_shell_response()
 
     @app.get("/legacy/home")

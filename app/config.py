@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -11,3 +12,7 @@ AI_CENTER_PROCESSED_DIR = AI_CENTER_DIR / "processed"
 AI_CENTER_DIR.mkdir(exist_ok=True)
 AI_CENTER_INBOX_DIR.mkdir(exist_ok=True)
 AI_CENTER_PROCESSED_DIR.mkdir(exist_ok=True)
+
+# Auth configuration
+JWT_SECRET = os.environ.get("EQ_JWT_SECRET", "change-me-in-production")
+JWT_EXPIRE_HOURS = int(os.environ.get("EQ_JWT_EXPIRE_HOURS", "168"))  # 7 days

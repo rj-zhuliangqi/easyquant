@@ -39,10 +39,13 @@ select {
 .sidebar {
   position: sticky;
   top: 0;
-  min-height: 100vh;
+  height: 100vh;
   padding: 28px 18px;
   background: var(--nav-bg);
   color: #fff;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
 }
 
 .brand {
