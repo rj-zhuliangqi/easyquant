@@ -264,6 +264,7 @@ a:hover {
   font-size: 14px;
   font-weight: 500;
   position: relative;
+  min-height: 44px;
 }
 
 .nav-item::before {
@@ -491,6 +492,7 @@ a:hover {
 .list-button {
   cursor: pointer;
   color: inherit;
+  min-height: 44px;
 }
 
 .list-button:hover {
@@ -555,6 +557,7 @@ a:hover {
   background-repeat: no-repeat;
   background-position: right 12px center;
   padding-right: 36px;
+  min-height: 44px;
 }
 
 .filter-grid select:focus {
@@ -578,6 +581,7 @@ a:hover {
   font-weight: 500;
   cursor: pointer;
   transition: all var(--transition-fast);
+  min-height: 36px;
 }
 
 .ghost-button:hover {
@@ -685,6 +689,55 @@ a:hover {
 @keyframes shimmer {
   0% { background-position: -200% 0; }
   100% { background-position: 200% 0; }
+}
+
+/* ---------- 15a. Focus States (Accessibility) ---------- */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+button:focus-visible,
+.nav-item:focus-visible,
+.list-button:focus-visible,
+.ghost-button:focus-visible,
+.act-btn:focus-visible,
+.sidebar-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px var(--accent-soft);
+}
+
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 0;
+}
+
+/* ---------- 15b. Reduced Motion ---------- */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .page {
+    animation: none;
+  }
+
+  .skeleton-item {
+    animation: none !important;
+    background: var(--surface-hover);
+  }
+
+  .query-state.fetching span::before {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
 }
 
 /* ---------- 16. Scrollbar (global) ---------- */

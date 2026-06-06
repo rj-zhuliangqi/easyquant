@@ -14,6 +14,14 @@ const props = defineProps({
     type: String,
     default: "dark",
   },
+  title: {
+    type: String,
+    default: "",
+  },
+  description: {
+    type: String,
+    default: "",
+  },
 });
 
 const host = ref(null);
@@ -93,6 +101,26 @@ function applyOption() {
   chart.setOption(themedOption, true);
 }
 
+// Generate screen reader summary from chart data
+function generateSummary() {
+  if (!props.option) return "";
+  const series = props.option.series || [];
+  if (!series.length) return props.description || "图表数据加载中";
+
+  const summaries = series.map((s) => {
+    const data = s.data || [];
+    if (!data.length) return `${s.name || "数据系列"}: 无数据`;
+    const values = data.filter((v) => v != null);
+    if (!values.length) return `${s.name || "数据系列"}: 无有效数据`;
+    const max = Math.max(...values);
+    const min = Math.min(...values);
+    const avg = (values.reduce((a, b) => a + b, 0) / values.length).toFixed(2);
+    return `${s.name || "数据系列"}: 共 ${values.length} 个数据点，最高 ${max}，最低 ${min}，平均 ${avg}`;
+  });
+
+  return summaries.join("；") + (props.description ? `。${props.description}` : "");
+}
+
 onMounted(() => {
   chart = window.echarts?.init(host.value);
   applyOption();
@@ -111,13 +139,40 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="host" class="chart-panel"></div>
+  <figure class="chart-wrapper" role="img" :aria-label="title || '数据图表'">
+    <div ref="host" class="chart-panel" role="img" :aria-label="generateSummary()"></div>
+    <figcaption class="sr-only">{{ generateSummary() }}</figcaption>
+  </figure>
 </template>
 
 <style scoped>
+.chart-wrapper {
+  margin: 0;
+  padding: 0;
+}
+
 .chart-panel {
   height: 320px;
   border-radius: var(--radius-md);
   overflow: hidden;
+}
+
+/* Screen reader only */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (max-width: 640px) {
+  .chart-panel {
+    height: 240px;
+  }
 }
 </style>
