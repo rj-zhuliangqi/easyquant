@@ -2,7 +2,11 @@
 import { computed } from "vue";
 import { useQuery } from "@tanstack/vue-query";
 import QueryState from "../components/QueryState.vue";
+import MetricCard from "../components/ui/MetricCard.vue";
+import DataPanel from "../components/ui/DataPanel.vue";
+import EmptyState from "../components/ui/EmptyState.vue";
 import { fetchJson, pageQueryKey } from "../lib/api";
+import { formatDateTime } from "../lib/formatters";
 
 defineOptions({ name: "ai-center" });
 
@@ -29,45 +33,60 @@ const queryFetching = computed(() => pageQuery.isFetching.value);
     </header>
 
     <section class="card-grid">
-      <article class="metric-card">
-        <span>当日推荐</span>
-        <strong>{{ summary.today_pick_count ?? 0 }}</strong>
-      </article>
-      <article class="metric-card">
-        <span>昨日跟踪</span>
-        <strong>{{ summary.yesterday_followup_count ?? 0 }}</strong>
-      </article>
-      <article class="metric-card">
-        <span>经验条目</span>
-        <strong>{{ summary.experience_count ?? 0 }}</strong>
-      </article>
-      <article class="metric-card">
-        <span>成功任务</span>
-        <strong>{{ summary.ops_summary?.success_jobs ?? 0 }}/{{ summary.ops_summary?.total_jobs ?? 0 }}</strong>
-      </article>
+      <MetricCard
+        label="当日推荐"
+        :value="summary.today_pick_count ?? 0"
+        :loading="queryLoading"
+        trend="up"
+      />
+      <MetricCard
+        label="昨日跟踪"
+        :value="summary.yesterday_followup_count ?? 0"
+        :loading="queryLoading"
+      />
+      <MetricCard
+        label="经验条目"
+        :value="summary.experience_count ?? 0"
+        :loading="queryLoading"
+      />
+      <MetricCard
+        label="成功任务"
+        :value="`${summary.ops_summary?.success_jobs ?? 0}/${summary.ops_summary?.total_jobs ?? 0}`"
+        :loading="queryLoading"
+        :trend="(summary.ops_summary?.success_jobs || 0) >= (summary.ops_summary?.total_jobs || 0) * 0.8 ? 'up' : 'neutral'"
+      />
     </section>
 
     <section class="card-grid two-up">
-      <article class="panel">
-        <div class="panel-head"><h3>任务列表</h3></div>
+      <DataPanel title="任务列表">
         <div class="list-stack">
           <div v-for="item in payload.jobs?.items || []" :key="item.id" class="row-card">
             <strong>{{ item.name }}</strong>
             <span>{{ item.display_group }}</span>
             <small>{{ item.latest_run_summary?.status || "未运行" }}</small>
           </div>
+          <EmptyState
+            v-if="!(payload.jobs?.items?.length) && !queryLoading"
+            title="暂无任务"
+            description="当前没有配置的任务"
+          />
         </div>
-      </article>
-      <article class="panel">
-        <div class="panel-head"><h3>最近运行</h3></div>
+      </DataPanel>
+
+      <DataPanel title="最近运行">
         <div class="list-stack">
           <div v-for="item in payload.runs?.items || []" :key="item.id" class="row-card">
             <strong>{{ item.job_name || "未命名任务" }}</strong>
             <span>{{ item.run_type }}</span>
             <small>{{ item.status }}</small>
           </div>
+          <EmptyState
+            v-if="!(payload.runs?.items?.length) && !queryLoading"
+            title="暂无运行记录"
+            description="当前没有运行记录"
+          />
         </div>
-      </article>
+      </DataPanel>
     </section>
   </section>
 </template>

@@ -2,6 +2,9 @@
 import { computed, ref, watch } from "vue";
 import { useQuery } from "@tanstack/vue-query";
 import QueryState from "../components/QueryState.vue";
+import MetricCard from "../components/ui/MetricCard.vue";
+import DataPanel from "../components/ui/DataPanel.vue";
+import EmptyState from "../components/ui/EmptyState.vue";
 import { fetchJson, pageQueryKey } from "../lib/api";
 import { formatDateTime } from "../lib/formatters";
 
@@ -106,26 +109,14 @@ const queryFetching = computed(() => bootstrapQuery.isFetching.value || listFetc
       </label>
     </section>
 
-    <section class="card-grid">
-      <article class="metric-card">
-        <span>预警总数</span>
-        <strong>{{ summary.total ?? 0 }}</strong>
-      </article>
-      <article class="metric-card">
-        <span>高优先级</span>
-        <strong>{{ summary.high_priority_count ?? 0 }}</strong>
-      </article>
-      <article class="metric-card">
-        <span>顶部信号</span>
-        <strong>{{ summary.top_signal?.subject_name || "--" }}</strong>
-      </article>
+    <section class="card-grid three-up">
+      <MetricCard label="预警总数" :value="summary.total ?? 0" :loading="queryLoading" />
+      <MetricCard label="高优先级" :value="summary.high_priority_count ?? 0" :loading="queryLoading" trend="warning" />
+      <MetricCard label="顶部信号" :value="summary.top_signal?.subject_name || '--'" :loading="queryLoading" />
     </section>
 
     <section class="card-grid two-up">
-      <article class="panel">
-        <div class="panel-head">
-          <h3>预警时间流</h3>
-        </div>
+      <DataPanel title="预警时间流">
         <div class="list-stack">
           <button
             v-for="(item, index) in items"
@@ -138,22 +129,26 @@ const queryFetching = computed(() => bootstrapQuery.isFetching.value || listFetc
             <span>{{ item.subject_name }} · {{ item.freshness_level }}</span>
             <small>{{ item.reason }}</small>
           </button>
+          <EmptyState
+            v-if="!items.length && !queryLoading"
+            title="暂无预警"
+            description="当前筛选条件下没有匹配的信号"
+          />
         </div>
-      </article>
-      <article class="panel">
-        <div class="panel-head">
-          <h3>信号详情</h3>
-        </div>
+      </DataPanel>
+
+      <DataPanel title="信号详情">
         <div v-if="activeAlert" class="detail-block">
           <strong>{{ activeAlert.title }}</strong>
           <p>{{ activeAlert.reason }}</p>
           <small>{{ activeAlert.subject_name }} · {{ activeAlert.status }} · {{ activeAlert.source_label }}</small>
         </div>
-        <div v-else class="detail-block">
-          <strong>暂无预警</strong>
-          <p>当前筛选条件下没有匹配的信号。</p>
-        </div>
-      </article>
+        <EmptyState
+          v-else
+          title="暂无预警"
+          description="当前筛选条件下没有匹配的信号"
+        />
+      </DataPanel>
     </section>
   </section>
 </template>

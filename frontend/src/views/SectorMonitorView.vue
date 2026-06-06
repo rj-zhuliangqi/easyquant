@@ -3,6 +3,9 @@ import { computed, ref, watch } from "vue";
 import { useQuery } from "@tanstack/vue-query";
 import EChartPanel from "../components/EChartPanel.vue";
 import QueryState from "../components/QueryState.vue";
+import MetricCard from "../components/ui/MetricCard.vue";
+import DataPanel from "../components/ui/DataPanel.vue";
+import EmptyState from "../components/ui/EmptyState.vue";
 import { fetchJson, pageQueryKey } from "../lib/api";
 import { formatAmount, formatDateTime, formatPercent } from "../lib/formatters";
 
@@ -40,7 +43,7 @@ const workspaceQuery = useQuery({
 
 const comparisonOption = computed(() => ({
   tooltip: { trigger: "axis" },
-  legend: { top: 0, textStyle: { color: "#355070" } },
+  legend: { top: 0, textStyle: { color: "#94a3b8" } },
   grid: { left: 24, right: 16, top: 32, bottom: 24 },
   xAxis: {
     type: "category",
@@ -70,10 +73,7 @@ const comparisonOption = computed(() => ({
     </header>
 
     <section class="card-grid three-up">
-      <article class="panel">
-        <div class="panel-head">
-          <h3>强势流入</h3>
-        </div>
+      <DataPanel title="强势流入">
         <div class="list-stack">
           <button
             v-for="item in payload.overview?.leaders || []"
@@ -84,65 +84,73 @@ const comparisonOption = computed(() => ({
           >
             <strong>{{ item.sector_name }}</strong>
             <span>{{ formatAmount(item.net_amount) }}</span>
-            <small>{{ formatPercent(item.net_strength * 100) }}</small>
+            <small class="text-success">{{ formatPercent(item.net_strength * 100) }}</small>
           </button>
+          <EmptyState
+            v-if="!(payload.overview?.leaders?.length) && !queryLoading"
+            title="暂无数据"
+            description="当前没有强势流入板块"
+          />
         </div>
-      </article>
-      <article class="panel">
-        <div class="panel-head">
-          <h3>弱势流出</h3>
-        </div>
+      </DataPanel>
+
+      <DataPanel title="弱势流出">
         <div class="list-stack">
           <div v-for="item in payload.overview?.laggards || []" :key="item.sector_name" class="row-card">
             <strong>{{ item.sector_name }}</strong>
             <span>{{ formatAmount(item.net_amount) }}</span>
-            <small>{{ formatPercent(item.net_strength * 100) }}</small>
+            <small class="text-danger">{{ formatPercent(item.net_strength * 100) }}</small>
           </div>
+          <EmptyState
+            v-if="!(payload.overview?.laggards?.length) && !queryLoading"
+            title="暂无数据"
+            description="当前没有弱势流出板块"
+          />
         </div>
-      </article>
-      <article class="panel">
-        <div class="panel-head">
-          <h3>监控信号</h3>
-        </div>
+      </DataPanel>
+
+      <DataPanel title="监控信号">
         <div class="list-stack">
           <div v-for="item in payload.signals?.items || []" :key="item.sector_name" class="row-card">
             <strong>{{ item.sector_name }}</strong>
             <span>持续性 {{ item.persistence }}</span>
             <small>加速度 {{ item.acceleration_1 }}</small>
           </div>
+          <EmptyState
+            v-if="!(payload.signals?.items?.length) && !queryLoading"
+            title="暂无信号"
+            description="当前没有监控信号"
+          />
         </div>
-      </article>
+      </DataPanel>
     </section>
 
-    <section class="panel">
-      <div class="panel-head">
-        <h3>板块对比趋势</h3>
-      </div>
+    <DataPanel title="板块对比趋势">
       <EChartPanel :option="comparisonOption" />
-    </section>
+    </DataPanel>
 
     <section class="card-grid two-up">
-      <article class="panel">
-        <div class="panel-head">
-          <h3>选中板块摘要</h3>
-        </div>
+      <DataPanel title="选中板块摘要">
         <div class="detail-block">
           <strong>{{ workspaceQuery.data?.resolved_sector_name || selectedSector || "等待选择" }}</strong>
           <p>{{ workspaceQuery.data?.detail?.summary_text || "当前聚合视图优先保留上次内容，后台刷新明细。" }}</p>
           <small>更新时间 {{ formatDateTime(workspaceQuery.data?.detail_updated_at || workspaceQuery.data?.detail?.captured_at) }}</small>
         </div>
-      </article>
-      <article class="panel">
-        <div class="panel-head">
-          <h3>观察池</h3>
-        </div>
+      </DataPanel>
+
+      <DataPanel title="观察池">
         <div class="list-stack">
           <div v-for="item in payload.watchlist?.items || []" :key="`${item.sector_type}-${item.sector_name}`" class="row-card">
             <strong>{{ item.sector_name }}</strong>
             <small>{{ item.sector_type }}</small>
           </div>
+          <EmptyState
+            v-if="!(payload.watchlist?.items?.length) && !queryLoading"
+            title="暂无观察"
+            description="观察池为空"
+          />
         </div>
-      </article>
+      </DataPanel>
     </section>
   </section>
 </template>

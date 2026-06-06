@@ -16,10 +16,30 @@ const keepAliveNames = computed(() => ["home", "alerts", "opportunity-pool", "se
     <AppSidebar />
     <main class="main-shell">
       <RouterView v-slot="{ Component }">
-        <KeepAlive :include="keepAliveNames">
-          <component :is="Component" :key="route.name" />
-        </KeepAlive>
+        <Transition name="page-fade" mode="out-in">
+          <KeepAlive :include="keepAliveNames">
+            <component :is="Component" :key="route.name" />
+          </KeepAlive>
+        </Transition>
       </RouterView>
     </main>
   </div>
 </template>
+
+<style>
+/* Page transition animation */
+.page-fade-enter-active,
+.page-fade-leave-active {
+  transition: opacity var(--transition-normal), transform var(--transition-normal);
+}
+
+.page-fade-enter-from {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+.page-fade-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+</style>

@@ -2,6 +2,8 @@
 import { computed } from "vue";
 import { useQuery } from "@tanstack/vue-query";
 import QueryState from "../components/QueryState.vue";
+import DataPanel from "../components/ui/DataPanel.vue";
+import EmptyState from "../components/ui/EmptyState.vue";
 import { fetchJson, pageQueryKey } from "../lib/api";
 import { formatDateTime } from "../lib/formatters";
 
@@ -30,34 +32,48 @@ const queryUpdatedAt = computed(() => formatDateTime(pageQuery.data.value?.updat
     </header>
 
     <section class="card-grid three-up">
-      <article class="panel">
-        <div class="panel-head"><h3>观察板块</h3></div>
+      <DataPanel title="观察板块">
         <div class="list-stack">
           <div v-for="item in payload.watched_sectors || []" :key="`${item.sector_type}-${item.sector_name}`" class="row-card">
             <strong>{{ item.sector_name }}</strong>
             <small>{{ item.sector_type }}</small>
           </div>
+          <EmptyState
+            v-if="!(payload.watched_sectors?.length) && !queryLoading"
+            title="暂无观察板块"
+            description="在板块监控中添加观察"
+          />
         </div>
-      </article>
-      <article class="panel">
-        <div class="panel-head"><h3>观察个股</h3></div>
+      </DataPanel>
+
+      <DataPanel title="观察个股">
         <div class="list-stack">
           <div v-for="item in payload.watched_stocks || []" :key="item.stock_code" class="row-card">
             <strong>{{ item.stock_name }}</strong>
             <span>{{ item.stock_code }}</span>
             <small>{{ item.watch_reason || "等待备注" }}</small>
           </div>
+          <EmptyState
+            v-if="!(payload.watched_stocks?.length) && !queryLoading"
+            title="暂无观察个股"
+            description="添加个股到观察列表"
+          />
         </div>
-      </article>
-      <article class="panel">
-        <div class="panel-head"><h3>备注</h3></div>
+      </DataPanel>
+
+      <DataPanel title="备注">
         <div class="list-stack">
           <div v-for="item in payload.notes || []" :key="`${item.subject_type}-${item.subject_key}`" class="row-card">
             <strong>{{ item.subject_key }}</strong>
             <small>{{ item.content }}</small>
           </div>
+          <EmptyState
+            v-if="!(payload.notes?.length) && !queryLoading"
+            title="暂无备注"
+            description="添加你的交易备注"
+          />
         </div>
-      </article>
+      </DataPanel>
     </section>
   </section>
 </template>

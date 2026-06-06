@@ -3,6 +3,9 @@ import { computed, ref } from "vue";
 import { useQuery } from "@tanstack/vue-query";
 import EChartPanel from "../components/EChartPanel.vue";
 import QueryState from "../components/QueryState.vue";
+import MetricCard from "../components/ui/MetricCard.vue";
+import DataPanel from "../components/ui/DataPanel.vue";
+import EmptyState from "../components/ui/EmptyState.vue";
 import { fetchJson, pageQueryKey } from "../lib/api";
 import { formatAmount, formatDateTime, formatNumber, formatPercent } from "../lib/formatters";
 
@@ -40,10 +43,19 @@ const chartOption = computed(() => ({
       type: "line",
       smooth: true,
       data: (selectedIndex.value?.points || []).map((item) => item.value),
-      areaStyle: {},
-      lineStyle: { width: 3 },
+      areaStyle: {
+        color: {
+          type: "linear",
+          x: 0, y: 0, x2: 0, y2: 1,
+          colorStops: [
+            { offset: 0, color: "rgba(6, 182, 212, 0.3)" },
+            { offset: 1, color: "rgba(6, 182, 212, 0.02)" },
+          ],
+        },
+      },
+      lineStyle: { width: 2, color: "#06b6d4" },
       showSymbol: false,
-      color: "#0f8b8d",
+      color: "#06b6d4",
     },
   ],
 }));
@@ -61,34 +73,38 @@ const chartOption = computed(() => ({
     </header>
 
     <section class="card-grid">
-      <article class="metric-card">
-        <span>监控状态</span>
-        <strong>{{ status.market_open ? "盘中运行" : "非交易时段" }}</strong>
-        <small>{{ formatDateTime(status.updated_at) }}</small>
-      </article>
-      <article class="metric-card">
-        <span>最强流入板块</span>
-        <strong>{{ systemSummary.sector_monitor?.strongest_inflow_sector || "--" }}</strong>
-        <small>{{ formatAmount(systemSummary.sector_monitor?.strongest_inflow_amount) }}</small>
-      </article>
-      <article class="metric-card">
-        <span>最高连板</span>
-        <strong>{{ systemSummary.limit_up_ladder?.highest_board ?? "--" }}</strong>
-        <small>晋级率 {{ formatPercent((systemSummary.limit_up_ladder?.promotion_rate || 0) * 100) }}</small>
-      </article>
-      <article class="metric-card">
-        <span>上涨 / 下跌</span>
-        <strong>{{ marketOverview.breadth?.up_count ?? 0 }} / {{ marketOverview.breadth?.down_count ?? 0 }}</strong>
-        <small>活跃度 {{ formatPercent(marketOverview.breadth?.market_activity) }}</small>
-      </article>
+      <MetricCard
+        label="监控状态"
+        :value="status.market_open ? '盘中运行' : '非交易时段'"
+        :sub-value="formatDateTime(status.updated_at)"
+        :loading="queryLoading"
+        trend="neutral"
+      />
+      <MetricCard
+        label="最强流入板块"
+        :value="systemSummary.sector_monitor?.strongest_inflow_sector || '--'"
+        :sub-value="formatAmount(systemSummary.sector_monitor?.strongest_inflow_amount)"
+        :loading="queryLoading"
+        trend="up"
+      />
+      <MetricCard
+        label="最高连板"
+        :value="systemSummary.limit_up_ladder?.highest_board ?? '--'"
+        :sub-value="`晋级率 ${formatPercent((systemSummary.limit_up_ladder?.promotion_rate || 0) * 100)}`"
+        :loading="queryLoading"
+        trend="up"
+      />
+      <MetricCard
+        label="上涨 / 下跌"
+        :value="`${marketOverview.breadth?.up_count ?? 0} / ${marketOverview.breadth?.down_count ?? 0}`"
+        :sub-value="`活跃度 ${formatPercent(marketOverview.breadth?.market_activity)}`"
+        :loading="queryLoading"
+        :trend="(marketOverview.breadth?.up_count || 0) > (marketOverview.breadth?.down_count || 0) ? 'up' : 'down'"
+      />
     </section>
 
-    <section class="panel">
-      <div class="panel-head">
-        <div>
-          <h3>指数趋势</h3>
-          <p>{{ selectedIndex?.name || "等待数据" }}</p>
-        </div>
+    <DataPanel title="指数趋势" :subtitle="selectedIndex?.name || '等待数据'">
+      <template #actions>
         <div class="switch-row">
           <button
             v-for="item in marketOverview.indices || []"
@@ -100,33 +116,30 @@ const chartOption = computed(() => ({
             {{ item.name }}
           </button>
         </div>
-      </div>
+      </template>
       <EChartPanel :option="chartOption" />
-    </section>
+    </DataPanel>
 
     <section class="card-grid two-up">
-      <article class="panel">
-        <div class="panel-head">
-          <h3>指数快照</h3>
-        </div>
+      <DataPanel title="指数快照">
         <div class="list-stack">
           <div v-for="item in marketOverview.indices || []" :key="item.symbol" class="row-card">
             <strong>{{ item.name }}</strong>
             <span>{{ formatNumber(item.price) }}</span>
-            <small>{{ formatPercent(item.change_percent) }}</small>
+            <small :class="{ 'text-success': (item.change_percent || 0) > 0, 'text-danger': (item.change_percent || 0) < 0 }">
+              {{ formatPercent(item.change_percent) }}
+            </small>
           </div>
         </div>
-      </article>
-      <article class="panel">
-        <div class="panel-head">
-          <h3>行动优先级</h3>
-        </div>
+      </DataPanel>
+
+      <DataPanel title="行动优先级">
         <div class="detail-block">
           <strong>{{ systemSummary.action_priority?.title || "--" }}</strong>
           <p>{{ systemSummary.action_priority?.reason || "等待数据" }}</p>
           <small>告警 {{ systemSummary.alert_summary?.count ?? 0 }} 条，机会 {{ systemSummary.opportunity_summary?.count ?? 0 }} 个</small>
         </div>
-      </article>
+      </DataPanel>
     </section>
   </section>
 </template>

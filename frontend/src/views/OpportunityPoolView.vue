@@ -2,6 +2,9 @@
 import { computed, ref, watch } from "vue";
 import { useQuery } from "@tanstack/vue-query";
 import QueryState from "../components/QueryState.vue";
+import MetricCard from "../components/ui/MetricCard.vue";
+import DataPanel from "../components/ui/DataPanel.vue";
+import EmptyState from "../components/ui/EmptyState.vue";
 import { fetchJson, pageQueryKey } from "../lib/api";
 
 defineOptions({ name: "opportunity-pool" });
@@ -96,10 +99,7 @@ const queryFetching = computed(() => bootstrapQuery.isFetching.value || queryFet
     </section>
 
     <section class="card-grid two-up">
-      <article class="panel">
-        <div class="panel-head">
-          <h3>候选列表</h3>
-        </div>
+      <DataPanel title="候选列表">
         <div class="list-stack">
           <button
             v-for="(item, index) in items"
@@ -112,21 +112,26 @@ const queryFetching = computed(() => bootstrapQuery.isFetching.value || queryFet
             <span>{{ item.theme || item.mode || "--" }}</span>
             <small>{{ item.entry_reason || item.reason_summary || "--" }}</small>
           </button>
+          <EmptyState
+            v-if="!items.length && !queryLoading"
+            title="暂无候选"
+            description="当前模式下没有匹配的机会"
+          />
         </div>
-      </article>
-      <article class="panel">
-        <div class="panel-head">
-          <h3>详情</h3>
-        </div>
+      </DataPanel>
+
+      <DataPanel title="详情">
         <div v-if="activeItem" class="detail-block">
           <strong>{{ activeItem.stock_name || activeItem.sector_name || "--" }}</strong>
           <p>{{ activeItem.entry_reason || activeItem.reason_summary || "--" }}</p>
           <small>{{ activeItem.risk_flag || activeItem.signal_context || "等待风控标签" }}</small>
         </div>
-        <div v-else class="detail-block">
-          <strong>暂无候选</strong>
-        </div>
-      </article>
+        <EmptyState
+          v-else
+          title="暂无候选"
+          description="选择列表中的项目查看详情"
+        />
+      </DataPanel>
     </section>
   </section>
 </template>
