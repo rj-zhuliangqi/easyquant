@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>复盘中心</title>
+    <link rel="stylesheet" href="/static/alerts.css?v=20260602-navrestore" />
+      <link rel="stylesheet" href="/static/global-sidebar.css?v=20260602-navrestore" />
+  </head>
+  <body>
+    <div class="alerts-shell">
+                  <aside class="global-sidebar">
+        <div class="global-brand">
+          <h1 class="global-title">&#22797;&#30424;&#20013;&#24515;</h1>
+        </div>
+
+        <nav class="global-nav" aria-label="Main navigation">
+          <a class="global-link" href="/">&#39318;&#39029;</a>
+          <a class="global-link" href="/alerts">&#39044;&#35686;&#20013;&#24515;</a>
+          <a class="global-link" href="/opportunity-pool">&#26426;&#20250;&#27744;</a>
+          <a class="global-link" href="/sector-monitor">&#26495;&#22359;&#36164;&#37329;&#30417;&#25511;</a>
+          <a class="global-link" href="/limit-up-ladder">A&#32929;&#36830;&#26495;&#26799;&#38431;</a>
+          <a class="global-link active" href="/ai-center">AI &#20013;&#21488;</a>
+          <a class="global-link" href="/workspace">&#20010;&#20154;&#35266;&#23519;&#21488;</a>
+        </nav>
+      </aside>
+      <main class="alerts-main">
+        <header class="hero-panel"><div><h2>&#22797;&#30424;&#20013;&#24515;</h2></div><div id="review-status" class="hero-state">加载中</div></header>
+        <section class="filters-panel"><label><span>交易日</span><select id="review-date-select"></select></label></section>
+        <section id="review-temperature-summary" class="summary-grid"></section>
+        <section class="content-grid">
+          <section class="feed-panel"><div class="panel-head"><h3>关键节点时间轴</h3></div><div id="review-timeline" class="alerts-feed"></div></section>
+          <aside class="detail-panel"><div class="panel-head"><h3>复盘结论</h3></div><div id="review-day-detail" class="detail-card empty">等待数据</div></aside>
+        </section>
+      </main>
+    </div>
+    <script src="/static/review-center.js?v=20260602-navrestore"></script>
+  </body>
+</html>

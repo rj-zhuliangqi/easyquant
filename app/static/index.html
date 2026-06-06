@@ -3,192 +3,380 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>板块资金对比监控台</title>
-    <link rel="stylesheet" href="/static/styles.css" />
-    <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+    <title>&#26495;&#22359;&#36164;&#37329;&#30417;&#25511;&#24037;&#20316;&#21488;</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260602-navrestore" />
+    <script defer src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+      <link rel="stylesheet" href="/static/global-sidebar.css?v=20260602-navrestore" />
   </head>
   <body>
-    <div class="app-shell">
-      <header class="topbar">
-        <div>
-          <h1>板块资金对比监控台</h1>
-          <p id="status-text">正在加载监控状态...</p>
+    <!-- 板块资金监控工作台 -->
+    <div class="workspace-shell">
+                  <aside class="global-sidebar">
+        <div class="global-brand">
+          <h1 class="global-title">&#26495;&#22359;&#36164;&#37329;&#30417;&#25511;</h1>
         </div>
-        <div class="toolbar">
-          <div class="tab-group" id="sector-tabs">
-            <button class="tab-button active" data-sector-type="industry">行业板块</button>
-            <button class="tab-button" data-sector-type="concept">概念板块</button>
-          </div>
-          <div class="control-group">
-            <label for="granularity-select">周期</label>
-            <select id="granularity-select">
-              <option value="minute">分钟</option>
-              <option value="day">天级</option>
-            </select>
-          </div>
-          <div class="control-group hidden" id="trading-date-control">
-            <label for="trading-date-select">交易日</label>
-            <select id="trading-date-select"></select>
-          </div>
-          <div class="control-group" id="lookback-control">
-            <label for="lookback-select">范围</label>
-            <select id="lookback-select">
-              <option value="1">1日</option>
-              <option value="3">3日</option>
-              <option value="5">5日</option>
-              <option value="10">10日</option>
-              <option value="20">20日</option>
-              <option value="30">30日</option>
-            </select>
-          </div>
-          <div class="control-group">
-            <label for="metric-select">口径</label>
-            <select id="metric-select">
-              <option value="net_strength">净流入强度</option>
-              <option value="net_amount">净流入绝对值</option>
-            </select>
-          </div>
-          <div class="control-group">
-            <label for="limit-select">Top N</label>
-            <select id="limit-select">
-              <option value="6">6</option>
-              <option value="8" selected>8</option>
-              <option value="12">12</option>
-              <option value="20">20</option>
-              <option value="0">全部</option>
-            </select>
-          </div>
-          <button id="refresh-button" class="primary-button">立即采样</button>
-        </div>
-      </header>
 
-      <section class="panel watchlist-panel">
-        <div class="panel-header">
+        <nav class="global-nav" aria-label="Main navigation">
+          <a class="global-link" href="/">&#39318;&#39029;</a>
+          <a class="global-link" href="/alerts">&#39044;&#35686;&#20013;&#24515;</a>
+          <a class="global-link" href="/opportunity-pool">&#26426;&#20250;&#27744;</a>
+          <a class="global-link active" href="/sector-monitor">&#26495;&#22359;&#36164;&#37329;&#30417;&#25511;</a>
+          <a class="global-link" href="/limit-up-ladder">A&#32929;&#36830;&#26495;&#26799;&#38431;</a>
+          <a class="global-link" href="/ai-center">AI &#20013;&#21488;</a>
+          <a class="global-link" href="/workspace">&#20010;&#20154;&#35266;&#23519;&#21488;</a>
+        </nav>
+      </aside>
+
+      <main class="workspace-main">
+        <div class="app-shell">
+          <header class="hero">
+        <div class="hero-grid">
+          <h1>&#26495;&#22359;&#36164;&#37329;&#30417;&#25511;&#24037;&#20316;&#21488;</h1>
+          <div class="hero-status-card">
+            <div class="status-kicker">Realtime State</div>
+            <p id="status-text" class="hero-status-text">&#27491;&#22312;&#21152;&#36733;&#30417;&#25511;&#29366;&#24577;...</p>
+          </div>
+        </div>
+          </header>
+
+          <section class="session-deskbar" id="session-deskbar">
+            <article class="deskbar-card">
+              <span>盘中状态</span>
+              <strong id="deskbar-status">等待状态</strong>
+            </article>
+            <article class="deskbar-card">
+              <span>当前焦点</span>
+              <strong id="deskbar-focus">等待选中板块</strong>
+            </article>
+            <article class="deskbar-card">
+              <span>监控口径</span>
+              <strong id="deskbar-scope">等待配置</strong>
+            </article>
+            <article class="deskbar-card">
+              <span>自选与缓存</span>
+              <strong id="deskbar-watchlist">等待数据</strong>
+            </article>
+          </section>
+
+          <section class="intel-ribbon" id="sector-intel-ribbon">
+            <article class="intel-card">
+              <span>最强流入</span>
+              <strong id="intel-strongest">等待数据</strong>
+            </article>
+            <article class="intel-card">
+              <span>最弱流出</span>
+              <strong id="intel-weakest">等待数据</strong>
+            </article>
+            <article class="intel-card">
+              <span>异动信号</span>
+              <strong id="intel-signals">等待数据</strong>
+            </article>
+            <article class="intel-card">
+              <span>对比序列</span>
+              <strong id="intel-series">等待数据</strong>
+            </article>
+          </section>
+
+      <section class="panel command-panel config-panel">
+        <div class="panel-header panel-header-wide">
           <div>
-            <h2>自选板块池</h2>
-            <p>从行业或概念列表里直接选择，点击自选标签可快速切换。</p>
+            <h2>&#33258;&#36873;&#26495;&#22359;&#24037;&#20316;&#21306;</h2>
+          </div>
+          <div class="panel-state panel-state-static">&#37197;&#32622;&#21363;&#26102;&#29983;&#25928;</div>
+        </div>
+
+        <div class="command-grid">
+          <div class="config-block command-block primary-controls">
+            <div class="control-stack">
+              <div class="stack-label">&#30417;&#25511;&#32452;</div>
+              <div class="tab-group" id="sector-tabs">
+                <button class="tab-button active" data-sector-type="industry">&#34892;&#19994;&#26495;&#22359;</button>
+                <button class="tab-button" data-sector-type="concept">&#27010;&#24565;&#26495;&#22359;</button>
+              </div>
+            </div>
+
+            <label class="control-group">
+              <span>&#21608;&#26399;</span>
+              <select id="granularity-select">
+                <option value="minute">&#20998;&#38047;</option>
+                <option value="day">&#22825;&#32423;</option>
+              </select>
+            </label>
+            <label class="control-group" id="trading-date-control">
+              <span>&#20132;&#26131;&#26085;</span>
+              <select id="trading-date-select"></select>
+            </label>
+            <label class="control-group hidden" id="lookback-control">
+              <span>&#33539;&#22260;</span>
+              <select id="lookback-select">
+                <option value="1">1&#26085;</option>
+                <option value="3">3&#26085;</option>
+                <option value="5">5&#26085;</option>
+                <option value="10">10&#26085;</option>
+                <option value="20">20&#26085;</option>
+                <option value="30">30&#26085;</option>
+              </select>
+            </label>
+            <label class="control-group">
+              <span>&#21475;&#24452;</span>
+              <select id="metric-select">
+                <option value="net_strength">&#20928;&#27969;&#20837;&#24378;&#24230;</option>
+                <option value="net_amount">&#20928;&#27969;&#20837;&#32477;&#23545;&#20540;</option>
+              </select>
+            </label>
+            <label class="control-group">
+              <span>Top N</span>
+              <select id="limit-select">
+                <option value="6">6</option>
+                <option value="8" selected>8</option>
+                <option value="12">12</option>
+                <option value="20">20</option>
+                <option value="0">&#20840;&#37096;</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="config-block command-block secondary-controls">
+            <div class="control-stack grow-stack">
+              <div class="stack-label">&#33258;&#36873;&#32534;&#36753;</div>
+              <div class="control-row">
+                <label class="control-group">
+                  <span>&#31867;&#22411;</span>
+                  <select id="watchlist-type-select">
+                    <option value="industry">&#34892;&#19994;&#26495;&#22359;</option>
+                    <option value="concept">&#27010;&#24565;&#26495;&#22359;</option>
+                  </select>
+                </label>
+                <label class="control-group grow">
+                  <span>&#26495;&#22359;</span>
+                  <input id="watchlist-sector-search" type="text" placeholder="&#25628;&#32034;&#26495;&#22359;&#25110;&#27010;&#24565;" autocomplete="off" />
+                  <select id="watchlist-sector-select"></select>
+                  <div id="watchlist-sector-search-meta" class="control-hint" hidden></div>
+                </label>
+              </div>
+            </div>
+            <div class="action-stack">
+              <button id="refresh-button" class="primary-button">&#31435;&#21363;&#37319;&#26679;</button>
+              <button id="watchlist-add-button" class="ghost-button">&#21152;&#20837;&#33258;&#36873;</button>
+            </div>
           </div>
         </div>
-        <div class="watchlist-toolbar">
-          <div class="control-group">
-            <label for="watchlist-type-select">类型</label>
-            <select id="watchlist-type-select">
-              <option value="industry">行业板块</option>
-              <option value="concept">概念板块</option>
-            </select>
+
+        <div class="watchlist-strip">
+          <div class="watchlist-strip-head">
+            <h3>&#33258;&#36873;&#26495;&#22359;&#27744;</h3>
+            <span class="watchlist-strip-note">&#28857;&#20987;&#31609;&#29255;&#21487;&#24555;&#36895;&#20999;&#25442;&#30417;&#25511;&#26495;&#22359;</span>
           </div>
-          <div class="control-group watchlist-sector-picker">
-            <label for="watchlist-sector-select">板块</label>
-            <select id="watchlist-sector-select"></select>
-          </div>
-          <button id="watchlist-add-button" class="primary-button secondary-button">加入自选</button>
+          <div id="watchlist-chips" class="chip-list"></div>
         </div>
-        <div id="watchlist-chips" class="chip-list"></div>
       </section>
 
       <main class="dashboard-grid">
-        <aside class="sidebar">
-          <section class="panel">
-            <div class="panel-header"><h2>资金流入榜</h2></div>
+        <aside class="sidebar rail-stack">
+          <section class="panel rank-panel">
+            <div class="panel-header">
+              <div>
+                <h2>&#24378;&#21183;&#27969;&#20837;</h2>
+              </div>
+            </div>
             <div id="leaders-list" class="rank-list"></div>
           </section>
-          <section class="panel">
-            <div class="panel-header"><h2>资金流出榜</h2></div>
+
+          <section class="panel rank-panel">
+            <div class="panel-header">
+              <div>
+                <h2>&#24369;&#21183;&#27969;&#20986;</h2>
+              </div>
+            </div>
             <div id="laggards-list" class="rank-list"></div>
           </section>
-          <section class="panel">
-            <div class="panel-header"><h2>板块异动告警</h2></div>
-            <div id="alerts-list" class="rank-list"></div>
-          </section>
-          <section class="panel">
-            <div class="panel-header"><h2>告警参数</h2></div>
-            <div class="settings-grid">
-              <label>
-                <span>强度变化阈值(%)</span>
-                <input id="delta-threshold-input" type="number" min="0" step="0.1" value="1.5" />
-              </label>
-              <label>
-                <span>排名跃迁阈值</span>
-                <input id="rank-threshold-input" type="number" min="0" step="1" value="2" />
-              </label>
+
+          <section class="panel rank-panel">
+            <div class="panel-header">
+              <div>
+                <h2>&#30417;&#25511;&#20449;&#21495;</h2>
+              </div>
             </div>
+            <div id="signals-list" class="rank-list"></div>
           </section>
         </aside>
 
-        <section class="content">
-          <section class="panel">
-            <div class="panel-header">
+        <section class="content content-stack">
+          <section class="panel comparison-panel">
+            <div class="panel-header comparison-header">
               <div>
-                <h2 id="comparison-title">全板块净流入强度对比</h2>
-                <p id="comparison-subtitle">默认展示最新 Top N 板块</p>
+                <h2 id="comparison-title">&#20840;&#26495;&#22359;&#20928;&#27969;&#20837;&#24378;&#24230;&#23545;&#27604;&#36235;&#21183;</h2>
+                <div id="comparison-subtitle" hidden></div>
               </div>
-              <div id="comparison-badges" class="detail-badges"></div>
+              <div class="panel-meta">
+                <div id="comparison-badges" class="detail-badges"></div>
+                <div id="comparison-state" class="panel-state">&#21152;&#36733;&#20013;</div>
+              </div>
             </div>
             <div id="comparison-chart" class="chart large-chart"></div>
           </section>
 
-          <section class="detail-layout">
-            <section class="panel">
-              <div class="panel-header">
-                <div>
-                  <h2 id="detail-title">板块详情</h2>
-                  <p id="detail-subtitle">点击榜单中的板块查看详细历史</p>
-                </div>
+          <section class="panel analysis-panel">
+            <div class="panel-header">
+              <div>
+                <h2 id="analysis-title">&#26495;&#22359;&#20998;&#26512;&#21306;</h2>
+                <div id="analysis-subtitle" hidden></div>
               </div>
-              <dl id="sector-detail" class="detail-grid"></dl>
+              <div id="detail-state" class="panel-state">&#26410;&#36873;&#25321;</div>
+            </div>
+
+            <section id="sector-spotlight" class="sector-spotlight">
+              <div class="sector-spotlight-main">
+                <h3 id="sector-spotlight-name">&#31561;&#24453;&#26495;&#22359;&#36873;&#25321;</h3>
+                <div id="sector-spotlight-meta" class="sector-spotlight-meta" hidden></div>
+                <div id="sector-spotlight-badges" class="sector-spotlight-badges"></div>
+              </div>
+              <div id="sector-spotlight-summary" class="sector-spotlight-summary"></div>
             </section>
 
-            <section class="panel">
-              <div class="panel-header">
-                <div>
-                  <h2 id="history-title">板块历史曲线</h2>
-                  <p id="history-subtitle">显示选中板块的分钟/天级历史</p>
+            <div class="analysis-grid">
+              <section class="analysis-card">
+                <div class="analysis-card-header">
+                  <h3>&#26680;&#24515;&#25688;&#35201;</h3>
+                  <span id="analysis-summary-meta" class="analysis-meta">&#31561;&#24453;&#26495;&#22359;&#36873;&#25321;</span>
                 </div>
-              </div>
-              <div id="detail-chart" class="chart small-chart"></div>
-            </section>
+                <div id="analysis-summary" class="summary-metrics"></div>
+              </section>
+
+              <section class="analysis-card">
+                <div class="analysis-card-header">
+                  <h3>&#20449;&#21495;&#21028;&#26029;</h3>
+                  <span id="analysis-signal-meta" class="analysis-meta">&#26410;&#21152;&#36733;</span>
+                </div>
+                <div id="analysis-signals" class="signal-stack"></div>
+              </section>
+
+              <section class="analysis-card">
+                <div class="analysis-card-header">
+                  <h3>&#25104;&#20998;&#32929;&#32467;&#26500;</h3>
+                  <span id="analysis-structure-meta" class="analysis-meta">&#26410;&#21152;&#36733;</span>
+                </div>
+                <div id="analysis-structure" class="summary-metrics compact-metrics"></div>
+                <div id="analysis-structure-notes" class="signal-stack subtle-stack"></div>
+              </section>
+            </div>
           </section>
 
-          <section class="tables-layout">
-            <section class="panel">
-              <div class="panel-header"><h2>板块成分股资金流</h2></div>
+          <section class="tables-grid">
+            <section class="panel table-panel">
+              <div class="panel-header">
+                <div>
+                  <h2>&#26495;&#22359;&#25104;&#20998;&#32929;&#36164;&#37329;&#27969;</h2>
+                  <div id="sector-stocks-meta" hidden></div>
+                </div>
+                <div id="sector-stocks-state" class="panel-state">&#26410;&#21152;&#36733;</div>
+              </div>
+              <div class="table-controls">
+                <label class="control-group compact">
+                  <span>&#25490;&#24207;</span>
+                  <select id="sector-stocks-sort-by">
+                    <option value="net_amount">&#25353;&#20928;&#27969;&#20837;</option>
+                    <option value="change_percent">&#25353;&#28072;&#36300;&#24133;</option>
+                  </select>
+                </label>
+                <label class="control-group compact">
+                  <span>&#26041;&#21521;</span>
+                  <select id="sector-stocks-sort-order">
+                    <option value="desc">&#20174;&#39640;&#21040;&#20302;</option>
+                    <option value="asc">&#20174;&#20302;&#21040;&#39640;</option>
+                  </select>
+                </label>
+                <label class="control-group compact">
+                  <span>&#27599;&#39029;</span>
+                  <select id="sector-stocks-page-size">
+                    <option value="10">10</option>
+                    <option value="20">20</option>
+                    <option value="50">50</option>
+                  </select>
+                </label>
+              </div>
               <div class="table-wrap">
                 <table>
                   <thead>
                     <tr>
-                      <th>代码</th>
-                      <th>名称</th>
-                      <th>最新价</th>
-                      <th>今日涨跌幅</th>
-                      <th>主力净流入</th>
+                      <th>&#20195;&#30721;</th>
+                      <th>&#21517;&#31216;</th>
+                      <th>&#26368;&#26032;&#20215;</th>
+                      <th>&#20170;&#26085;&#28072;&#36300;&#24133;</th>
+                      <th>&#20027;&#21147;&#20928;&#27969;&#20837;</th>
                     </tr>
                   </thead>
                   <tbody id="sector-stocks-body"></tbody>
                 </table>
               </div>
+              <div class="table-footer">
+                <div id="sector-stocks-pagination" class="pagination-status">&#31532; 1 / 1 &#39029;</div>
+                <div class="pagination-actions">
+                  <button id="sector-stocks-prev" class="ghost-button small-button">&#19978;&#19968;&#39029;</button>
+                  <button id="sector-stocks-next" class="ghost-button small-button">&#19979;&#19968;&#39029;</button>
+                </div>
+              </div>
             </section>
 
-            <section class="panel">
-              <div class="panel-header"><h2>个股实时资金榜</h2></div>
+            <section class="panel table-panel">
+              <div class="panel-header">
+                <div>
+                  <h2>&#20840;&#24066;&#22330;&#20010;&#32929;&#36164;&#37329;&#27036;</h2>
+                  <div id="individual-meta" hidden></div>
+                </div>
+                <div id="individual-state" class="panel-state">&#26410;&#21152;&#36733;</div>
+              </div>
+              <div class="table-controls">
+                <label class="control-group compact">
+                  <span>&#25490;&#24207;</span>
+                  <select id="individual-sort-by">
+                    <option value="net_amount">&#25353;&#20928;&#27969;&#20837;</option>
+                    <option value="change_percent">&#25353;&#28072;&#36300;&#24133;</option>
+                  </select>
+                </label>
+                <label class="control-group compact">
+                  <span>&#26041;&#21521;</span>
+                  <select id="individual-sort-order">
+                    <option value="desc">&#20174;&#39640;&#21040;&#20302;</option>
+                    <option value="asc">&#20174;&#20302;&#21040;&#39640;</option>
+                  </select>
+                </label>
+                <label class="control-group compact">
+                  <span>&#27599;&#39029;</span>
+                  <select id="individual-page-size">
+                    <option value="15" selected>15</option>
+                    <option value="30">30</option>
+                    <option value="50">50</option>
+                  </select>
+                </label>
+              </div>
               <div class="table-wrap">
                 <table>
                   <thead>
                     <tr>
-                      <th>代码</th>
-                      <th>名称</th>
-                      <th>最新价</th>
-                      <th>涨跌幅</th>
-                      <th>净额</th>
+                      <th>&#20195;&#30721;</th>
+                      <th>&#21517;&#31216;</th>
+                      <th>&#26368;&#26032;&#20215;</th>
+                      <th>&#28072;&#36300;&#24133;</th>
+                      <th>&#20928;&#39069;</th>
                     </tr>
                   </thead>
                   <tbody id="individual-body"></tbody>
                 </table>
               </div>
+              <div class="table-footer">
+                <div id="individual-pagination" class="pagination-status">&#31532; 1 / 1 &#39029;</div>
+                <div class="pagination-actions">
+                  <button id="individual-prev" class="ghost-button small-button">&#19978;&#19968;&#39029;</button>
+                  <button id="individual-next" class="ghost-button small-button">&#19979;&#19968;&#39029;</button>
+                </div>
+              </div>
             </section>
           </section>
         </section>
+        </div>
       </main>
     </div>
-    <script src="/static/app.js?v=20260508-3"></script>
+    <script defer src="/static/app.js?v=20260602-navrestore"></script>
   </body>
 </html>
