@@ -215,6 +215,30 @@ def _check_cli_available(name: str) -> bool:
     return False
 
 
+def _find_cli_path(name: str) -> str | None:
+    """Find the full path to a CLI tool, checking PATH and common install locations."""
+    import shutil
+
+    # First try shutil.which
+    path = shutil.which(name)
+    if path:
+        return path
+
+    # Fallback: check common install paths
+    home = Path.home()
+    common_paths = [
+        home / ".local" / "bin" / name,
+        home / ".hermes" / "node" / "bin" / name,
+        home / ".cargo" / "bin" / name,
+        Path("/opt") / "homebrew" / "bin" / name,
+        Path("/usr") / "local" / "bin" / name,
+    ]
+    for p in common_paths:
+        if p.exists():
+            return str(p)
+    return None
+
+
 def _parse_cron_to_aps_kwargs(cron_expr: str) -> dict[str, str]:
     """Parse standard 5-field cron expression to APScheduler cron kwargs.
 
@@ -1290,10 +1314,19 @@ Cron表达式规则（标准5字段：分 时 日 月 星期）：
         logger.info("skill-chat: processing message from user")
         start = time.time()
 
+        # Find claude CLI path
+        claude_path = _find_cli_path("claude")
+        if not claude_path:
+            return {
+                "response": "Claude Code CLI 未找到，请检查安装。",
+                "skill_draft": None,
+                "duration_ms": 0,
+            }
+
         try:
             proc = subprocess.run(
                 [
-                    "claude", "-p", cli_prompt,
+                    claude_path, "-p", cli_prompt,
                     "--allowedTools", "Bash(curl*)", "Bash(python*)", "Write", "Read",
                     "--output-format", "text",
                 ],
@@ -1340,12 +1373,6 @@ Cron表达式规则（标准5字段：分 时 日 月 星期）：
                 "response": "请求超时，请重试或简化需求描述。",
                 "skill_draft": None,
                 "duration_ms": duration_ms,
-            }
-        except FileNotFoundError:
-            return {
-                "response": "Claude Code CLI 未找到，请检查安装。",
-                "skill_draft": None,
-                "duration_ms": 0,
             }
 
     @app.put("/api/ai/jobs/{job_id}/engine")
