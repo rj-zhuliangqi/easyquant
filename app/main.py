@@ -239,6 +239,12 @@ def _find_cli_path(name: str) -> str | None:
     return None
 
 
+def build_spa_shell_response() -> FileResponse:
+    response = FileResponse(Path(__file__).parent / "static" / SPA_SHELL_FILENAME)
+    response.headers["Cache-Control"] = SPA_SHELL_CACHE_CONTROL
+    return response
+
+
 def _parse_cron_to_aps_kwargs(cron_expr: str) -> dict[str, str]:
     """Parse standard 5-field cron expression to APScheduler cron kwargs.
 
