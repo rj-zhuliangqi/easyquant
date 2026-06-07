@@ -215,7 +215,23 @@ def _check_cli_available(name: str) -> bool:
     return False
 
 
-def build_spa_shell_response() -> FileResponse:
+def _parse_cron_to_aps_kwargs(cron_expr: str) -> dict[str, str]:
+    """Parse standard 5-field cron expression to APScheduler cron kwargs.
+
+    Format: minute hour day month day_of_week
+    Example: "20 8 * * 1-5" -> {"minute": "20", "hour": "8", "day": "*", "month": "*", "day_of_week": "1-5"}
+    """
+    parts = cron_expr.strip().split()
+    if len(parts) != 5:
+        raise ValueError(f"Invalid cron expression: {cron_expr!r} (expected 5 fields)")
+    minute, hour, day, month, day_of_week = parts
+    return {
+        "minute": minute,
+        "hour": hour,
+        "day": day,
+        "month": month,
+        "day_of_week": day_of_week,
+    }
     response = FileResponse(Path(__file__).parent / "static" / SPA_SHELL_FILENAME)
     response.headers["Cache-Control"] = SPA_SHELL_CACHE_CONTROL
     return response
@@ -432,6 +448,34 @@ def create_app(
                 coalesce=True,
                 misfire_grace_time=120,
             )
+            # Register AI Skill cron jobs
+            try:
+                with session_factory() as session:
+                    from app.models import AiJob as AiJobModel
+                    from sqlalchemy import select
+                    ai_jobs = list(session.scalars(select(AiJobModel).where(AiJobModel.enabled == True, AiJobModel.schedule_rrule_or_cron.isnot(None))))
+                    for job in ai_jobs:
+                        cron_expr = job.schedule_rrule_or_cron
+                        if not cron_expr:
+                            continue
+                        try:
+                            cron_kwargs = _parse_cron_to_aps_kwargs(cron_expr)
+                            job_id = job.id
+                            scheduler.add_job(
+                                lambda jid=job_id: _execute_ai_skill_job(jid, session_factory, ai_center, now_provider),
+                                "cron",
+                                id=f"ai-skill-{job.id}",
+                                max_instances=1,
+                                coalesce=True,
+                                misfire_grace_time=300,
+                                replace_existing=True,
+                                **cron_kwargs,
+                            )
+                            logger.info("registered ai-skill cron job: %s (id=%d, cron=%s)", job.name, job.id, cron_expr)
+                        except ValueError as exc:
+                            logger.warning("failed to parse cron for job %d (%s): %s", job.id, job.name, exc)
+            except Exception:
+                logger.exception("failed to register ai-skill cron jobs")
             scheduler.start()
         yield
         if scheduler.running:
@@ -1293,6 +1337,80 @@ def _run_scheduled_job(
             if hasattr(session, "rollback"):
                 session.rollback()
             logger.exception("scheduled job %s failed after %.2fs", name, time.perf_counter() - started)
+            return None
+
+
+def _execute_ai_skill_job(
+    job_id: int,
+    session_factory: sessionmaker[Session],
+    ai_center: AiCenterService,
+    now_provider: Callable[[], datetime],
+) -> dict | None:
+    """Execute an AI Skill job: fetch market data, run skill via CLI, import results."""
+    from app.services.skill_executor import get_executor, prefetch_market_data
+    from app.models import AiJob as AiJobModel
+    from app.models import AiSkill as AiSkillModel
+
+    started = time.perf_counter()
+    logger.info("ai-skill job %d started", job_id)
+
+    with session_factory() as session:
+        try:
+            job = session.get(AiJobModel, job_id)
+            if job is None:
+                logger.warning("ai-skill job %d not found", job_id)
+                return None
+            if not job.enabled:
+                logger.info("ai-skill job %d is disabled, skipping", job_id)
+                return None
+
+            skill = session.get(AiSkillModel, job.skill_id) if job.skill_id else None
+            if skill is None:
+                logger.warning("ai-skill job %d: skill %s not found", job_id, job.skill_id)
+                return None
+
+            trading_date = now_provider().date()
+            engine_type = job.engine_type or "claude-code"
+            engine_config = json.loads(job.engine_config_json or "{}")
+
+            # Prefetch market data
+            data_file = prefetch_market_data(trading_date)
+
+            # Get executor and run
+            executor = get_executor(engine_type)
+            result = executor.execute(
+                skill_name=job.name,
+                trading_date=trading_date,
+                data_file=data_file,
+                output_dir=str(AI_CENTER_INBOX_DIR),
+                config=engine_config,
+                skill_prompt=skill.description or "",
+            )
+
+            # Update last_executed_at
+            job.last_executed_at = now_provider()
+            session.add(job)
+            session.commit()
+
+            duration = time.perf_counter() - started
+            logger.info(
+                "ai-skill job %d finished in %.2fs: success=%s, output_files=%d",
+                job_id, duration, result.success, len(result.output_files),
+            )
+
+            return {
+                "success": result.success,
+                "skill_name": result.skill_name,
+                "trading_date": result.trading_date,
+                "duration_ms": result.duration_ms,
+                "output_files": result.output_files,
+                "error": result.error,
+            }
+
+        except Exception:
+            if hasattr(session, "rollback"):
+                session.rollback()
+            logger.exception("ai-skill job %d failed after %.2fs", job_id, time.perf_counter() - started)
             return None
 
 
