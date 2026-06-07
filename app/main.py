@@ -188,12 +188,31 @@ def build_static_page_response(filename: str) -> FileResponse:
 
 
 def _check_cli_available(name: str) -> bool:
-    """Check if a CLI tool is available in PATH"""
+    """Check if a CLI tool is available in PATH or common install locations."""
     import shutil
-    return shutil.which(name) is not None
-    response.headers["Pragma"] = "no-cache"
-    response.headers["Expires"] = "0"
-    return response
+
+    if shutil.which(name) is not None:
+        return True
+
+    # Fallback: check common install paths (e.g. uv/uvicorn strips PATH)
+    home = Path.home()
+    common_paths = [
+        home / ".local" / "bin" / name,
+        home / ".hermes" / "node" / "bin" / name,
+        home / ".cargo" / "bin" / name,
+        home / ".nvm" / "versions" / "node" / "*" / "bin" / name,
+        Path("/opt") / "homebrew" / "bin" / name,
+        Path("/usr") / "local" / "bin" / name,
+    ]
+    for p in common_paths:
+        if "*" in str(p):
+            import glob
+
+            if glob.glob(str(p)):
+                return True
+        elif p.exists():
+            return True
+    return False
 
 
 def build_spa_shell_response() -> FileResponse:
