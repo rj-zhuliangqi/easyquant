@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, onUnmounted } from "vue";
+import { ref, computed, onMounted, onUnmounted } from "vue";
 import { useQueryClient } from "@tanstack/vue-query";
 import { RouterLink, useRouter } from "vue-router";
 import { routes } from "../router";
@@ -28,6 +28,22 @@ const navItems = ref(
       icon: route.meta.icon || "",
     })),
 );
+
+// Group nav items into sections for better visual hierarchy
+const navSections = computed(() => {
+  const items = navItems.value;
+  const sectionDefs = [
+    { label: "概览", names: ["home", "alerts"] },
+    { label: "市场", names: ["sector-monitor", "limit-up-ladder", "opportunity-pool"] },
+    { label: "工具", names: ["ai-center", "workspace", "user-mgmt"] },
+  ];
+  return sectionDefs
+    .map((def) => ({
+      label: def.label,
+      items: items.filter((i) => def.names.includes(i.name)),
+    }))
+    .filter((s) => s.items.length > 0);
+});
 
 const username = ref(getUsername());
 const menuOpen = ref(false);
@@ -101,19 +117,22 @@ const navIcons = {
     </div>
 
     <nav class="nav-list" aria-label="Main navigation">
-      <RouterLink
-        v-for="item in navItems"
-        :key="item.name"
-        :to="item.path"
-        class="nav-item"
-        active-class="is-active"
-        @mouseenter="prefetch(item.name)"
-        @focus="prefetch(item.name)"
-        @click="onNavClick"
-      >
-        <span class="nav-icon" v-html="navIcons[item.name] || ''"></span>
-        <span class="nav-label">{{ item.label }}</span>
-      </RouterLink>
+      <template v-for="section in navSections" :key="section.label">
+        <div class="nav-section-label">{{ section.label }}</div>
+        <RouterLink
+          v-for="item in section.items"
+          :key="item.name"
+          :to="item.path"
+          class="nav-item"
+          active-class="is-active"
+          @mouseenter="prefetch(item.name)"
+          @focus="prefetch(item.name)"
+          @click="onNavClick"
+        >
+          <span class="nav-icon" v-html="navIcons[item.name] || ''"></span>
+          <span class="nav-label">{{ item.label }}</span>
+        </RouterLink>
+      </template>
     </nav>
 
     <div class="sidebar-footer">
@@ -151,7 +170,7 @@ const navIcons = {
   position: sticky;
   top: 0;
   height: 100vh;
-  padding: var(--space-5) var(--space-4);
+  padding: var(--space-4) var(--space-3);
   background: var(--nav-bg);
   border-right: 1px solid var(--nav-border);
   color: var(--text);
@@ -181,20 +200,20 @@ const navIcons = {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  margin-bottom: var(--space-6);
-  padding-bottom: var(--space-4);
+  margin-bottom: var(--space-4);
+  padding-bottom: var(--space-3);
   border-bottom: 1px solid var(--nav-border);
 }
 
 .brand-mark {
-  width: 44px;
-  height: 44px;
+  width: 36px;
+  height: 36px;
   display: grid;
   place-items: center;
   border-radius: var(--radius-md);
   background: linear-gradient(135deg, var(--accent), #0891b2);
   font-weight: 800;
-  font-size: 16px;
+  font-size: 14px;
   color: #fff;
   box-shadow: 0 4px 12px rgba(6, 182, 212, 0.25);
   flex-shrink: 0;
@@ -217,7 +236,7 @@ const navIcons = {
 /* Nav list */
 .nav-list {
   display: grid;
-  gap: var(--space-1);
+  gap: 2px;
   flex: 1;
 }
 
@@ -225,16 +244,17 @@ const navIcons = {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  padding: 11px var(--space-4);
+  padding: 8px var(--space-3);
   border-radius: var(--radius-md);
   color: var(--text-secondary);
   text-decoration: none;
   background: transparent;
   border: 1px solid transparent;
   transition: all var(--transition-fast);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 500;
   position: relative;
+  min-height: 36px;
 }
 
 .nav-item::before {
@@ -244,7 +264,7 @@ const navIcons = {
   top: 50%;
   transform: translateY(-50%) scaleY(0);
   width: 3px;
-  height: 20px;
+  height: 16px;
   background: var(--accent);
   border-radius: 0 var(--radius-full) var(--radius-full) 0;
   transition: transform var(--transition-fast);
@@ -266,8 +286,8 @@ const navIcons = {
 }
 
 .nav-icon {
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -284,10 +304,21 @@ const navIcons = {
   opacity: 1;
 }
 
+/* Nav section labels */
+.nav-section-label {
+  padding: 12px var(--space-3) 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
 /* Sidebar footer */
 .sidebar-footer {
   margin-top: auto;
-  padding-top: var(--space-4);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--nav-border);
   position: relative;
 }
 

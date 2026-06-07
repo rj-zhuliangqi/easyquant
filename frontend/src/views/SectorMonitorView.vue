@@ -44,7 +44,7 @@ const workspaceQuery = useQuery({
 const comparisonOption = computed(() => ({
   tooltip: { trigger: "axis" },
   legend: { top: 0, textStyle: { color: "#94a3b8" } },
-  grid: { left: 24, right: 16, top: 32, bottom: 24 },
+  grid: { left: 32, right: 24, top: 40, bottom: 32 },
   xAxis: {
     type: "category",
     data: payload.value.comparison?.labels || [],
@@ -56,6 +56,7 @@ const comparisonOption = computed(() => ({
     type: "line",
     smooth: true,
     showSymbol: false,
+    areaStyle: { opacity: 0.08 },
     data: (series.points || []).map((point) => point.value),
   })),
 }));
@@ -71,6 +72,10 @@ const comparisonOption = computed(() => ({
       </div>
       <QueryState :is-loading="queryLoading" :is-fetching="queryFetching" :updated-at="queryUpdatedAt" />
     </header>
+
+    <DataPanel title="板块对比趋势" class="hero-chart-panel">
+      <EChartPanel :option="comparisonOption" />
+    </DataPanel>
 
     <section class="card-grid three-up">
       <DataPanel title="强势流入">
@@ -125,10 +130,6 @@ const comparisonOption = computed(() => ({
       </DataPanel>
     </section>
 
-    <DataPanel title="板块对比趋势">
-      <EChartPanel :option="comparisonOption" />
-    </DataPanel>
-
     <section class="card-grid two-up">
       <DataPanel title="选中板块摘要">
         <div class="detail-block">
@@ -154,3 +155,19 @@ const comparisonOption = computed(() => ({
     </section>
   </section>
 </template>
+
+<style scoped>
+.hero-chart-panel {
+  border-color: rgba(6, 182, 212, 0.12);
+}
+
+.hero-chart-panel :deep(.chart-panel) {
+  height: 420px;
+}
+
+@media (max-width: 640px) {
+  .hero-chart-panel :deep(.chart-panel) {
+    height: 280px;
+  }
+}
+</style>
