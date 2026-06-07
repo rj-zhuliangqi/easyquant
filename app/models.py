@@ -230,6 +230,27 @@ class AiJob(Base):
     result_schema_version: Mapped[str] = mapped_column(String(20), default="1.0")
     display_group: Mapped[str] = mapped_column(String(20), default="盘中")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    engine_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    engine_config_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    auto_schedule: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_executed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class AiSkillTemplate(Base):
+    """Skill 执行模板 — 不同引擎（claude-code/goose/custom）的 prompt 模板和配置"""
+    __tablename__ = "ai_skill_templates"
+    __table_args__ = (
+        Index("ix_ai_skill_templates_skill_active", "skill_id", "is_active"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    skill_id: Mapped[int] = mapped_column(ForeignKey("ai_skills.id"), index=True)
+    template_type: Mapped[str] = mapped_column(String(40))
+    prompt_template: Mapped[str] = mapped_column(Text)
+    config_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 
@@ -273,6 +294,25 @@ class AiRun(Base):
     error_stage: Mapped[str | None] = mapped_column(String(40), nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    engine_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    engine_config_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    token_usage_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class AiRunArtifact(Base):
+    """Run 的中间产物存储 — 数据快照、图表、分析日志等"""
+    __tablename__ = "ai_run_artifacts"
+    __table_args__ = (
+        Index("ix_ai_run_artifacts_run_type", "run_id", "artifact_type"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("ai_runs.id"), index=True)
+    artifact_type: Mapped[str] = mapped_column(String(40))
+    name: Mapped[str] = mapped_column(String(200))
+    content_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    file_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 
 class AiTradingDayReview(Base):
@@ -339,8 +379,15 @@ class AiPick(Base):
     stock_name: Mapped[str] = mapped_column(String(120))
     sector_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     pick_type: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    pick_level: Mapped[str | None] = mapped_column(String(40), nullable=True)
     confidence_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     reason_summary: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    reason_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    capital_profile_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    signal_context: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    risk_flags_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    entry_hint: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    theme_tags_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     tags_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     priority_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
 

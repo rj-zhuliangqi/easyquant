@@ -23,6 +23,7 @@ from app.models import AiExperienceRule
 from app.models import AiExperienceRulepack
 from app.models import AiReviewNote
 from app.models import AiRun
+from app.models import AiRunArtifact
 from app.models import AiSkill
 from app.models import AiSkillRevision
 from app.models import AiTradingDayReview
@@ -39,6 +40,12 @@ PICK_REQUIRED_FIELDS = (
     "signal_context",
     "risk_flags",
     "entry_hint",
+)
+
+# Fields that are strongly recommended but not enforced (missing = warning, not error)
+PICK_RECOMMENDED_FIELDS = (
+    "reason_detail",
+    "confidence_score",
 )
 
 
@@ -404,6 +411,9 @@ class AiCenterService:
             raw_output_text=payload.get("raw_output"),
             structured_summary_json=json.dumps(summary, ensure_ascii=False),
             duration_ms=int(payload.get("duration_ms") or 0) or None,
+            engine_type=(payload.get("_meta") or {}).get("engine_type"),
+            engine_config_json=json.dumps((payload.get("_meta") or {}).get("engine_config"), ensure_ascii=False) if (payload.get("_meta") or {}).get("engine_config") else None,
+            token_usage_json=json.dumps((payload.get("_meta") or {}).get("token_usage"), ensure_ascii=False) if (payload.get("_meta") or {}).get("token_usage") else None,
         )
         session.add(run)
         session.flush()
@@ -419,8 +429,15 @@ class AiCenterService:
                     stock_name=str(item["stock_name"]).strip(),
                     sector_name=item.get("sector_name"),
                     pick_type=item.get("pick_level") or item.get("pick_type"),
+                    pick_level=item.get("pick_level") or item.get("pick_type"),
                     confidence_score=self._to_float(item.get("confidence_score")),
                     reason_summary=item.get("reason_summary"),
+                    reason_detail=item.get("reason_detail"),
+                    capital_profile_json=json.dumps(item.get("capital_profile"), ensure_ascii=False) if item.get("capital_profile") else None,
+                    signal_context=item.get("signal_context"),
+                    risk_flags_json=json.dumps(item.get("risk_flags"), ensure_ascii=False) if item.get("risk_flags") else None,
+                    entry_hint=item.get("entry_hint"),
+                    theme_tags_json=json.dumps(item.get("theme_tags"), ensure_ascii=False) if item.get("theme_tags") else None,
                     tags_json=json.dumps(item.get("theme_tags") or item.get("tags") or [], ensure_ascii=False),
                     priority_rank=int(item.get("priority_rank") or index),
                 )
@@ -430,6 +447,21 @@ class AiCenterService:
                 self.compute_pick_outcomes(session, pick)
         elif resolved_job_type in {"day_review", "position_review", "weekly_review"}:
             self._upsert_trading_day_review(session, trading_date=trading_date, result_payload=result_payload, job_type=resolved_job_type)
+
+        # Import artifacts from payload
+        artifacts_input = payload.get("artifacts") or []
+        if isinstance(artifacts_input, list):
+            for artifact_item in artifacts_input:
+                if not isinstance(artifact_item, dict):
+                    continue
+                artifact = AiRunArtifact(
+                    run_id=run.id,
+                    artifact_type=str(artifact_item.get("type", "analysis")),
+                    name=str(artifact_item.get("name", "unnamed")),
+                    content_json=json.dumps(artifact_item.get("content"), ensure_ascii=False) if artifact_item.get("content") else None,
+                    file_path=artifact_item.get("file_path"),
+                )
+                session.add(artifact)
 
         session.commit()
         return {"run": self.get_run(session, run.id), "picks": [self._pick_dict(session, pick) for pick in created_picks]}
@@ -1547,6 +1579,14 @@ class AiCenterService:
         revision = session.get(AiSkillRevision, run.revision_id) if run else None
         payload = self._pick_payload_for_run(run, pick.stock_code) if run else {}
         outcomes = list(session.scalars(select(AiPickOutcome).where(AiPickOutcome.pick_id == pick.id).order_by(AiPickOutcome.window.asc())))
+        # Prefer structured columns over payload extraction
+        pick_level = pick.pick_level or payload.get("pick_level") or pick.pick_type
+        signal_context = pick.signal_context or payload.get("signal_context")
+        capital_profile = self._loads_json(pick.capital_profile_json, None) if pick.capital_profile_json else payload.get("capital_profile") or {}
+        risk_flags = self._loads_json(pick.risk_flags_json, None) if pick.risk_flags_json else payload.get("risk_flags") or []
+        entry_hint = pick.entry_hint or payload.get("entry_hint")
+        reason_detail = pick.reason_detail or payload.get("reason_detail")
+        theme_tags = self._loads_json(pick.theme_tags_json, None) if pick.theme_tags_json else payload.get("theme_tags") or []
         return {
             "id": pick.id,
             "run_id": pick.run_id,
@@ -1554,11 +1594,13 @@ class AiCenterService:
             "stock_name": pick.stock_name,
             "sector_name": pick.sector_name,
             "pick_type": pick.pick_type,
-            "pick_level": payload.get("pick_level"),
-            "signal_context": payload.get("signal_context"),
-            "capital_profile": payload.get("capital_profile") or {},
-            "risk_flags": payload.get("risk_flags") or [],
-            "entry_hint": payload.get("entry_hint"),
+            "pick_level": pick_level,
+            "signal_context": signal_context,
+            "capital_profile": capital_profile,
+            "risk_flags": risk_flags,
+            "entry_hint": entry_hint,
+            "reason_detail": reason_detail,
+            "theme_tags": theme_tags,
             "experience_feedback": payload.get("experience_feedback") or {},
             "confidence_score": pick.confidence_score,
             "reason_summary": pick.reason_summary,
@@ -1567,6 +1609,7 @@ class AiCenterService:
             "skill_name": skill.name if skill else None,
             "revision_id": revision.id if revision else None,
             "revision_title": revision.title if revision else None,
+            "engine_type": run.engine_type if run else None,
             "outcomes": [
                 {
                     "window": outcome.window,

@@ -116,6 +116,10 @@ def ensure_ai_center_schema(engine: Engine) -> None:
             "result_schema_version": "ALTER TABLE ai_jobs ADD COLUMN result_schema_version VARCHAR(20) DEFAULT '1.0'",
             "active_rulepack_id": "ALTER TABLE ai_jobs ADD COLUMN active_rulepack_id INTEGER",
             "display_group": "ALTER TABLE ai_jobs ADD COLUMN display_group VARCHAR(20) DEFAULT '盘中'",
+            "engine_type": "ALTER TABLE ai_jobs ADD COLUMN engine_type VARCHAR(20) DEFAULT 'claude-code'",
+            "engine_config_json": "ALTER TABLE ai_jobs ADD COLUMN engine_config_json TEXT DEFAULT '{}'",
+            "auto_schedule": "ALTER TABLE ai_jobs ADD COLUMN auto_schedule BOOLEAN DEFAULT 1",
+            "last_executed_at": "ALTER TABLE ai_jobs ADD COLUMN last_executed_at DATETIME",
         },
         "ai_runs": {
             "result_type": "ALTER TABLE ai_runs ADD COLUMN result_type VARCHAR(40)",
@@ -123,6 +127,18 @@ def ensure_ai_center_schema(engine: Engine) -> None:
             "push_payload_json": "ALTER TABLE ai_runs ADD COLUMN push_payload_json TEXT",
             "error_stage": "ALTER TABLE ai_runs ADD COLUMN error_stage VARCHAR(40)",
             "duration_ms": "ALTER TABLE ai_runs ADD COLUMN duration_ms INTEGER",
+            "engine_type": "ALTER TABLE ai_runs ADD COLUMN engine_type VARCHAR(20)",
+            "engine_config_json": "ALTER TABLE ai_runs ADD COLUMN engine_config_json TEXT",
+            "token_usage_json": "ALTER TABLE ai_runs ADD COLUMN token_usage_json TEXT",
+        },
+        "ai_picks": {
+            "pick_level": "ALTER TABLE ai_picks ADD COLUMN pick_level VARCHAR(40)",
+            "reason_detail": "ALTER TABLE ai_picks ADD COLUMN reason_detail TEXT",
+            "capital_profile_json": "ALTER TABLE ai_picks ADD COLUMN capital_profile_json TEXT",
+            "signal_context": "ALTER TABLE ai_picks ADD COLUMN signal_context VARCHAR(500)",
+            "risk_flags_json": "ALTER TABLE ai_picks ADD COLUMN risk_flags_json TEXT",
+            "entry_hint": "ALTER TABLE ai_picks ADD COLUMN entry_hint VARCHAR(500)",
+            "theme_tags_json": "ALTER TABLE ai_picks ADD COLUMN theme_tags_json TEXT",
         },
     }
 
@@ -133,10 +149,48 @@ def ensure_ai_center_schema(engine: Engine) -> None:
                 if column_name not in existing:
                     conn.execute(text(ddl))
 
+        # Create new tables if they don't exist
+        existing_tables = set(inspector.get_table_names())
+
+        if "ai_run_artifacts" not in existing_tables:
+            conn.execute(text("""
+                CREATE TABLE ai_run_artifacts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id INTEGER NOT NULL REFERENCES ai_runs(id),
+                    artifact_type VARCHAR(40) NOT NULL,
+                    name VARCHAR(200) NOT NULL,
+                    content_json TEXT,
+                    file_path VARCHAR(500),
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+            conn.execute(text("CREATE INDEX ix_ai_run_artifacts_run_type ON ai_run_artifacts (run_id, artifact_type)"))
+
+        if "ai_skill_templates" not in existing_tables:
+            conn.execute(text("""
+                CREATE TABLE ai_skill_templates (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    skill_id INTEGER NOT NULL REFERENCES ai_skills(id),
+                    template_type VARCHAR(40) NOT NULL,
+                    prompt_template TEXT NOT NULL,
+                    config_json TEXT,
+                    version INTEGER DEFAULT 1,
+                    is_active BOOLEAN DEFAULT 1,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+            conn.execute(text("CREATE INDEX ix_ai_skill_templates_skill_active ON ai_skill_templates (skill_id, is_active)"))
+
 
 def build_static_page_response(filename: str) -> FileResponse:
     response = FileResponse(Path(__file__).parent / "static" / filename)
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+
+
+def _check_cli_available(name: str) -> bool:
+    """Check if a CLI tool is available in PATH"""
+    import shutil
+    return shutil.which(name) is not None
     response.headers["Pragma"] = "no-cache"
     response.headers["Expires"] = "0"
     return response
@@ -1049,6 +1103,116 @@ def create_app(
             return ai_center.get_skill_performance(db, skill_id)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc))
+
+    # ── Skill Execution Endpoints ──────────────────────────────────────
+
+    @app.post("/api/ai/jobs/{job_id}/execute")
+    def ai_execute_job(job_id: int, payload: dict = Body(default={}), db: Session = Depends(get_db)) -> dict:
+        """手动触发一个 AI Job 的执行"""
+        from app.services.skill_executor import get_executor, prefetch_market_data
+        from app.models import AiJob as AiJobModel
+
+        job = session.get(AiJobModel, job_id) if (session := db) else None
+        if job is None:
+            raise HTTPException(status_code=404, detail="job not found")
+
+        trading_date_val = payload.get("trading_date")
+        trading_date_obj = date.fromisoformat(str(trading_date_val)) if trading_date_val else now_provider().date()
+
+        engine_type = job.engine_type or "claude-code"
+        engine_config = json.loads(job.engine_config_json or "{}")
+
+        try:
+            executor = get_executor(engine_type)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+        # Prefetch market data
+        data_file = prefetch_market_data(trading_date_obj)
+
+        skill_name = job.name
+        skill = session.get(AiSkill, job.skill_id) if job.skill_id else None
+        skill_desc = skill.description if skill else ""
+
+        result = executor.execute(
+            skill_name=skill_name,
+            trading_date=trading_date_obj,
+            data_file=data_file,
+            output_dir=str(AI_CENTER_INBOX_DIR),
+            config=engine_config,
+            skill_prompt=skill_desc,
+        )
+
+        # Update last_executed_at
+        job.last_executed_at = now_provider()
+        session.add(job)
+        session.commit()
+
+        return {
+            "success": result.success,
+            "skill_name": result.skill_name,
+            "trading_date": result.trading_date,
+            "engine_type": result.engine_type,
+            "duration_ms": result.duration_ms,
+            "output_files": result.output_files,
+            "error": result.error,
+        }
+
+    @app.put("/api/ai/jobs/{job_id}/engine")
+    def ai_update_job_engine(job_id: int, payload: dict = Body(default={}), db: Session = Depends(get_db)) -> dict:
+        """更新 AI Job 的执行引擎配置"""
+        from app.models import AiJob as AiJobModel
+
+        job = session.get(AiJobModel, job_id) if (session := db) else None
+        if job is None:
+            raise HTTPException(status_code=404, detail="job not found")
+
+        if "engine_type" in payload:
+            job.engine_type = payload["engine_type"]
+        if "engine_config" in payload:
+            job.engine_config_json = json.dumps(payload["engine_config"], ensure_ascii=False)
+        if "auto_schedule" in payload:
+            job.auto_schedule = bool(payload["auto_schedule"])
+
+        session.add(job)
+        session.commit()
+
+        return {
+            "id": job.id,
+            "name": job.name,
+            "engine_type": job.engine_type,
+            "engine_config": json.loads(job.engine_config_json or "{}"),
+            "auto_schedule": job.auto_schedule,
+        }
+
+    @app.get("/api/ai/engines")
+    def ai_list_engines() -> dict:
+        """列出可用的执行引擎"""
+        return {
+            "engines": [
+                {
+                    "type": "claude-code",
+                    "name": "Claude Code CLI",
+                    "description": "Anthropic Claude Code 命令行工具",
+                    "available": _check_cli_available("claude"),
+                    "config_fields": ["model", "timeout_s", "allowed_tools"],
+                },
+                {
+                    "type": "goose",
+                    "name": "Goose CLI",
+                    "description": "Block Goose 开源 Agent",
+                    "available": _check_cli_available("goose"),
+                    "config_fields": ["provider", "model", "timeout_s", "extensions"],
+                },
+                {
+                    "type": "custom",
+                    "name": "Custom Script",
+                    "description": "自定义脚本执行器",
+                    "available": True,
+                    "config_fields": ["command", "timeout_s"],
+                },
+            ]
+        }
 
     return app
 
