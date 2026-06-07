@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, watch } from "vue";
+import { computed, ref, watch, nextTick } from "vue";
 import { useQuery } from "@tanstack/vue-query";
 import QueryState from "../components/QueryState.vue";
 import MetricCard from "../components/ui/MetricCard.vue";
@@ -7,8 +7,11 @@ import DataPanel from "../components/ui/DataPanel.vue";
 import EmptyState from "../components/ui/EmptyState.vue";
 import { fetchJson, pageQueryKey } from "../lib/api";
 import { formatDateTime } from "../lib/formatters";
+import { useResponsive } from "../composables/useResponsive";
 
 defineOptions({ name: "alerts" });
+
+const { isMobileLayout } = useResponsive();
 
 const signalType = ref("all");
 const strength = ref("all");
@@ -18,6 +21,7 @@ const summary = ref({});
 const feed = ref({ items: [], updated_at: null });
 const listLoading = ref(true);
 const listFetching = ref(false);
+const detailPanel = ref(null);
 
 const bootstrapQuery = useQuery({
   queryKey: pageQueryKey("alerts"),
@@ -59,6 +63,14 @@ watch(
 watch([signalType, strength, timeWindow], async () => {
   selectedIndex.value = 0;
   await refreshAlerts();
+});
+
+// On mobile, scroll to detail panel when selection changes
+watch(selectedIndex, async () => {
+  if (isMobileLayout.value && detailPanel.value) {
+    await nextTick();
+    detailPanel.value.$el?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
 });
 
 const items = computed(() => feed.value.items || []);
@@ -137,7 +149,7 @@ const queryFetching = computed(() => bootstrapQuery.isFetching.value || listFetc
         </div>
       </DataPanel>
 
-      <DataPanel title="信号详情">
+      <DataPanel ref="detailPanel" title="信号详情" class="detail-panel">
         <div v-if="activeAlert" class="detail-block">
           <strong>{{ activeAlert.title }}</strong>
           <p>{{ activeAlert.reason }}</p>
@@ -152,3 +164,11 @@ const queryFetching = computed(() => bootstrapQuery.isFetching.value || listFetc
     </section>
   </section>
 </template>
+
+<style scoped>
+@media (max-width: 640px) {
+  .detail-panel {
+    border-top: 2px solid var(--border-hover);
+  }
+}
+</style>

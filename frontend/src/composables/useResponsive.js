@@ -1,4 +1,4 @@
-import { ref, onMounted, onUnmounted } from "vue";
+import { ref, computed, onMounted, onUnmounted } from "vue";
 
 const breakpoints = {
   sm: 640,
@@ -9,8 +9,31 @@ const breakpoints = {
 };
 
 export function useResponsive() {
-  const width = ref(window.innerWidth);
-  const height = ref(window.innerHeight);
+  const width = ref(typeof window !== "undefined" ? window.innerWidth : 1024);
+  const height = ref(typeof window !== "undefined" ? window.innerHeight : 768);
+
+  let rafId = null;
+
+  function onResize() {
+    if (rafId) return;
+    rafId = requestAnimationFrame(() => {
+      width.value = window.innerWidth;
+      height.value = window.innerHeight;
+      rafId = null;
+    });
+  }
+
+  onMounted(() => {
+    window.addEventListener("resize", onResize, { passive: true });
+  });
+
+  onUnmounted(() => {
+    window.removeEventListener("resize", onResize);
+    if (rafId) {
+      cancelAnimationFrame(rafId);
+      rafId = null;
+    }
+  });
 
   const isMobile = computed(() => width.value < breakpoints.md);
   const isTablet = computed(() => width.value >= breakpoints.md && width.value < breakpoints.lg);
@@ -23,17 +46,17 @@ export function useResponsive() {
   const isXl = computed(() => width.value >= breakpoints.xl);
   const is2xl = computed(() => width.value >= breakpoints["2xl"]);
 
-  function onResize() {
-    width.value = window.innerWidth;
-    height.value = window.innerHeight;
-  }
+  // Used by components for layout decisions (e.g., list-detail vs stacked)
+  const isMobileLayout = computed(() => width.value < breakpoints.md);
 
-  onMounted(() => {
-    window.addEventListener("resize", onResize);
-  });
-
-  onUnmounted(() => {
-    window.removeEventListener("resize", onResize);
+  // Current breakpoint name
+  const currentBreakpoint = computed(() => {
+    if (width.value >= breakpoints["2xl"]) return "2xl";
+    if (width.value >= breakpoints.xl) return "xl";
+    if (width.value >= breakpoints.lg) return "lg";
+    if (width.value >= breakpoints.md) return "md";
+    if (width.value >= breakpoints.sm) return "sm";
+    return "xs";
   });
 
   return {
@@ -48,6 +71,8 @@ export function useResponsive() {
     isLg,
     isXl,
     is2xl,
+    isMobileLayout,
+    currentBreakpoint,
     breakpoints,
   };
 }

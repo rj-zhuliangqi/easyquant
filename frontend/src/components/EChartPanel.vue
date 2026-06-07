@@ -155,6 +155,7 @@ onBeforeUnmount(() => {
   height: 320px;
   border-radius: var(--radius-md);
   overflow: hidden;
+  touch-action: pan-y;
 }
 
 /* Screen reader only */
@@ -172,7 +173,7 @@ onBeforeUnmount(() => {
 
 @media (max-width: 640px) {
   .chart-panel {
-    height: 240px;
+    height: 220px;
   }
 }
 </style>

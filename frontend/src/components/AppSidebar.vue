@@ -6,6 +6,15 @@ import { routes } from "../router";
 import { fetchJson, pageQueryKey } from "../lib/api";
 import { getUsername, isAdmin, clearToken } from "../lib/auth";
 
+const props = defineProps({
+  isOpen: {
+    type: Boolean,
+    default: false,
+  },
+});
+
+const emit = defineEmits(["close"]);
+
 const queryClient = useQueryClient();
 const router = useRouter();
 
@@ -22,7 +31,6 @@ const navItems = ref(
 
 const username = ref(getUsername());
 const menuOpen = ref(false);
-const sidebarOpen = ref(false);
 
 async function prefetch(pathName) {
   if (["home", "alerts", "sector-monitor", "limit-up-ladder", "opportunity-pool", "workspace", "ai-center"].includes(pathName)) {
@@ -44,22 +52,20 @@ function closeMenu() {
 
 function goChangePassword() {
   menuOpen.value = false;
+  emit("close");
   router.push("/user-mgmt");
 }
 
 function handleLogout() {
   menuOpen.value = false;
+  emit("close");
   clearToken();
   queryClient.clear();
   router.push("/login");
 }
 
-function toggleSidebar() {
-  sidebarOpen.value = !sidebarOpen.value;
-}
-
-function closeSidebar() {
-  sidebarOpen.value = false;
+function onNavClick() {
+  emit("close");
 }
 
 function onClickOutside(e) {
@@ -85,19 +91,7 @@ const navIcons = {
 </script>
 
 <template>
-  <!-- Mobile overlay -->
-  <Transition name="overlay-fade">
-    <div v-if="sidebarOpen" class="sidebar-overlay" @click="closeSidebar"></div>
-  </Transition>
-
-  <!-- Mobile toggle button -->
-  <button class="sidebar-toggle" @click="toggleSidebar" aria-label="Toggle sidebar">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-      <line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/>
-    </svg>
-  </button>
-
-  <aside class="sidebar" :class="{ 'is-open': sidebarOpen }">
+  <aside class="sidebar" :class="{ 'is-open': isOpen }">
     <div class="brand">
       <div class="brand-mark">EQ</div>
       <div>
@@ -115,7 +109,7 @@ const navIcons = {
         active-class="is-active"
         @mouseenter="prefetch(item.name)"
         @focus="prefetch(item.name)"
-        @click="closeSidebar"
+        @click="onNavClick"
       >
         <span class="nav-icon" v-html="navIcons[item.name] || ''"></span>
         <span class="nav-label">{{ item.label }}</span>
@@ -152,54 +146,6 @@ const navIcons = {
 </template>
 
 <style scoped>
-/* Mobile overlay */
-.sidebar-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.5);
-  backdrop-filter: blur(4px);
-  z-index: 299;
-}
-
-.overlay-fade-enter-active,
-.overlay-fade-leave-active {
-  transition: opacity var(--transition-normal);
-}
-
-.overlay-fade-enter-from,
-.overlay-fade-leave-to {
-  opacity: 0;
-}
-
-/* Mobile toggle button */
-.sidebar-toggle {
-  display: none;
-  position: fixed;
-  top: var(--space-4);
-  left: var(--space-4);
-  z-index: 298;
-  width: 40px;
-  height: 40px;
-  border-radius: var(--radius-md);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  color: var(--text);
-  align-items: center;
-  justify-content: center;
-  box-shadow: var(--shadow-md);
-  transition: all var(--transition-fast);
-}
-
-.sidebar-toggle:hover {
-  background: var(--surface-hover);
-  border-color: var(--border-hover);
-}
-
-.sidebar-toggle svg {
-  width: 20px;
-  height: 20px;
-}
-
 /* Sidebar */
 .sidebar {
   position: sticky;
@@ -460,12 +406,8 @@ const navIcons = {
   transform: translateY(8px);
 }
 
-/* Responsive */
+/* Responsive: sidebar becomes fixed overlay on tablet/mobile */
 @media (max-width: 1024px) {
-  .sidebar-toggle {
-    display: flex;
-  }
-
   .sidebar {
     position: fixed;
     left: 0;

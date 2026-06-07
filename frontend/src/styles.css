@@ -95,6 +95,12 @@
   --z-modal: 300;
   --z-toast: 400;
   --z-tooltip: 500;
+
+  /* Safe area (for notched phones) */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
 }
 
 /* ---------- 2. Base Reset ---------- */
@@ -787,6 +793,7 @@ select:focus-visible {
 
   .main-shell {
     padding: var(--space-4);
+    padding-top: calc(var(--space-4) + var(--safe-top));
   }
 
   .card-grid,
@@ -803,19 +810,95 @@ select:focus-visible {
   .page-hero h2 {
     font-size: 20px;
   }
+
+  /* Touch target minimum for tablets */
+  .ghost-button,
+  .list-button,
+  .nav-item {
+    min-height: 44px;
+  }
 }
 
 @media (max-width: 640px) {
   .main-shell {
     padding: var(--space-3);
+    padding-top: calc(48px + var(--space-3) + var(--safe-top));
+    padding-bottom: calc(var(--space-3) + var(--safe-bottom));
   }
 
   .page-hero {
-    padding: var(--space-5);
+    flex-direction: column;
+    gap: var(--space-3);
+    padding: var(--space-4);
+    border-radius: var(--radius-lg);
+  }
+
+  .page-hero h2 {
+    font-size: 18px;
+  }
+
+  .eyebrow {
+    font-size: 11px;
+  }
+
+  .hero-copy {
+    display: none;
   }
 
   .metric-card strong {
-    font-size: 24px;
+    font-size: 22px;
+  }
+
+  .metric-card {
+    padding: var(--space-4);
+  }
+
+  /* Card grid: 2×2 on mobile (not 1-column) */
+  .card-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-3);
+  }
+
+  .card-grid.three-up {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  /* Two-up stacks vertically on mobile */
+  .card-grid.two-up {
+    grid-template-columns: 1fr;
+  }
+
+  /* Filter grid stacks vertically */
+  .filter-grid {
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .filter-grid label {
+    min-width: 0;
+    width: 100%;
+  }
+
+  /* Switch-row scrolls horizontally on mobile */
+  .switch-row {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+
+  .switch-row::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* List stack: no max-height on mobile for natural scroll */
+  .list-stack {
+    max-height: none;
+  }
+
+  /* Chart panel slightly shorter on mobile */
+  .chart-panel {
+    height: 220px;
   }
 }
 

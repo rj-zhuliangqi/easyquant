@@ -609,4 +609,32 @@ onMounted(() => { if (isAdminUser.value) loadUsers(); });
   gap: var(--space-2);
   margin-top: var(--space-5);
 }
+
+/* --- Mobile responsive --- */
+@media (max-width: 640px) {
+  .password-form {
+    max-width: none;
+  }
+
+  .user-card {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-3);
+  }
+
+  .uc-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  .act-btn {
+    width: 40px;
+    height: 40px;
+  }
+
+  .modal {
+    width: calc(100% - 32px);
+    max-width: none;
+  }
+}
 </style>

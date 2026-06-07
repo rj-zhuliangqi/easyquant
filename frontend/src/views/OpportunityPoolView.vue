@@ -1,19 +1,23 @@
 <script setup>
-import { computed, ref, watch } from "vue";
+import { computed, ref, watch, nextTick } from "vue";
 import { useQuery } from "@tanstack/vue-query";
 import QueryState from "../components/QueryState.vue";
 import MetricCard from "../components/ui/MetricCard.vue";
 import DataPanel from "../components/ui/DataPanel.vue";
 import EmptyState from "../components/ui/EmptyState.vue";
 import { fetchJson, pageQueryKey } from "../lib/api";
+import { useResponsive } from "../composables/useResponsive";
 
 defineOptions({ name: "opportunity-pool" });
+
+const { isMobileLayout } = useResponsive();
 
 const mode = ref("strong-sector");
 const selectedIndex = ref(0);
 const items = ref([]);
 const queryLoadingState = ref(true);
 const queryFetchingState = ref(false);
+const detailPanel = ref(null);
 
 const bootstrapQuery = useQuery({
   queryKey: pageQueryKey("opportunity-pool"),
@@ -68,6 +72,14 @@ watch(mode, async () => {
   await refreshOpportunities();
 });
 
+// On mobile, scroll to detail panel when selection changes
+watch(selectedIndex, async () => {
+  if (isMobileLayout.value && detailPanel.value) {
+    await nextTick();
+    detailPanel.value.$el?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+});
+
 const activeItem = computed(() => items.value[selectedIndex.value] || null);
 const queryLoading = computed(() => bootstrapQuery.isLoading.value && queryLoadingState.value);
 const queryFetching = computed(() => bootstrapQuery.isFetching.value || queryFetchingState.value);
@@ -120,7 +132,7 @@ const queryFetching = computed(() => bootstrapQuery.isFetching.value || queryFet
         </div>
       </DataPanel>
 
-      <DataPanel title="详情">
+      <DataPanel ref="detailPanel" title="详情" class="detail-panel">
         <div v-if="activeItem" class="detail-block">
           <strong>{{ activeItem.stock_name || activeItem.sector_name || "--" }}</strong>
           <p>{{ activeItem.entry_reason || activeItem.reason_summary || "--" }}</p>
@@ -135,3 +147,11 @@ const queryFetching = computed(() => bootstrapQuery.isFetching.value || queryFet
     </section>
   </section>
 </template>
+
+<style scoped>
+@media (max-width: 640px) {
+  .detail-panel {
+    border-top: 2px solid var(--border-hover);
+  }
+}
+</style>
