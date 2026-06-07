@@ -1221,6 +1221,133 @@ def create_app(
             "error": result.error,
         }
 
+    # ── Skill Chat / Creation Endpoints ───────────────────────────────
+
+    _SKILL_CHAT_SYSTEM_PROMPT = """你是一个专业的A股选股策略专家。请根据用户的需求，生成选股策略配置或回答策略相关问题。
+
+如果用户要求创建新策略，请生成以下格式的JSON：
+
+{
+  "skill_name": "策略名称（简短）",
+  "skill_category": "stock-pick|news-scan|review|stock-confirm|position-review|weekly-review",
+  "description": "策略描述（一句话）",
+  "revision_title": "版本标题",
+  "revision_content": "策略执行逻辑的详细描述，包括选股条件、过滤规则、排序方式等",
+  "job_name": "定时任务名称（如 09:30 某某选股）",
+  "schedule_label": "显示标签（如 09:30）",
+  "schedule_rrule_or_cron": "标准5字段cron表达式",
+  "job_type": "stock_pick|news_scan|day_review|stock_confirm|position_review|weekly_review",
+  "display_group": "盘前|盘中|盘后|夜间|周报",
+  "result_schema_version": "2.0"
+}
+
+Cron表达式规则（标准5字段：分 时 日 月 星期）：
+- 盘前任务：20 8 * * 1-5（工作日8:20）
+- 盘中任务：26 9 * * 1-5（工作日9:26）
+- 盘后任务：0 19 * * 1-5（工作日19:00）
+- 夜间任务：0 20 * * 1-5（工作日20:00）
+- 周报任务：0 22 * * 5（周五22:00）
+
+请用中文回复，JSON配置放在代码块中。"""
+
+    @app.post("/api/ai/skill-chat")
+    def ai_skill_chat(payload: dict = Body(default={})) -> dict:
+        """AI Skill 对话入口 - 通过自然语言创建或修改选股策略"""
+        message = payload.get("message", "")
+        if not message:
+            raise HTTPException(status_code=400, detail="message is required")
+
+        history = payload.get("history", [])
+        conversation = []
+        for h in history:
+            if h.get("role") == "user":
+                conversation.append(f"用户: {h.get('content', '')}")
+            elif h.get("role") == "assistant":
+                conversation.append(f"助手: {h.get('content', '')}")
+
+        conversation_text = "\n".join(conversation)
+
+        full_prompt = f"""{_SKILL_CHAT_SYSTEM_PROMPT}
+
+{conversation_text}
+
+用户: {message}
+
+请回复："""
+
+        # Build the actual prompt for claude CLI
+        cli_prompt = f"""{_SKILL_CHAT_SYSTEM_PROMPT}
+
+{conversation_text}
+
+用户: {message}
+
+请回复："""
+
+        import subprocess
+        import time
+
+        logger.info("skill-chat: processing message from user")
+        start = time.time()
+
+        try:
+            proc = subprocess.run(
+                [
+                    "claude", "-p", cli_prompt,
+                    "--allowedTools", "Bash(curl*)", "Bash(python*)", "Write", "Read",
+                    "--output-format", "text",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            duration_ms = int((time.time() - start) * 1000)
+
+            if proc.returncode != 0:
+                logger.error("skill-chat claude-code exited with code %d: %s", proc.returncode, proc.stderr[:500])
+                return {
+                    "response": f"执行出错: {proc.stderr[:500]}",
+                    "skill_draft": None,
+                    "duration_ms": duration_ms,
+                }
+
+            output = proc.stdout
+            logger.info("skill-chat completed in %dms, output length=%d", duration_ms, len(output))
+
+            # Try to extract JSON skill draft from output
+            skill_draft = None
+            import re
+            # Look for JSON code block
+            json_match = re.search(r'```json\s*(.*?)\s*```', output, re.DOTALL)
+            if not json_match:
+                json_match = re.search(r'```\s*(\{.*?\})\s*```', output, re.DOTALL)
+            if json_match:
+                try:
+                    skill_draft = json.loads(json_match.group(1))
+                except json.JSONDecodeError:
+                    pass
+
+            return {
+                "response": output,
+                "skill_draft": skill_draft,
+                "duration_ms": duration_ms,
+            }
+
+        except subprocess.TimeoutExpired:
+            duration_ms = int((time.time() - start) * 1000)
+            logger.error("skill-chat timed out after %dms", duration_ms)
+            return {
+                "response": "请求超时，请重试或简化需求描述。",
+                "skill_draft": None,
+                "duration_ms": duration_ms,
+            }
+        except FileNotFoundError:
+            return {
+                "response": "Claude Code CLI 未找到，请检查安装。",
+                "skill_draft": None,
+                "duration_ms": 0,
+            }
+
     @app.put("/api/ai/jobs/{job_id}/engine")
     def ai_update_job_engine(job_id: int, payload: dict = Body(default={}), db: Session = Depends(get_db)) -> dict:
         """更新 AI Job 的执行引擎配置"""

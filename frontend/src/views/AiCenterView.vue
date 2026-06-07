@@ -14,6 +14,7 @@ const tabs = [
   { key: "jobs", label: "任务运行", icon: "⚙️" },
   { key: "picks", label: "选股池", icon: "🎯" },
   { key: "review", label: "复盘经验", icon: "📝" },
+  { key: "skill-chat", label: "Skill工坊", icon: "🤖" },
   { key: "config", label: "配置", icon: "🔧" },
 ];
 
@@ -66,6 +67,55 @@ const enginesQuery = useQuery({
   staleTime: 60_000,
 });
 const engines = computed(() => enginesQuery.data.value?.engines || []);
+
+// ── Skill Chat state ──
+const chatMessages = ref([]);
+const chatInput = ref("");
+const chatLoading = ref(false);
+const chatDraft = ref(null);
+
+async function sendChatMessage() {
+  const message = chatInput.value.trim();
+  if (!message || chatLoading.value) return;
+
+  chatMessages.value.push({ role: "user", content: message });
+  chatInput.value = "";
+  chatLoading.value = true;
+  chatDraft.value = null;
+
+  try {
+    const response = await fetchJson("/api/ai/skill-chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message,
+        history: chatMessages.value.slice(0, -1),
+      }),
+    });
+
+    chatMessages.value.push({
+      role: "assistant",
+      content: response.response || "无响应",
+    });
+
+    if (response.skill_draft) {
+      chatDraft.value = response.skill_draft;
+    }
+  } catch (error) {
+    chatMessages.value.push({
+      role: "assistant",
+      content: `请求失败: ${error.message || "未知错误"}`,
+    });
+  } finally {
+    chatLoading.value = false;
+  }
+}
+
+function clearChat() {
+  chatMessages.value = [];
+  chatDraft.value = null;
+  chatInput.value = "";
+}
 </script>
 
 <template>
@@ -291,6 +341,83 @@ const engines = computed(() => enginesQuery.data.value?.engines || []);
     </template>
 
     <!-- ═══════════════════════════════════════════ -->
+    <!-- Tab: Skill工坊                              -->
+    <!-- ═══════════════════════════════════════════ -->
+    <template v-if="activeTab === 'skill-chat'">
+      <section class="panel">
+        <div class="panel-head">
+          <h3>🤖 Skill 工坊</h3>
+          <button class="btn-clear" @click="clearChat">清空对话</button>
+        </div>
+        <div class="chat-container">
+          <div class="chat-messages">
+            <div v-if="!chatMessages.length" class="chat-welcome">
+              <p>👋 欢迎来到 Skill 工坊！</p>
+              <span>通过自然语言描述你的选股策略需求，AI 将帮你生成策略配置。</span>
+              <div class="chat-examples">
+                <button class="example-chip" @click="chatInput = '帮我创建一个早盘强势股筛选策略，要求：1. 量比大于2 2. 涨幅大于3% 3. 排除ST股'">
+                  💡 早盘强势股筛选
+                </button>
+                <button class="example-chip" @click="chatInput = '创建一个尾盘资金流入选股策略，筛选尾盘30分钟主力资金净流入前20的股票'">
+                  💡 尾盘资金流入选股
+                </button>
+                <button class="example-chip" @click="chatInput = '帮我创建一个板块轮动策略，追踪当日热点板块中的龙头股'">
+                  💡 板块轮动策略
+                </button>
+              </div>
+            </div>
+            <div
+              v-for="(msg, idx) in chatMessages"
+              :key="idx"
+              class="chat-message"
+              :class="msg.role"
+            >
+              <div class="chat-avatar">{{ msg.role === 'user' ? '👤' : '🤖' }}</div>
+              <div class="chat-bubble">
+                <pre class="chat-text">{{ msg.content }}</pre>
+              </div>
+            </div>
+            <div v-if="chatLoading" class="chat-message assistant">
+              <div class="chat-avatar">🤖</div>
+              <div class="chat-bubble loading">
+                <span class="typing-dot"></span>
+                <span class="typing-dot"></span>
+                <span class="typing-dot"></span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Skill Draft Preview -->
+          <div v-if="chatDraft" class="chat-draft">
+            <h4>📋 生成的策略配置</h4>
+            <pre class="draft-json">{{ JSON.stringify(chatDraft, null, 2) }}</pre>
+            <div class="draft-actions">
+              <button class="btn-apply" @click="applySkillDraft">✅ 应用此配置</button>
+              <button class="btn-cancel" @click="chatDraft = null">❌ 放弃</button>
+            </div>
+          </div>
+
+          <div class="chat-input-area">
+            <textarea
+              v-model="chatInput"
+              class="chat-input"
+              placeholder="描述你的选股策略需求..."
+              rows="3"
+              @keydown.enter.prevent="sendChatMessage"
+            ></textarea>
+            <button
+              class="chat-send-btn"
+              :disabled="!chatInput.trim() || chatLoading"
+              @click="sendChatMessage"
+            >
+              {{ chatLoading ? '生成中...' : '发送' }}
+            </button>
+          </div>
+        </div>
+      </section>
+    </template>
+
+    <!-- ═══════════════════════════════════════════ -->
     <!-- Tab: 配置                                   -->
     <!-- ═══════════════════════════════════════════ -->
     <template v-if="activeTab === 'config'">
@@ -482,4 +609,49 @@ const engines = computed(() => enginesQuery.data.value?.engines || []);
 
 /* ── Utility ── */
 .mt-lg { margin-top: 20px; }
+
+/* ── Skill Chat ── */
+.chat-container { display: flex; flex-direction: column; gap: 16px; }
+.chat-messages { display: flex; flex-direction: column; gap: 12px; min-height: 200px; }
+.chat-welcome { text-align: center; padding: 40px 20px; color: var(--text-muted, #94a3b8); }
+.chat-welcome p { font-size: 18px; font-weight: 600; margin-bottom: 8px; color: var(--text, #e2e8f0); }
+.chat-welcome span { font-size: 13px; display: block; margin-bottom: 20px; }
+.chat-examples { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+.example-chip { padding: 8px 14px; border-radius: 20px; background: var(--surface, #1e293b); border: 1px solid var(--border, rgba(255,255,255,0.06)); color: var(--text-muted, #94a3b8); font-size: 12px; cursor: pointer; transition: all 0.15s ease; }
+.example-chip:hover { background: rgba(255,255,255,0.04); color: var(--text, #e2e8f0); }
+
+.chat-message { display: flex; gap: 10px; align-items: flex-start; }
+.chat-message.user { flex-direction: row-reverse; }
+.chat-avatar { font-size: 20px; flex-shrink: 0; }
+.chat-bubble { padding: 10px 14px; border-radius: 12px; max-width: 80%; }
+.chat-message.user .chat-bubble { background: var(--surface-active, rgba(255,255,255,0.04)); border: 1px solid var(--border, rgba(255,255,255,0.06)); }
+.chat-message.assistant .chat-bubble { background: var(--surface, #1e293b); border: 1px solid var(--border, rgba(255,255,255,0.06)); }
+.chat-text { margin: 0; white-space: pre-wrap; font-family: inherit; font-size: 13px; line-height: 1.6; color: var(--text, #e2e8f0); }
+
+.chat-input-area { display: flex; gap: 10px; align-items: flex-end; }
+.chat-input { flex: 1; padding: 10px 14px; border-radius: 10px; background: var(--surface, #1e293b); border: 1px solid var(--border, rgba(255,255,255,0.06)); color: var(--text, #e2e8f0); font-size: 13px; resize: vertical; min-height: 60px; }
+.chat-input:focus { outline: none; border-color: rgba(255,255,255,0.15); }
+.chat-send-btn { padding: 10px 20px; border-radius: 10px; background: var(--accent, #0ea5e9); color: white; font-size: 13px; font-weight: 600; border: none; cursor: pointer; transition: all 0.15s ease; }
+.chat-send-btn:hover:not(:disabled) { background: #0284c7; }
+.chat-send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.chat-draft { padding: 16px; border-radius: 10px; background: var(--surface, #1e293b); border: 1px solid var(--border, rgba(255,255,255,0.06)); }
+.chat-draft h4 { font-size: 14px; font-weight: 600; margin-bottom: 10px; color: var(--text, #e2e8f0); }
+.draft-json { padding: 12px; border-radius: 8px; background: rgba(0,0,0,0.2); font-family: monospace; font-size: 12px; line-height: 1.5; color: var(--text-muted, #94a3b8); overflow-x: auto; margin-bottom: 12px; }
+.draft-actions { display: flex; gap: 10px; }
+.btn-apply { padding: 8px 16px; border-radius: 8px; background: rgba(74,222,128,0.1); color: #4ade80; font-size: 13px; font-weight: 600; border: none; cursor: pointer; }
+.btn-cancel { padding: 8px 16px; border-radius: 8px; background: rgba(248,113,113,0.1); color: #f87171; font-size: 13px; font-weight: 600; border: none; cursor: pointer; }
+.btn-clear { padding: 4px 10px; border-radius: 6px; background: rgba(148,163,184,0.08); color: var(--text-muted, #94a3b8); font-size: 11px; border: none; cursor: pointer; }
+.btn-clear:hover { background: rgba(148,163,184,0.15); }
+
+/* Typing indicator */
+.loading { display: flex; gap: 4px; padding: 12px 16px; }
+.typing-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-muted, #94a3b8); animation: typing 1.4s infinite ease-in-out both; }
+.typing-dot:nth-child(1) { animation-delay: 0s; }
+.typing-dot:nth-child(2) { animation-delay: 0.2s; }
+.typing-dot:nth-child(3) { animation-delay: 0.4s; }
+@keyframes typing {
+  0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+  40% { transform: scale(1); opacity: 1; }
+}
 </style>
