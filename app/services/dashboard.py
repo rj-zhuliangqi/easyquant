@@ -82,10 +82,12 @@ class DashboardService:
                 )
                 for sector_name in ranked_sector_names
             ]
+            labels = sorted({p["label"] for s in series for p in s.get("points", []) if p.get("label")})
             return {
                 "updated_at": latest_time.isoformat(),
                 "metric": metric,
                 "granularity": granularity,
+                "labels": labels,
                 "series": series,
                 "invalid_watchlist": resolved["invalid"],
                 "resolved_watchlist": resolved["mapped"],
@@ -98,6 +100,7 @@ class DashboardService:
                 "updated_at": None,
                 "metric": metric,
                 "granularity": granularity,
+                "labels": [],
                 "series": [],
                 "invalid_watchlist": include_sector_names,
                 "missing_labels_count": 0,
@@ -115,6 +118,7 @@ class DashboardService:
                 "updated_at": None,
                 "metric": metric,
                 "granularity": granularity,
+                "labels": [],
                 "series": [],
                 "invalid_watchlist": include_sector_names,
                 "missing_labels_count": 0,
@@ -146,10 +150,12 @@ class DashboardService:
         ]
         observed_labels = {row.captured_at.strftime("%Y-%m-%d %H:%M") for row in rows}
         missing_labels_count = max(len(timeline) - len(observed_labels), 0)
+        labels = [t.strftime("%Y-%m-%d %H:%M") for t in timeline]
         return {
             "updated_at": latest_time.isoformat(),
             "metric": metric,
             "granularity": granularity,
+            "labels": labels,
             "series": series,
             "invalid_watchlist": resolved["invalid"],
             "resolved_watchlist": resolved["mapped"],
