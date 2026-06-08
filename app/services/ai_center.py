@@ -107,6 +107,7 @@ class AiCenterService:
                     job_type=item["job_type"],
                     result_schema_version=item["result_schema_version"],
                     display_group=item["display_group"],
+                    engine_type=item.get("engine_type", "claude-code"),
                     enabled=True,
                 )
                 session.add(job)
@@ -123,6 +124,7 @@ class AiCenterService:
                     ("job_type", item["job_type"]),
                     ("result_schema_version", item["result_schema_version"]),
                     ("display_group", item["display_group"]),
+                    ("engine_type", item.get("engine_type", "claude-code")),
                     ("enabled", True),
                 ):
                     if getattr(job, attr) != value:
@@ -289,6 +291,8 @@ class AiCenterService:
                     "job_type": job.job_type,
                     "result_schema_version": job.result_schema_version,
                     "display_group": job.display_group,
+                    "engine_type": job.engine_type,
+                    "auto_schedule": job.auto_schedule,
                     "enabled": job.enabled,
                     "latest_run_summary": latest_run_map.get(job.id),
                     "created_at": job.created_at.isoformat() if job.created_at else None,

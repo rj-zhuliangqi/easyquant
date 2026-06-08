@@ -16,6 +16,7 @@ class BuiltinAiJob(TypedDict):
     job_type: str
     display_group: str
     result_schema_version: str
+    engine_type: str
 
 
 BUILTIN_AI_JOBS: list[BuiltinAiJob] = [
@@ -32,6 +33,7 @@ BUILTIN_AI_JOBS: list[BuiltinAiJob] = [
         "job_type": "news_scan",
         "display_group": "盘前",
         "result_schema_version": "2.0",
+        "engine_type": "claude-code",
     },
     {
         "skill_name": "集合竞价分析",
@@ -46,6 +48,7 @@ BUILTIN_AI_JOBS: list[BuiltinAiJob] = [
         "job_type": "stock_pick",
         "display_group": "盘中",
         "result_schema_version": "2.0",
+        "engine_type": "claude-code",
     },
     {
         "skill_name": "弱转强候选筛选",
@@ -60,6 +63,7 @@ BUILTIN_AI_JOBS: list[BuiltinAiJob] = [
         "job_type": "stock_pick",
         "display_group": "盘中",
         "result_schema_version": "2.0",
+        "engine_type": "claude-code",
     },
     {
         "skill_name": "弱转强转强确认",
@@ -74,6 +78,7 @@ BUILTIN_AI_JOBS: list[BuiltinAiJob] = [
         "job_type": "stock_confirm",
         "display_group": "盘中",
         "result_schema_version": "2.0",
+        "engine_type": "claude-code",
     },
     {
         "skill_name": "早盘复盘",
@@ -88,6 +93,7 @@ BUILTIN_AI_JOBS: list[BuiltinAiJob] = [
         "job_type": "day_review",
         "display_group": "盘后",
         "result_schema_version": "2.0",
+        "engine_type": "claude-code",
     },
     {
         "skill_name": "尾盘选股",
@@ -102,6 +108,7 @@ BUILTIN_AI_JOBS: list[BuiltinAiJob] = [
         "job_type": "stock_pick",
         "display_group": "盘后",
         "result_schema_version": "2.0",
+        "engine_type": "claude-code",
     },
     {
         "skill_name": "超短线复盘",
@@ -116,6 +123,7 @@ BUILTIN_AI_JOBS: list[BuiltinAiJob] = [
         "job_type": "day_review",
         "display_group": "盘后",
         "result_schema_version": "2.0",
+        "engine_type": "claude-code",
     },
     {
         "skill_name": "超短线盘后选股",
@@ -130,6 +138,7 @@ BUILTIN_AI_JOBS: list[BuiltinAiJob] = [
         "job_type": "stock_pick",
         "display_group": "夜间",
         "result_schema_version": "2.0",
+        "engine_type": "claude-code",
     },
     {
         "skill_name": "大象起舞选股",
@@ -144,6 +153,7 @@ BUILTIN_AI_JOBS: list[BuiltinAiJob] = [
         "job_type": "stock_pick",
         "display_group": "夜间",
         "result_schema_version": "2.0",
+        "engine_type": "claude-code",
     },
     {
         "skill_name": "ST股挖掘",
@@ -158,6 +168,7 @@ BUILTIN_AI_JOBS: list[BuiltinAiJob] = [
         "job_type": "stock_pick",
         "display_group": "夜间",
         "result_schema_version": "2.0",
+        "engine_type": "claude-code",
     },
     {
         "skill_name": "每日持仓复盘",
@@ -172,6 +183,7 @@ BUILTIN_AI_JOBS: list[BuiltinAiJob] = [
         "job_type": "position_review",
         "display_group": "夜间",
         "result_schema_version": "2.0",
+        "engine_type": "claude-code",
     },
     {
         "skill_name": "超短线周度经验汇总",
@@ -186,5 +198,6 @@ BUILTIN_AI_JOBS: list[BuiltinAiJob] = [
         "job_type": "weekly_review",
         "display_group": "周报",
         "result_schema_version": "2.0",
+        "engine_type": "claude-code",
     },
 ]

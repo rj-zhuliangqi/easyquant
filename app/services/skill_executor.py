@@ -72,7 +72,8 @@ def _build_prompt(
 ) -> str:
     """构建统一的执行 prompt"""
     timestamp = time.strftime("%Y%m%d_%H%M%S")
-    output_path = f"{output_dir}/{skill_name}_{trading_date}_{timestamp}.json"
+    safe_name = skill_name.replace(":", "").replace(" ", "_")
+    output_path = f"{output_dir}/{safe_name}_{trading_date}_{timestamp}.json"
 
     base_prompt = skill_prompt or f"你正在执行选股策略「{skill_name}」，交易日为 {trading_date}。"
 
@@ -155,8 +156,18 @@ class ClaudeCodeExecutor:
         prompt = _build_prompt(skill_name, trading_date, data_file, output_dir, "claude-code", skill_prompt)
         timeout = config.get("timeout_s", 600)
 
+        claude_path = _find_cli("claude")
+        if not claude_path:
+            return ExecuteResult(
+                success=False,
+                skill_name=skill_name,
+                trading_date=trading_date.isoformat(),
+                engine_type="claude-code",
+                error="claude CLI not found in PATH or common install locations",
+            )
+
         cmd = [
-            "claude", "-p", prompt,
+            claude_path, "-p", prompt,
             "--allowedTools", "Bash(curl*)", "Bash(python*)", "Write", "Read", "WebFetch",
             "--output-format", "text",
         ]
@@ -174,27 +185,33 @@ class ClaudeCodeExecutor:
             duration_ms = int((time.time() - start) * 1000)
 
             if proc.returncode != 0:
-                logger.error("claude-code exited with code %d: %s", proc.returncode, proc.stderr[:500])
+                logger.error("claude-code exited with code %d: stderr=%s stdout=%s",
+                             proc.returncode, proc.stderr[:500], proc.stdout[:500])
                 return ExecuteResult(
                     success=False,
                     skill_name=skill_name,
                     trading_date=trading_date.isoformat(),
                     engine_type="claude-code",
                     duration_ms=duration_ms,
-                    error=proc.stderr[:1000],
+                    error=proc.stderr[:1000] or proc.stdout[:1000],
                 )
 
             # Check for new output files
             output_files = _find_new_output_files(output_dir, start)
-            logger.info("claude-code completed in %dms, produced %d file(s)", duration_ms, len(output_files))
+            if not output_files:
+                logger.warning("claude-code returned 0 but produced no output files; stdout=%s",
+                               proc.stdout[:500])
+            else:
+                logger.info("claude-code completed in %dms, produced %d file(s)", duration_ms, len(output_files))
 
             return ExecuteResult(
-                success=True,
+                success=len(output_files) > 0,
                 skill_name=skill_name,
                 trading_date=trading_date.isoformat(),
                 engine_type="claude-code",
                 duration_ms=duration_ms,
                 output_files=output_files,
+                error=None if output_files else "No output files produced",
             )
 
         except subprocess.TimeoutExpired:
@@ -207,14 +224,6 @@ class ClaudeCodeExecutor:
                 engine_type="claude-code",
                 duration_ms=duration_ms,
                 error=f"Timeout after {timeout}s",
-            )
-        except FileNotFoundError:
-            return ExecuteResult(
-                success=False,
-                skill_name=skill_name,
-                trading_date=trading_date.isoformat(),
-                engine_type="claude-code",
-                error="claude CLI not found in PATH",
             )
 
 
@@ -379,6 +388,28 @@ def _find_new_output_files(output_dir: str, since_epoch: float) -> list[str]:
         except OSError:
             continue
     return sorted(files)
+
+
+def _find_cli(name: str) -> str | None:
+    """Find the full path to a CLI tool, checking PATH and common install locations."""
+    import shutil
+
+    path = shutil.which(name)
+    if path:
+        return path
+
+    home = Path.home()
+    common_paths = [
+        home / ".local" / "bin" / name,
+        home / ".hermes" / "node" / "bin" / name,
+        home / ".cargo" / "bin" / name,
+        Path("/opt/homebrew/bin") / name,
+        Path("/usr/local/bin") / name,
+    ]
+    for p in common_paths:
+        if p.exists():
+            return str(p)
+    return None
 
 
 def get_executor(engine_type: str) -> SkillExecutor:

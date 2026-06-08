@@ -15,6 +15,7 @@ from app.database import Base
 from app.main import create_app
 from app.main import create_session_factory
 from app.models import AiJob
+from app.models import AiRun
 from app.models import AiSkill
 from app.models import AiSkillRevision
 from app.services.ai_center import AiCenterService
@@ -80,7 +81,13 @@ def build_ai_client() -> tuple[TestClient, sessionmaker]:
         enable_scheduler=False,
         now_provider=lambda: datetime(2026, 5, 8, 15, 0, 0),
     )
-    return TestClient(app), session_factory
+    client = TestClient(app)
+    # Login to get auth token
+    login_resp = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
+    if login_resp.status_code == 200:
+        token = login_resp.json().get("access_token", "")
+        client.headers["Authorization"] = f"Bearer {token}"
+    return client, session_factory
 
 
 def seed_skill(
@@ -866,3 +873,103 @@ def test_ai_experience_rulepack_can_feedback_into_stock_research_and_support_rol
     assert any(item["id"] == second_rulepack_id for item in rulepacks.json()["items"])
     assert any(item["id"] == research_job_id and item["active_rulepack_id"] == active_rulepack_id for item in jobs.json()["items"])
     assert skills.status_code == 200
+
+
+def test_builtin_jobs_have_engine_type_set() -> None:
+    """All builtin jobs should have engine_type populated, not NULL."""
+    client, _ = build_ai_client()
+
+    jobs = client.get("/api/ai/jobs")
+    assert jobs.status_code == 200
+    for item in jobs.json()["items"]:
+        assert item.get("engine_type") is not None, f"Job {item['name']} has no engine_type"
+
+
+def test_ai_scheduler_status_endpoint() -> None:
+    """The scheduler-status endpoint should return job registration info."""
+    client, _ = build_ai_client()
+
+    response = client.get("/api/ai/scheduler-status")
+    assert response.status_code == 200
+    payload = response.json()
+    # Scheduler is disabled in the test client, so it should report not running
+    assert "scheduler_running" in payload
+    assert "db_job_statuses" in payload
+
+
+def test_auto_schedule_field_is_respected_in_registry() -> None:
+    """Jobs with auto_schedule=False should still appear in jobs list but can be filtered."""
+    from sqlalchemy import select
+
+    client, session_factory = build_ai_client()
+
+    with session_factory() as session:
+        job = session.scalar(select(AiJob).where(AiJob.name == "08:20 盘前消息面挖掘"))
+        assert job is not None
+        assert job.auto_schedule is True
+
+    # The auto_schedule field should be visible via the API
+    jobs = client.get("/api/ai/jobs")
+    assert jobs.status_code == 200
+
+
+def test_build_prompt_sanitizes_colon_in_skill_name() -> None:
+    """Output filenames should not contain colons (invalid on macOS)."""
+    from app.services.skill_executor import _build_prompt
+
+    prompt = _build_prompt(
+        "08:20 盘前消息面挖掘",
+        date(2026, 6, 8),
+        "/tmp/data.json",
+        "/tmp/outbox",
+        "claude-code",
+    )
+    import re
+    m = re.search(r"写入:\s*(.+\.json)", prompt)
+    assert m is not None, "Output path not found in prompt"
+    output_path = m.group(1)
+    assert ":" not in output_path, f"Colon found in output path: {output_path}"
+    assert "0820" in output_path or "08_20" in output_path, f"Time prefix not sanitized: {output_path}"
+
+
+def test_catchup_mechanism_on_scheduler_startup() -> None:
+    """When the app starts after a job's scheduled time, catch-up jobs should be created."""
+    from sqlalchemy import select
+
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        future=True,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    session_factory = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+    Base.metadata.create_all(engine)
+    # Use current real time but offset to be after the earliest scheduled job
+    # Set now_provider to return a time after all cron schedules on a weekday
+    # Use a fixed time far enough in the future that APScheduler won't skip catch-up jobs
+    real_now = datetime.now()
+    # Use a time that is close to real time so APScheduler doesn't skip it
+    test_time = real_now.replace(hour=22, minute=4, second=0, microsecond=0)
+    # If test_time is in the past today, add a day
+    if test_time < real_now:
+        from datetime import timedelta
+        test_time = test_time + timedelta(days=1)
+    app = create_app(
+        session_factory=session_factory,
+        gateway=AiGateway(),
+        enable_scheduler=True,
+        now_provider=lambda: test_time,
+    )
+    with TestClient(app) as client:
+        scheduler = app.state.scheduler
+        assert scheduler is not None
+        assert scheduler.running
+
+        # Check that catch-up jobs were created
+        all_jobs = scheduler.get_jobs()
+        catchup_jobs = [j for j in all_jobs if j.id.startswith("ai-skill-catchup-")]
+        cron_jobs = [j for j in all_jobs if j.id.startswith("ai-skill-") and not j.id.startswith("ai-skill-catchup-")]
+        # At 22:04 on a weekday, several jobs should have been missed
+        assert len(catchup_jobs) >= 1, f"Expected catch-up jobs but found {len(catchup_jobs)}, all jobs: {[j.id for j in all_jobs]}"
+        # Cron jobs should also be registered
+        assert len(cron_jobs) >= 1

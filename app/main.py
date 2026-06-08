@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+import json
 import logging
 from pathlib import Path
+import subprocess
 import time
 from typing import Callable
 
@@ -68,6 +70,7 @@ def create_session_factory(database_url: str = DEFAULT_DATABASE_URL) -> sessionm
     )
     if database_url.startswith("sqlite"):
         _configure_sqlite_engine(engine)
+        _recover_sqlite_if_corrupted(engine)
     Base.metadata.create_all(engine)
     ensure_ai_center_schema(engine)
     ensure_indexes(engine)
@@ -82,6 +85,66 @@ def _configure_sqlite_engine(engine: Engine) -> None:
         cursor.execute("PRAGMA busy_timeout=30000")
         cursor.execute("PRAGMA synchronous=NORMAL")
         cursor.close()
+
+
+def _recover_sqlite_if_corrupted(engine: Engine) -> None:
+    """Check SQLite integrity and dump/rebuild if corrupted."""
+    db_url = str(engine.url)
+    if not db_url.startswith("sqlite"):
+        return
+    db_path = db_url.replace("sqlite+pysqlite:///", "").replace("sqlite:///", "")
+    if not db_path or not Path(db_path).exists():
+        return
+
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(text("PRAGMA integrity_check")).scalar()
+        if result == "ok":
+            return
+        logger.warning("SQLite integrity check failed: %s — attempting recovery", str(result)[:200])
+    except Exception as exc:
+        logger.warning("SQLite integrity check raised: %s — attempting recovery", exc)
+
+    backup_path = db_path + ".corrupted." + time.strftime("%Y%m%d%H%M%S")
+    logger.warning("Renaming corrupted DB to %s", backup_path)
+
+    # Close existing connections and remove WAL/SHM files
+    engine.dispose()
+    for suffix in ("-shm", "-wal"):
+        wal_path = Path(db_path + suffix)
+        if wal_path.exists():
+            wal_path.unlink()
+
+    Path(db_path).rename(backup_path)
+
+    # Also remove WAL/SHM for the backup
+    for suffix in ("-shm", "-wal"):
+        wal_path = Path(backup_path + suffix)
+        if wal_path.exists():
+            wal_path.unlink()
+
+    dump_proc = subprocess.run(
+        ["sqlite3", backup_path, ".dump"],
+        capture_output=True, text=True, timeout=120,
+    )
+    if dump_proc.returncode == 0 and dump_proc.stdout:
+        clean_lines = [
+            line for line in dump_proc.stdout.splitlines()
+            if not line.upper().startswith("ROLLBACK")
+        ]
+        rebuild_proc = subprocess.run(
+            ["sqlite3", db_path],
+            input="\n".join(clean_lines),
+            capture_output=True, text=True, timeout=120,
+        )
+        if rebuild_proc.returncode != 0:
+            logger.error("SQLite rebuild failed: %s", rebuild_proc.stderr[:500])
+        else:
+            logger.info("SQLite database recovered successfully from dump")
+    else:
+        logger.error("SQLite dump failed, starting with fresh DB: %s", dump_proc.stderr[:500])
+
+    Base.metadata.create_all(engine)
 
 
 def ensure_indexes(engine: Engine) -> None:
@@ -262,9 +325,6 @@ def _parse_cron_to_aps_kwargs(cron_expr: str) -> dict[str, str]:
         "month": month,
         "day_of_week": day_of_week,
     }
-    response = FileResponse(Path(__file__).parent / "static" / SPA_SHELL_FILENAME)
-    response.headers["Cache-Control"] = SPA_SHELL_CACHE_CONTROL
-    return response
 
 
 def _ensure_home_summary_ready(
@@ -307,6 +367,19 @@ def create_app(
     enable_scheduler: bool = True,
     now_provider: Callable[[], datetime] | None = None,
 ) -> FastAPI:
+    # Ensure scheduler-related logs go to stderr (captured by launchd)
+    if not any(isinstance(h, logging.StreamHandler) for h in logger.handlers):
+        _handler = logging.StreamHandler()
+        _handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        logger.addHandler(_handler)
+    # Also configure skill_executor logger
+    _se_logger = logging.getLogger("app.services.skill_executor")
+    if not any(isinstance(h, logging.StreamHandler) for h in _se_logger.handlers):
+        _se_handler = logging.StreamHandler()
+        _se_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        _se_logger.addHandler(_se_handler)
+        logger.setLevel(logging.INFO)
+
     session_factory = session_factory or create_session_factory()
     gateway = gateway or AkshareGateway()
     now_provider = now_provider or datetime.now
@@ -483,7 +556,7 @@ def create_app(
                 with session_factory() as session:
                     from app.models import AiJob as AiJobModel
                     from sqlalchemy import select
-                    ai_jobs = list(session.scalars(select(AiJobModel).where(AiJobModel.enabled == True, AiJobModel.schedule_rrule_or_cron.isnot(None))))
+                    ai_jobs = list(session.scalars(select(AiJobModel).where(AiJobModel.enabled == True, AiJobModel.auto_schedule == True, AiJobModel.schedule_rrule_or_cron.isnot(None))))
                     for job in ai_jobs:
                         cron_expr = job.schedule_rrule_or_cron
                         if not cron_expr:
@@ -497,16 +570,95 @@ def create_app(
                                 id=f"ai-skill-{job.id}",
                                 max_instances=1,
                                 coalesce=True,
-                                misfire_grace_time=300,
+                                misfire_grace_time=3600,
                                 replace_existing=True,
                                 **cron_kwargs,
                             )
-                            logger.info("registered ai-skill cron job: %s (id=%d, cron=%s)", job.name, job.id, cron_expr)
+                            next_run = None
+                            try:
+                                next_run = scheduler.get_job(f"ai-skill-{job.id}").next_run_time
+                            except (AttributeError, TypeError):
+                                pass
+                            logger.info(
+                                "registered ai-skill cron job: %s (id=%d, cron=%s, next_run=%s)",
+                                job.name, job.id, cron_expr,
+                                next_run.isoformat() if next_run else "N/A",
+                            )
                         except ValueError as exc:
                             logger.warning("failed to parse cron for job %d (%s): %s", job.id, job.name, exc)
             except Exception:
                 logger.exception("failed to register ai-skill cron jobs")
+            # Catch-up: run jobs that should have fired today but haven't
+            try:
+                with session_factory() as session:
+                    from app.models import AiJob as AiJobModel, AiRun as AiRunModel, AiSkill as AiSkillModel
+                    now = now_provider()
+                    today = now.date()
+                    catchup_jobs = list(session.scalars(
+                        select(AiJobModel).where(
+                            AiJobModel.enabled == True,
+                            AiJobModel.auto_schedule == True,
+                            AiJobModel.schedule_rrule_or_cron.isnot(None),
+                        )
+                    ))
+                    for catchup_job in catchup_jobs:
+                        cron_expr = catchup_job.schedule_rrule_or_cron
+                        if not cron_expr:
+                            continue
+                        try:
+                            cron_kwargs = _parse_cron_to_aps_kwargs(cron_expr)
+                        except ValueError:
+                            continue
+                        # Check day-of-week constraint
+                        dow = cron_kwargs.get("day_of_week", "*")
+                        if dow != "*":
+                            weekday_map = {"1": 0, "2": 1, "3": 2, "4": 3, "5": 4, "6": 5, "0": 6}
+                            allowed_days: set[int] = set()
+                            for part in dow.split(","):
+                                if "-" in part:
+                                    start, end = part.split("-")
+                                    for d in range(int(start), int(end) + 1):
+                                        allowed_days.add(weekday_map.get(str(d), -1))
+                                else:
+                                    allowed_days.add(weekday_map.get(part, -1))
+                            if now.weekday() not in allowed_days:
+                                continue
+                        scheduled_hour = int(cron_kwargs.get("hour", "0"))
+                        scheduled_minute = int(cron_kwargs.get("minute", "0"))
+                        scheduled_time_today = now.replace(hour=scheduled_hour, minute=scheduled_minute, second=0, microsecond=0)
+                        if now <= scheduled_time_today:
+                            continue  # Not yet time for this job today
+                        # Check if this job already ran today
+                        already_ran = session.scalar(
+                            select(AiRunModel.id).where(
+                                AiRunModel.job_id == catchup_job.id,
+                                AiRunModel.trading_date == today,
+                                AiRunModel.run_type == "production",
+                            ).limit(1)
+                        ) is not None
+                        if already_ran:
+                            continue
+                        if catchup_job.last_executed_at and catchup_job.last_executed_at.date() == today:
+                            continue
+                        catchup_job_id = catchup_job.id
+                        scheduler.add_job(
+                            lambda jid=catchup_job_id: _execute_ai_skill_job(jid, session_factory, ai_center, now_provider),
+                            "date",
+                            run_date=datetime.now() + timedelta(seconds=5),
+                            id=f"ai-skill-catchup-{catchup_job.id}",
+                            max_instances=1,
+                            misfire_grace_time=3600,
+                            replace_existing=True,
+                        )
+                        logger.info(
+                            "scheduled catch-up for ai-skill job: %s (id=%d, scheduled_time=%02d:%02d, now=%s)",
+                            catchup_job.name, catchup_job.id, scheduled_hour, scheduled_minute, now.strftime("%H:%M"),
+                        )
+            except Exception:
+                logger.exception("failed to schedule ai-skill catch-up jobs")
             scheduler.start()
+            ai_skill_job_count = sum(1 for j in scheduler.get_jobs() if j.id.startswith("ai-skill-"))
+            logger.info("scheduler started with %d AI skill cron jobs registered", ai_skill_job_count)
         yield
         if scheduler.running:
             scheduler.shutdown(wait=False)
@@ -516,6 +668,8 @@ def create_app(
     # Store auth service and session factory for middleware access
     app.state.auth_service = auth_service
     app.state.session_factory = session_factory
+    if enable_scheduler:
+        app.state.scheduler = scheduler
 
     # Auth middleware (protects /api/ except /api/auth/)
     app.add_middleware(AuthMiddleware)
@@ -872,6 +1026,49 @@ def create_app(
             "watched_sector_count": len(realtime_cache.list_watched_sectors(db)),
         }
 
+    @app.get("/api/ai/scheduler-status")
+    def ai_scheduler_status(db: Session = Depends(get_db)) -> dict:
+        """Return scheduler state and AI skill job registration status."""
+        from app.models import AiJob as AiJobModel
+        from sqlalchemy import select
+
+        sched = getattr(app.state, "scheduler", None)
+        if sched is None or not sched.running:
+            return {"scheduler_running": False, "registered_jobs": [], "db_job_statuses": []}
+
+        registered = []
+        for aps_job in sched.get_jobs():
+            if aps_job.id.startswith("ai-skill-"):
+                registered.append({
+                    "aps_job_id": aps_job.id,
+                    "next_run_time": aps_job.next_run_time.isoformat() if aps_job.next_run_time else None,
+                    "trigger": str(aps_job.trigger),
+                })
+
+        registered_ids = {j["aps_job_id"] for j in registered}
+        db_jobs = list(db.scalars(
+            select(AiJobModel).where(AiJobModel.enabled == True, AiJobModel.schedule_rrule_or_cron.isnot(None))
+        ))
+        job_statuses = []
+        for db_job in db_jobs:
+            aps_id = f"ai-skill-{db_job.id}"
+            job_statuses.append({
+                "id": db_job.id,
+                "name": db_job.name,
+                "cron": db_job.schedule_rrule_or_cron,
+                "auto_schedule": db_job.auto_schedule,
+                "engine_type": db_job.engine_type,
+                "registered_in_scheduler": aps_id in registered_ids,
+                "last_executed_at": db_job.last_executed_at.isoformat() if db_job.last_executed_at else None,
+            })
+
+        return {
+            "scheduler_running": True,
+            "registered_ai_skill_jobs": len(registered),
+            "registered_jobs": registered,
+            "db_job_statuses": job_statuses,
+        }
+
     @app.get("/api/home/market-overview")
     def home_market_overview(db: Session = Depends(get_db)) -> dict:
         return home_dashboard.get_market_overview(db)
@@ -1203,7 +1400,7 @@ def create_app(
     def ai_execute_job(job_id: int, payload: dict = Body(default={}), db: Session = Depends(get_db)) -> dict:
         """手动触发一个 AI Job 的执行"""
         from app.services.skill_executor import get_executor, prefetch_market_data
-        from app.models import AiJob as AiJobModel
+        from app.models import AiJob as AiJobModel, AiSkill as AiSkillModel
 
         job = session.get(AiJobModel, job_id) if (session := db) else None
         if job is None:
@@ -1224,7 +1421,7 @@ def create_app(
         data_file = prefetch_market_data(trading_date_obj)
 
         skill_name = job.name
-        skill = session.get(AiSkill, job.skill_id) if job.skill_id else None
+        skill = session.get(AiSkillModel, job.skill_id) if job.skill_id else None
         skill_desc = skill.description if skill else ""
 
         result = executor.execute(
