@@ -1,5 +1,6 @@
 <script setup>
 import { onBeforeUnmount, onMounted, ref, watch } from "vue";
+import * as echarts from "echarts";
 
 const props = defineProps({
   option: {
@@ -122,7 +123,7 @@ function generateSummary() {
 }
 
 onMounted(() => {
-  chart = window.echarts?.init(host.value);
+  chart = echarts.init(host.value);
   applyOption();
   if (props.autoresize && host.value && typeof ResizeObserver !== "undefined") {
     resizeObserver = new ResizeObserver(() => chart?.resize());

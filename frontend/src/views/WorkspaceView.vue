@@ -18,6 +18,12 @@ const payload = computed(() => pageQuery.data.value?.payload ?? {});
 const queryLoading = computed(() => pageQuery.isLoading.value);
 const queryFetching = computed(() => pageQuery.isFetching.value);
 const queryUpdatedAt = computed(() => formatDateTime(pageQuery.data.value?.updated_at));
+const isEmpty = computed(() =>
+  !queryLoading.value &&
+  !(payload.value.watched_sectors?.length) &&
+  !(payload.value.watched_stocks?.length) &&
+  !(payload.value.notes?.length),
+);
 </script>
 
 <template>
@@ -30,6 +36,34 @@ const queryUpdatedAt = computed(() => formatDateTime(pageQuery.data.value?.updat
       </div>
       <QueryState :is-loading="queryLoading" :is-fetching="queryFetching" :updated-at="queryUpdatedAt" />
     </header>
+
+    <section v-if="isEmpty" class="onboarding-guide">
+      <DataPanel title="开始使用观察台">
+        <div class="guide-steps">
+          <div class="guide-step">
+            <span class="step-number">1</span>
+            <div>
+              <strong>添加观察板块</strong>
+              <p>前往<a href="/sector-monitor">板块资金监控</a>，在自选编辑区将板块加入观察池</p>
+            </div>
+          </div>
+          <div class="guide-step">
+            <span class="step-number">2</span>
+            <div>
+              <strong>添加观察个股</strong>
+              <p>在机会池中点击关注，或通过 API 添加个股到观察列表</p>
+            </div>
+          </div>
+          <div class="guide-step">
+            <span class="step-number">3</span>
+            <div>
+              <strong>记录交易备注</strong>
+              <p>通过 API <code>POST /api/notes</code> 添加你的交易心得和复盘笔记</p>
+            </div>
+          </div>
+        </div>
+      </DataPanel>
+    </section>
 
     <section class="card-grid three-up">
       <DataPanel title="观察板块">
@@ -77,3 +111,54 @@ const queryUpdatedAt = computed(() => formatDateTime(pageQuery.data.value?.updat
     </section>
   </section>
 </template>
+
+<style scoped>
+.onboarding-guide {
+  margin-bottom: 1.5rem;
+}
+
+.guide-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 0.5rem 0;
+}
+
+.guide-step {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+.step-number {
+  flex-shrink: 0;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  background: rgba(6, 182, 212, 0.15);
+  color: #06b6d4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 0.875rem;
+}
+
+.guide-step p {
+  margin: 0.25rem 0 0;
+  color: #94a3b8;
+  font-size: 0.875rem;
+}
+
+.guide-step a {
+  color: #06b6d4;
+  text-decoration: underline;
+}
+
+.guide-step code {
+  background: rgba(148, 163, 184, 0.1);
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.25rem;
+  font-size: 0.8rem;
+}
+</style>
