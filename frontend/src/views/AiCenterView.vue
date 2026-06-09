@@ -833,4 +833,16 @@ async function toggleJobEnabled(job) {
 .markdown-body .limit-down { color: #93c5fd; font-weight: 700; padding: 1px 6px; border-radius: 4px; background: rgba(147,197,253,0.1); }
 .markdown-body .risk-box { padding: 12px 16px; border-radius: 8px; background: rgba(248,113,113,0.08); border: 1px solid rgba(248,113,113,0.15); margin: 12px 0; }
 .markdown-body .risk-box b { color: #f87171; }
+
+/* ── Rich color scheme for semantic HTML classes ── */
+.markdown-body .sector { color: #60a5fa; font-weight: 600; }
+.markdown-body .stock { color: #fbbf24; font-weight: 700; }
+.markdown-body .highlight { color: #fde047; font-weight: 600; background: rgba(253,224,71,0.08); padding: 1px 4px; border-radius: 3px; }
+.markdown-body .inflow { color: #4ade80; font-weight: 600; }
+.markdown-body .outflow { color: #f87171; font-weight: 600; }
+.markdown-body .alert-good { padding: 10px 14px; border-radius: 6px; background: rgba(74,222,128,0.08); border: 1px solid rgba(74,222,128,0.2); margin: 8px 0; }
+.markdown-body .alert-good b { color: #4ade80; }
+.markdown-body .alert-bad { padding: 10px 14px; border-radius: 6px; background: rgba(248,113,113,0.08); border: 1px solid rgba(248,113,113,0.2); margin: 8px 0; }
+.markdown-body .alert-bad b { color: #f87171; }
+.markdown-body .tag { display: inline-block; padding: 2px 8px; border-radius: 12px; background: rgba(96,165,250,0.12); color: #60a5fa; font-size: 12px; font-weight: 500; margin: 0 2px; }
 </style>

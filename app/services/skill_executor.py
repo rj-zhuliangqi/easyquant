@@ -98,6 +98,12 @@ def _build_prompt(
    - 板块涨跌排行用 <table>，三列: <th>排名</th><th>板块</th><th>涨跌幅</th>
    - 涨幅用 <span class="up">+7.9%</span>，跌幅用 <span class="down">-3.4%</span>
    - 涨停用 <span class="limit-up">涨停</span>，跌停用 <span class="limit-down">跌停</span>
+   - 板块名称用 <span class="sector">半导体</span> 高亮
+   - 股票名称用 <span class="stock">股票名</span> 高亮
+   - 关键数字/金额用 <span class="highlight">123.45亿</span> 高亮
+   - 资金净流入用 <span class="inflow">+123亿</span>，净流出用 <span class="outflow">-45亿</span>
+   - 利好消息用 <div class="alert-good">包裹</div>，利空消息用 <div class="alert-bad">包裹</div>
+   - 主题标签用 <span class="tag">AI算力</span> 标记
    - 关键股票名用 <b>加粗</b>，核心结论用 <b>加粗</b>
    - 风险提示用 <div class="risk-box">包裹</div>
    - 章节之间用 <hr> 分隔
