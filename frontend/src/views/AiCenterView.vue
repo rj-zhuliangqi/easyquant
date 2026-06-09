@@ -94,25 +94,23 @@ const resultDetail = computed(() => detailQuery.data.value || {});
 const renderedMarkdown = computed(() => {
   let raw = resultDetail.value?.raw_output;
   if (!raw) return "";
-  // Pre-process: normalize non-standard formatting to standard markdown
-  // 【xxx】→ ## xxx
+
+  // Auto-detect: if raw_output contains HTML tags, render directly
+  const isHtml = /<[a-z][\s\S]*>/i.test(raw);
+  if (isHtml) return raw;
+
+  // Legacy markdown output — convert to HTML via marked + post-process
   raw = raw.replace(/^【([^】]+)】\s*$/gm, "## $1");
-  // ===xxx=== → # xxx
   raw = raw.replace(/^={3,}\s*$/gm, "---");
-  // → at line start → - (list item)
   raw = raw.replace(/^[→›]\s*/gm, "- ");
-  // Pre-process: escape HTML then let marked handle
   const html = marked(raw);
-  // Post-process: colorize +XX.X% and -XX.X%
   return html
     .replace(/([+-]\d+\.?\d*%)/g, (m) => {
       const color = m.startsWith("+") ? "#4ade80" : "#f87171";
       return `<span style="color:${color};font-weight:600">${m}</span>`;
     })
     .replace(/(涨停|一字板|地天板)/g, '<span style="color:#f87171;font-weight:600">$1</span>')
-    .replace(/(跌停|一字跌停)/g, '<span style="color:#93c5fd;font-weight:600">$1</span>')
-    .replace(/(大幅流入|净流入|主力流入)/g, '<span style="color:#4ade80;font-weight:600">$1</span>')
-    .replace(/(大幅流出|净流出|主力流出)/g, '<span style="color:#f87171;font-weight:600">$1</span>');
+    .replace(/(跌停|一字跌停)/g, '<span style="color:#93c5fd;font-weight:600">$1</span>');
 });
 
 // ── Skill Chat state ──
@@ -811,11 +809,12 @@ async function toggleJobEnabled(job) {
 .markdown-body { font-size: 14px; line-height: 1.8; color: var(--text, #e2e8f0); max-width: 860px; }
 .markdown-body h1, .markdown-body h2, .markdown-body h3 { margin: 20px 0 10px; font-weight: 700; color: var(--text, #e2e8f0); }
 .markdown-body h1 { font-size: 20px; border-bottom: 1px solid var(--border, rgba(255,255,255,0.06)); padding-bottom: 8px; }
-.markdown-body h2 { font-size: 17px; }
+.markdown-body h2 { font-size: 17px; border-bottom: 1px solid var(--border, rgba(255,255,255,0.04)); padding-bottom: 6px; }
 .markdown-body h3 { font-size: 15px; }
 .markdown-body p { margin: 8px 0; }
 .markdown-body ul, .markdown-body ol { padding-left: 24px; margin: 8px 0; }
 .markdown-body li { margin: 4px 0; }
+.markdown-body b { color: #fbbf24; }
 .markdown-body strong { color: #60a5fa; font-weight: 600; }
 .markdown-body em { color: #fbbf24; }
 .markdown-body code { padding: 2px 6px; border-radius: 4px; background: rgba(148,163,184,0.08); font-size: 12px; font-family: monospace; }
@@ -826,4 +825,12 @@ async function toggleJobEnabled(job) {
 .markdown-body th { background: rgba(255,255,255,0.04); font-weight: 600; }
 .markdown-body blockquote { border-left: 3px solid #60a5fa; padding-left: 12px; margin: 12px 0; color: var(--text-muted, #94a3b8); }
 .markdown-body hr { border: none; border-top: 1px solid var(--border, rgba(255,255,255,0.06)); margin: 20px 0; }
+
+/* ── HTML-specific result styles ── */
+.markdown-body .up { color: #4ade80; font-weight: 600; }
+.markdown-body .down { color: #f87171; font-weight: 600; }
+.markdown-body .limit-up { color: #f87171; font-weight: 700; padding: 1px 6px; border-radius: 4px; background: rgba(248,113,113,0.1); }
+.markdown-body .limit-down { color: #93c5fd; font-weight: 700; padding: 1px 6px; border-radius: 4px; background: rgba(147,197,253,0.1); }
+.markdown-body .risk-box { padding: 12px 16px; border-radius: 8px; background: rgba(248,113,113,0.08); border: 1px solid rgba(248,113,113,0.15); margin: 12px 0; }
+.markdown-body .risk-box b { color: #f87171; }
 </style>
