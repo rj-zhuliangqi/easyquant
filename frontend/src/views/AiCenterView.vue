@@ -797,52 +797,128 @@ async function toggleJobEnabled(job) {
 }
 
 /* ── Job Results ── */
-.result-filters { display: flex; gap: 12px; align-items: center; }
 .date-input { padding: 6px 10px; border-radius: 8px; background: var(--surface, #1e293b); border: 1px solid var(--border, rgba(255,255,255,0.06)); color: var(--text, #e2e8f0); font-size: 13px; font-family: monospace; }
 .date-input:focus { outline: none; border-color: rgba(255,255,255,0.15); }
-.job-select { padding: 6px 10px; border-radius: 8px; background: var(--surface, #1e293b); border: 1px solid var(--border, rgba(255,255,255,0.06)); color: var(--text, #e2e8f0); font-size: 13px; min-width: 280px; }
+.job-select { padding: 6px 10px; border-radius: 8px; background: var(--surface, #1e293b); border: 1px solid var(--border, rgba(255,255,255,0.06)); color: var(--text, #e2e8f0); font-size: 13px; min-width: 160px; }
 .job-select:focus { outline: none; border-color: rgba(255,255,255,0.15); }
-.result-content { margin-top: 16px; }
-.result-hint { text-align: center; padding: 40px; color: var(--text-muted, #94a3b8); font-size: 13px; }
 
-/* ── Markdown Body ── */
-.markdown-body { font-size: 14px; line-height: 1.8; color: var(--text, #e2e8f0); max-width: 860px; }
-.markdown-body h1, .markdown-body h2, .markdown-body h3 { margin: 20px 0 10px; font-weight: 700; color: var(--text, #e2e8f0); }
-.markdown-body h1 { font-size: 20px; border-bottom: 1px solid var(--border, rgba(255,255,255,0.06)); padding-bottom: 8px; }
-.markdown-body h2 { font-size: 17px; border-bottom: 1px solid var(--border, rgba(255,255,255,0.04)); padding-bottom: 6px; }
-.markdown-body h3 { font-size: 15px; }
-.markdown-body p { margin: 8px 0; }
-.markdown-body ul, .markdown-body ol { padding-left: 24px; margin: 8px 0; }
-.markdown-body li { margin: 4px 0; }
-.markdown-body b { color: #fbbf24; }
-.markdown-body strong { color: #60a5fa; font-weight: 600; }
+/* ── Markdown Body — 金融报告风格 ── */
+.markdown-body {
+  font-size: 15px; line-height: 1.9; color: var(--text, #e2e8f0);
+  max-width: 100%; overflow-x: auto; word-break: break-word;
+}
+.markdown-body h2 {
+  font-size: 18px; font-weight: 700; color: var(--text, #e2e8f0);
+  margin: 28px 0 14px; padding-bottom: 10px;
+  border-bottom: 2px solid rgba(248,113,113,0.3);
+}
+.markdown-body h3 {
+  font-size: 16px; font-weight: 700; color: var(--text, #e2e8f0);
+  margin: 24px 0 12px; padding-left: 10px;
+  border-left: 3px solid var(--accent, #06b6d4);
+}
+.markdown-body h1 {
+  font-size: 20px; font-weight: 700; margin: 28px 0 14px;
+  border-bottom: 2px solid rgba(248,113,113,0.3); padding-bottom: 10px;
+}
+.markdown-body p { margin: 12px 0; }
+.markdown-body ul, .markdown-body ol { padding-left: 20px; margin: 10px 0; }
+.markdown-body li { margin: 6px 0; line-height: 1.8; }
+.markdown-body b { color: #fbbf24; font-weight: 700; }
+.markdown-body strong { color: #60a5fa; font-weight: 700; }
 .markdown-body em { color: #fbbf24; }
 .markdown-body code { padding: 2px 6px; border-radius: 4px; background: rgba(148,163,184,0.08); font-size: 12px; font-family: monospace; }
-.markdown-body pre { padding: 12px; border-radius: 8px; background: rgba(0,0,0,0.3); overflow-x: auto; margin: 12px 0; }
+.markdown-body pre { padding: 12px; border-radius: 8px; background: rgba(0,0,0,0.3); overflow-x: auto; margin: 12px 0; max-width: 100%; }
 .markdown-body pre code { background: transparent; padding: 0; }
-.markdown-body table { border-collapse: collapse; width: 100%; margin: 12px 0; }
-.markdown-body th, .markdown-body td { padding: 8px 12px; border: 1px solid var(--border, rgba(255,255,255,0.06)); text-align: left; font-size: 13px; }
-.markdown-body th { background: rgba(255,255,255,0.04); font-weight: 600; }
+.markdown-body table { border-collapse: collapse; width: 100%; margin: 14px 0; display: block; overflow-x: auto; }
+.markdown-body th, .markdown-body td { padding: 8px 10px; border: 1px solid rgba(255,255,255,0.08); text-align: left; font-size: 13px; }
+.markdown-body th { background: rgba(255,255,255,0.06); font-weight: 700; color: #e2e8f0; }
 .markdown-body blockquote { border-left: 3px solid #60a5fa; padding-left: 12px; margin: 12px 0; color: var(--text-muted, #94a3b8); }
-.markdown-body hr { border: none; border-top: 1px solid var(--border, rgba(255,255,255,0.06)); margin: 20px 0; }
+.markdown-body hr { border: none; border-top: 2px solid rgba(255,255,255,0.1); margin: 24px 0; }
 
-/* ── HTML-specific result styles ── */
-.markdown-body .up { color: #4ade80; font-weight: 600; }
-.markdown-body .down { color: #f87171; font-weight: 600; }
-.markdown-body .limit-up { color: #f87171; font-weight: 700; padding: 1px 6px; border-radius: 4px; background: rgba(248,113,113,0.1); }
-.markdown-body .limit-down { color: #93c5fd; font-weight: 700; padding: 1px 6px; border-radius: 4px; background: rgba(147,197,253,0.1); }
-.markdown-body .risk-box { padding: 12px 16px; border-radius: 8px; background: rgba(248,113,113,0.08); border: 1px solid rgba(248,113,113,0.15); margin: 12px 0; }
-.markdown-body .risk-box b { color: #f87171; }
+/* ── A股惯例：涨红跌绿 ── */
+.markdown-body .up { color: #f87171; font-weight: 700; }
+.markdown-body .down { color: #4ade80; font-weight: 700; }
+.markdown-body .limit-up {
+  color: #fff; font-weight: 700;
+  padding: 2px 8px; border-radius: 4px;
+  background: rgba(248,113,113,0.25); border: 1px solid rgba(248,113,113,0.4);
+}
+.markdown-body .limit-down {
+  color: #fff; font-weight: 700;
+  padding: 2px 8px; border-radius: 4px;
+  background: rgba(74,222,128,0.25); border: 1px solid rgba(74,222,128,0.4);
+}
 
-/* ── Rich color scheme for semantic HTML classes ── */
-.markdown-body .sector { color: #60a5fa; font-weight: 600; }
-.markdown-body .stock { color: #fbbf24; font-weight: 700; }
-.markdown-body .highlight { color: #fde047; font-weight: 600; background: rgba(253,224,71,0.08); padding: 1px 4px; border-radius: 3px; }
-.markdown-body .inflow { color: #4ade80; font-weight: 600; }
-.markdown-body .outflow { color: #f87171; font-weight: 600; }
-.markdown-body .alert-good { padding: 10px 14px; border-radius: 6px; background: rgba(74,222,128,0.08); border: 1px solid rgba(74,222,128,0.2); margin: 8px 0; }
-.markdown-body .alert-good b { color: #4ade80; }
-.markdown-body .alert-bad { padding: 10px 14px; border-radius: 6px; background: rgba(248,113,113,0.08); border: 1px solid rgba(248,113,113,0.2); margin: 8px 0; }
-.markdown-body .alert-bad b { color: #f87171; }
-.markdown-body .tag { display: inline-block; padding: 2px 8px; border-radius: 12px; background: rgba(96,165,250,0.12); color: #60a5fa; font-size: 12px; font-weight: 500; margin: 0 2px; }
+/* ── 股票名醒目：加粗+金色+大字号 ── */
+.markdown-body .stock {
+  color: #fbbf24; font-weight: 800; font-size: 1.05em;
+  padding: 1px 2px; border-radius: 2px;
+}
+
+/* ── 板块名称：蓝色+加粗 ── */
+.markdown-body .sector { color: #60a5fa; font-weight: 700; }
+
+/* ── 关键数字/金额 ── */
+.markdown-body .highlight {
+  color: #fde047; font-weight: 700;
+  background: rgba(253,224,71,0.12); padding: 1px 6px; border-radius: 3px;
+}
+
+/* ── 资金流向：涨红跌绿 ── */
+.markdown-body .inflow { color: #f87171; font-weight: 700; }
+.markdown-body .outflow { color: #4ade80; font-weight: 700; }
+
+/* ── 利好/利空：卡片式 ── */
+.markdown-body .alert-good {
+  padding: 14px 18px; border-radius: 10px;
+  background: rgba(248,113,113,0.08); border-left: 3px solid #f87171;
+  margin: 16px 0; line-height: 1.7;
+}
+.markdown-body .alert-good b { color: #f87171; }
+.markdown-body .alert-bad {
+  padding: 14px 18px; border-radius: 10px;
+  background: rgba(74,222,128,0.08); border-left: 3px solid #4ade80;
+  margin: 16px 0; line-height: 1.7;
+}
+.markdown-body .alert-bad b { color: #4ade80; }
+
+/* ── 风险提示 ── */
+.markdown-body .risk-box {
+  padding: 14px 18px; border-radius: 10px;
+  background: rgba(251,191,36,0.06); border-left: 3px solid #fbbf24;
+  margin: 16px 0; line-height: 1.7;
+}
+.markdown-body .risk-box b { color: #fbbf24; }
+.markdown-body .risk-box ul { margin: 8px 0 0; }
+.markdown-body .risk-box li { color: #94a3b8; }
+
+/* ── 主题标签 ── */
+.markdown-body .tag {
+  display: inline-block; padding: 3px 10px; border-radius: 14px;
+  background: rgba(6,182,212,0.12); color: #06b6d4;
+  font-size: 12px; font-weight: 600; margin: 2px 4px 4px 0;
+}
+
+/* ── 列表内股票条目间距 ── */
+.markdown-body ul li { margin: 8px 0; }
+
+/* ── Result filters & content — mobile safe ── */
+.result-filters { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.result-content { margin-top: 16px; overflow-x: hidden; }
+.result-hint { text-align: center; padding: 40px; color: var(--text-muted, #94a3b8); font-size: 13px; }
+
+/* ── Mobile: task results ── */
+@media (max-width: 640px) {
+  .markdown-body { font-size: 14px; line-height: 1.8; }
+  .markdown-body h2 { font-size: 16px; margin: 20px 0 10px; }
+  .markdown-body h3 { font-size: 15px; margin: 16px 0 8px; }
+  .markdown-body p { margin: 10px 0; }
+  .markdown-body table { font-size: 12px; }
+  .markdown-body th, .markdown-body td { padding: 5px 6px; }
+  .markdown-body .alert-good, .markdown-body .alert-bad, .markdown-body .risk-box { padding: 10px 12px; }
+  .result-filters { flex-direction: column; align-items: stretch; }
+  .date-input { width: 100%; }
+  .job-select { min-width: 0; width: 100%; }
+}
 </style>
