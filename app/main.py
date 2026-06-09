@@ -1224,6 +1224,61 @@ def create_app(
     def ai_jobs(db: Session = Depends(get_db)) -> dict:
         return ai_center.list_jobs(db)
 
+    # ── Job Results (inbox scan) ──────────────────────────────────────
+
+    @app.get("/api/ai/job-results")
+    def ai_job_results_list(
+        trading_date: date | None = Query(default=None),
+        db: Session = Depends(get_db),
+    ) -> dict:
+        """返回指定日期所有任务在 inbox 中的执行结果列表"""
+        target_date = trading_date or now_provider().date()
+        results = []
+        for f in sorted(AI_CENTER_INBOX_DIR.glob("*.json"), reverse=True):
+            try:
+                payload = json.loads(f.read_text(encoding="utf-8"))
+                f_date = payload.get("trading_date")
+                if f_date != target_date.isoformat():
+                    continue
+                results.append({
+                    "job_name": payload.get("job_name") or payload.get("skill_name"),
+                    "job_type": payload.get("job_type"),
+                    "trading_date": f_date,
+                    "has_raw_output": bool(payload.get("raw_output")),
+                    "run_type": payload.get("run_type"),
+                    "file_name": f.name,
+                    "summary_headline": (payload.get("summary") or {}).get("market_phase") or (payload.get("summary") or {}).get("headline"),
+                })
+            except (json.JSONDecodeError, OSError):
+                continue
+        return {"trading_date": target_date.isoformat(), "items": results}
+
+    @app.get("/api/ai/job-results/{job_name:path}/latest")
+    def ai_job_result_detail(
+        job_name: str,
+        trading_date: date | None = Query(default=None),
+    ) -> dict:
+        """返回指定 job_name + 日期的完整结果（含 raw_output markdown）"""
+        target_date = trading_date or now_provider().date()
+        for f in sorted(AI_CENTER_INBOX_DIR.glob("*.json"), reverse=True):
+            try:
+                payload = json.loads(f.read_text(encoding="utf-8"))
+                f_date = payload.get("trading_date")
+                f_name = payload.get("job_name") or payload.get("skill_name")
+                if f_date == target_date.isoformat() and f_name == job_name:
+                    return {
+                        "job_name": f_name,
+                        "job_type": payload.get("job_type"),
+                        "trading_date": f_date,
+                        "raw_output": payload.get("raw_output"),
+                        "summary": payload.get("summary"),
+                        "result_payload": payload.get("result_payload"),
+                        "meta": payload.get("_meta"),
+                    }
+            except (json.JSONDecodeError, OSError):
+                continue
+        return {"job_name": job_name, "trading_date": target_date.isoformat(), "raw_output": None, "summary": None}
+
     @app.get("/api/ai/overview/daily")
     def ai_daily_overview(
         trading_date: date | None = Query(default=None),
@@ -1807,6 +1862,31 @@ def _execute_ai_skill_job(
             job.last_executed_at = now_provider()
             session.add(job)
             session.commit()
+
+            # Patch output files: ensure skill_name matches DB skill name for import
+            if result.output_files and skill.name:
+                for fpath in result.output_files:
+                    try:
+                        from pathlib import Path as P
+                        p = P(fpath)
+                        payload = json.loads(p.read_text(encoding="utf-8"))
+                        if payload.get("skill_name") != skill.name:
+                            payload["skill_name"] = skill.name
+                            p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                    except Exception:
+                        pass
+
+            # Import results into DB
+            if result.success:
+                try:
+                    imported = ai_center.scan_import_directory(
+                        session,
+                        inbox_dir=AI_CENTER_INBOX_DIR,
+                        processed_dir=AI_CENTER_PROCESSED_DIR,
+                    )
+                    logger.info("ai-skill job %d: imported=%d, failed=%d", job_id, imported.get("imported", 0), imported.get("failed", 0))
+                except Exception:
+                    logger.exception("ai-skill job %d: failed to import results", job_id)
 
             duration = time.perf_counter() - started
             logger.info(

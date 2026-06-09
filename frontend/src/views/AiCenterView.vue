@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from "@tanstack/vue-query";
 import QueryState from "../components/QueryState.vue";
 import { fetchJson, pageQueryKey } from "../lib/api";
 import { formatDateTime } from "../lib/formatters";
+import { marked } from "marked";
 
 defineOptions({ name: "ai-center" });
 
@@ -14,6 +15,7 @@ const activeTab = ref("overview");
 const tabs = [
   { key: "overview", label: "今日概览", icon: "📊" },
   { key: "jobs", label: "任务运行", icon: "⚙️" },
+  { key: "results", label: "任务结果", icon: "📄" },
   { key: "picks", label: "选股池", icon: "🎯" },
   { key: "review", label: "复盘经验", icon: "📝" },
   { key: "skill-chat", label: "Skill工坊", icon: "🤖" },
@@ -69,6 +71,31 @@ const enginesQuery = useQuery({
   staleTime: 60_000,
 });
 const engines = computed(() => enginesQuery.data.value?.engines || []);
+
+// ── Job Results state ──
+const resultDate = ref(new Date().toISOString().slice(0, 10));
+const selectedJobName = ref(null);
+
+const resultsQuery = useQuery({
+  queryKey: computed(() => ["ai-job-results", resultDate.value]),
+  queryFn: () => fetchJson(`/api/ai/job-results?trading_date=${resultDate.value}`),
+  enabled: computed(() => activeTab.value === "results"),
+  staleTime: 30_000,
+});
+const resultItems = computed(() => resultsQuery.data.value?.items || []);
+
+const detailQuery = useQuery({
+  queryKey: computed(() => ["ai-job-result-detail", selectedJobName.value, resultDate.value]),
+  queryFn: () => fetchJson(`/api/ai/job-results/${encodeURIComponent(selectedJobName.value)}/latest?trading_date=${resultDate.value}`),
+  enabled: computed(() => activeTab.value === "results" && !!selectedJobName.value),
+  staleTime: 60_000,
+});
+const resultDetail = computed(() => detailQuery.data.value || {});
+const renderedMarkdown = computed(() => {
+  const raw = resultDetail.value?.raw_output;
+  if (!raw) return "";
+  return marked(raw);
+});
 
 // ── Skill Chat state ──
 const chatMessages = ref([]);
@@ -281,6 +308,44 @@ async function toggleJobEnabled(job) {
             <p>暂无运行</p>
             <span>尚未执行任何任务</span>
           </div>
+        </div>
+      </section>
+    </template>
+
+    <!-- ═══════════════════════════════════════════ -->
+    <!-- Tab: 任务结果                               -->
+    <!-- ═══════════════════════════════════════════ -->
+    <template v-if="activeTab === 'results'">
+      <section class="panel">
+        <div class="panel-head">
+          <h3>任务结果</h3>
+          <div class="result-filters">
+            <input type="date" v-model="resultDate" class="date-input" @change="selectedJobName = null" />
+            <select v-if="resultItems.length" v-model="selectedJobName" class="job-select">
+              <option :value="null" disabled>选择任务...</option>
+              <option v-for="item in resultItems" :key="item.job_name" :value="item.job_name">
+                {{ item.job_name }} {{ item.summary_headline ? `— ${item.summary_headline}` : '' }}
+              </option>
+            </select>
+          </div>
+        </div>
+
+        <div v-if="selectedJobName && resultDetail.raw_output" class="result-content">
+          <div class="markdown-body" v-html="renderedMarkdown"></div>
+        </div>
+
+        <div v-else-if="selectedJobName && !resultDetail.raw_output" class="empty-state">
+          <p>该日期暂无执行结果</p>
+          <span>{{ selectedJobName }} 在 {{ resultDate }} 没有产出</span>
+        </div>
+
+        <div v-else-if="!resultItems.length" class="empty-state">
+          <p>暂无结果</p>
+          <span>{{ resultDate }} 没有任何任务执行结果</span>
+        </div>
+
+        <div v-else class="result-hint">
+          <span>请从上方下拉选择一个任务查看详细结果</span>
         </div>
       </section>
     </template>
@@ -714,4 +779,33 @@ async function toggleJobEnabled(job) {
   0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
   40% { transform: scale(1); opacity: 1; }
 }
+
+/* ── Job Results ── */
+.result-filters { display: flex; gap: 12px; align-items: center; }
+.date-input { padding: 6px 10px; border-radius: 8px; background: var(--surface, #1e293b); border: 1px solid var(--border, rgba(255,255,255,0.06)); color: var(--text, #e2e8f0); font-size: 13px; font-family: monospace; }
+.date-input:focus { outline: none; border-color: rgba(255,255,255,0.15); }
+.job-select { padding: 6px 10px; border-radius: 8px; background: var(--surface, #1e293b); border: 1px solid var(--border, rgba(255,255,255,0.06)); color: var(--text, #e2e8f0); font-size: 13px; min-width: 280px; }
+.job-select:focus { outline: none; border-color: rgba(255,255,255,0.15); }
+.result-content { margin-top: 16px; }
+.result-hint { text-align: center; padding: 40px; color: var(--text-muted, #94a3b8); font-size: 13px; }
+
+/* ── Markdown Body ── */
+.markdown-body { font-size: 14px; line-height: 1.8; color: var(--text, #e2e8f0); max-width: 860px; }
+.markdown-body h1, .markdown-body h2, .markdown-body h3 { margin: 20px 0 10px; font-weight: 700; color: var(--text, #e2e8f0); }
+.markdown-body h1 { font-size: 20px; border-bottom: 1px solid var(--border, rgba(255,255,255,0.06)); padding-bottom: 8px; }
+.markdown-body h2 { font-size: 17px; }
+.markdown-body h3 { font-size: 15px; }
+.markdown-body p { margin: 8px 0; }
+.markdown-body ul, .markdown-body ol { padding-left: 24px; margin: 8px 0; }
+.markdown-body li { margin: 4px 0; }
+.markdown-body strong { color: #60a5fa; font-weight: 600; }
+.markdown-body em { color: #fbbf24; }
+.markdown-body code { padding: 2px 6px; border-radius: 4px; background: rgba(148,163,184,0.08); font-size: 12px; font-family: monospace; }
+.markdown-body pre { padding: 12px; border-radius: 8px; background: rgba(0,0,0,0.3); overflow-x: auto; margin: 12px 0; }
+.markdown-body pre code { background: transparent; padding: 0; }
+.markdown-body table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+.markdown-body th, .markdown-body td { padding: 8px 12px; border: 1px solid var(--border, rgba(255,255,255,0.06)); text-align: left; font-size: 13px; }
+.markdown-body th { background: rgba(255,255,255,0.04); font-weight: 600; }
+.markdown-body blockquote { border-left: 3px solid #60a5fa; padding-left: 12px; margin: 12px 0; color: var(--text-muted, #94a3b8); }
+.markdown-body hr { border: none; border-top: 1px solid var(--border, rgba(255,255,255,0.06)); margin: 20px 0; }
 </style>
