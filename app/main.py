@@ -1047,7 +1047,7 @@ def create_app(
 
         registered_ids = {j["aps_job_id"] for j in registered}
         db_jobs = list(db.scalars(
-            select(AiJobModel).where(AiJobModel.enabled == True, AiJobModel.schedule_rrule_or_cron.isnot(None))
+            select(AiJobModel).where(AiJobModel.schedule_rrule_or_cron.isnot(None))
         ))
         job_statuses = []
         for db_job in db_jobs:
@@ -1057,6 +1057,7 @@ def create_app(
                 "name": db_job.name,
                 "cron": db_job.schedule_rrule_or_cron,
                 "auto_schedule": db_job.auto_schedule,
+                "enabled": db_job.enabled,
                 "engine_type": db_job.engine_type,
                 "registered_in_scheduler": aps_id in registered_ids,
                 "last_executed_at": db_job.last_executed_at.isoformat() if db_job.last_executed_at else None,
@@ -1448,6 +1449,64 @@ def create_app(
             "error": result.error,
         }
 
+    # ── Job Toggle Endpoints ───────────────────────────────────────────
+
+    @app.patch("/api/ai/jobs/{job_id}/toggle-schedule")
+    def ai_toggle_job_schedule(job_id: int, payload: dict = Body(default={}), db: Session = Depends(get_db)) -> dict:
+        """切换 AI Job 的自动调度开关 (auto_schedule)"""
+        from app.models import AiJob as AiJobModel
+
+        job = session.get(AiJobModel, job_id) if (session := db) else None
+        if job is None:
+            raise HTTPException(status_code=404, detail="job not found")
+
+        # Toggle or set explicit value
+        if "auto_schedule" in payload:
+            job.auto_schedule = bool(payload["auto_schedule"])
+        else:
+            job.auto_schedule = not job.auto_schedule
+
+        session.add(job)
+        session.commit()
+
+        # Dynamically update APScheduler
+        _sync_ai_job_to_scheduler(job, app.state.scheduler, session_factory, ai_center, now_provider)
+
+        return {
+            "id": job.id,
+            "name": job.name,
+            "auto_schedule": job.auto_schedule,
+            "enabled": job.enabled,
+        }
+
+    @app.patch("/api/ai/jobs/{job_id}/toggle-enabled")
+    def ai_toggle_job_enabled(job_id: int, payload: dict = Body(default={}), db: Session = Depends(get_db)) -> dict:
+        """切换 AI Job 的启用状态 (enabled)"""
+        from app.models import AiJob as AiJobModel
+
+        job = session.get(AiJobModel, job_id) if (session := db) else None
+        if job is None:
+            raise HTTPException(status_code=404, detail="job not found")
+
+        # Toggle or set explicit value
+        if "enabled" in payload:
+            job.enabled = bool(payload["enabled"])
+        else:
+            job.enabled = not job.enabled
+
+        session.add(job)
+        session.commit()
+
+        # Dynamically update APScheduler
+        _sync_ai_job_to_scheduler(job, app.state.scheduler, session_factory, ai_center, now_provider)
+
+        return {
+            "id": job.id,
+            "name": job.name,
+            "auto_schedule": job.auto_schedule,
+            "enabled": job.enabled,
+        }
+
     # ── Skill Chat / Creation Endpoints ───────────────────────────────
 
     _SKILL_CHAT_SYSTEM_PROMPT = """你是一个专业的A股选股策略专家。请根据用户的需求，生成选股策略配置或回答策略相关问题。
@@ -1769,6 +1828,55 @@ def _execute_ai_skill_job(
                 session.rollback()
             logger.exception("ai-skill job %d failed after %.2fs", job_id, time.perf_counter() - started)
             return None
+
+
+def _sync_ai_job_to_scheduler(
+    job: "AiJob",
+    scheduler: BackgroundScheduler,
+    session_factory: sessionmaker[Session],
+    ai_center: AiCenterService,
+    now_provider: Callable[[], datetime],
+) -> None:
+    """Dynamically add/remove an AI Job from the APScheduler based on its enabled + auto_schedule state."""
+    from app.models import AiJob as AiJobModel
+
+    aps_job_id = f"ai-skill-{job.id}"
+
+    if not job.enabled or not job.auto_schedule or not job.schedule_rrule_or_cron:
+        # Remove from scheduler if present
+        existing = scheduler.get_job(aps_job_id)
+        if existing is not None:
+            scheduler.remove_job(aps_job_id)
+            logger.info("removed ai-skill cron job: %s (id=%d, enabled=%s, auto_schedule=%s)",
+                        job.name, job.id, job.enabled, job.auto_schedule)
+        return
+
+    # Add/update in scheduler
+    try:
+        cron_kwargs = _parse_cron_to_aps_kwargs(job.schedule_rrule_or_cron)
+        job_id = job.id
+        scheduler.add_job(
+            lambda jid=job_id: _execute_ai_skill_job(jid, session_factory, ai_center, now_provider),
+            "cron",
+            id=aps_job_id,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=3600,
+            replace_existing=True,
+            **cron_kwargs,
+        )
+        next_run = None
+        try:
+            next_run = scheduler.get_job(aps_job_id).next_run_time
+        except (AttributeError, TypeError):
+            pass
+        logger.info(
+            "synced ai-skill cron job: %s (id=%d, cron=%s, next_run=%s)",
+            job.name, job.id, job.schedule_rrule_or_cron,
+            next_run.isoformat() if next_run else "N/A",
+        )
+    except ValueError as exc:
+        logger.warning("failed to sync ai-skill job %d (%s): %s", job.id, job.name, exc)
 
 
 def _prefetch_priority_sector_stocks(

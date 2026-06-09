@@ -1,11 +1,13 @@
 <script setup>
 import { computed, ref } from "vue";
-import { useQuery } from "@tanstack/vue-query";
+import { useQuery, useQueryClient } from "@tanstack/vue-query";
 import QueryState from "../components/QueryState.vue";
 import { fetchJson, pageQueryKey } from "../lib/api";
 import { formatDateTime } from "../lib/formatters";
 
 defineOptions({ name: "ai-center" });
+
+const queryClient = useQueryClient();
 
 // ── Tab state ──
 const activeTab = ref("overview");
@@ -115,6 +117,37 @@ function clearChat() {
   chatMessages.value = [];
   chatDraft.value = null;
   chatInput.value = "";
+}
+
+// ── Job Toggle Functions ──
+async function toggleJobSchedule(job) {
+  const newVal = !job.auto_schedule;
+  try {
+    await fetchJson(`/api/ai/jobs/${job.id}/toggle-schedule`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ auto_schedule: newVal }),
+    });
+    // Refresh page data
+    queryClient.invalidateQueries({ queryKey: pageQueryKey("ai-center") });
+  } catch (e) {
+    console.error("Failed to toggle schedule:", e);
+  }
+}
+
+async function toggleJobEnabled(job) {
+  const newVal = !job.enabled;
+  try {
+    await fetchJson(`/api/ai/jobs/${job.id}/toggle-enabled`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: newVal }),
+    });
+    // Refresh page data
+    queryClient.invalidateQueries({ queryKey: pageQueryKey("ai-center") });
+  } catch (e) {
+    console.error("Failed to toggle enabled:", e);
+  }
 }
 </script>
 
@@ -442,15 +475,29 @@ function clearChat() {
       <section class="panel mt-lg">
         <div class="panel-head"><h3>任务调度</h3></div>
         <div class="job-config-list">
-          <div v-for="job in payload.jobs?.items || []" :key="job.id" class="job-config-card">
+          <div v-for="job in payload.jobs?.items || []" :key="job.id" class="job-config-card" :class="{ 'job-disabled': !job.enabled }">
             <div class="job-config-main">
-              <strong>{{ job.name }}</strong>
-              <span class="job-config-cron">{{ job.schedule_rrule_or_cron || job.schedule_label }}</span>
+              <div class="job-config-info">
+                <strong>{{ job.name }}</strong>
+                <span class="job-config-cron">{{ job.schedule_rrule_or_cron || job.schedule_label }}</span>
+              </div>
+              <div class="job-config-toggles">
+                <label class="toggle-switch" :title="job.enabled ? '点击禁用' : '点击启用'">
+                  <input type="checkbox" :checked="job.enabled" @change="toggleJobEnabled(job)" />
+                  <span class="toggle-slider"></span>
+                  <span class="toggle-label">启用</span>
+                </label>
+                <label class="toggle-switch" :title="job.auto_schedule ? '关闭自动调度' : '开启自动调度'" :style="{ opacity: job.enabled ? 1 : 0.4 }">
+                  <input type="checkbox" :checked="job.auto_schedule" :disabled="!job.enabled" @change="toggleJobSchedule(job)" />
+                  <span class="toggle-slider"></span>
+                  <span class="toggle-label">调度</span>
+                </label>
+              </div>
             </div>
             <div class="job-config-meta">
               <span>引擎: {{ job.engine_type || 'claude-code' }}</span>
-              <span>自动调度: {{ job.auto_schedule !== false ? '开' : '关' }}</span>
               <span v-if="job.last_executed_at">上次执行: {{ formatDateTime(job.last_executed_at) }}</span>
+              <span v-else>尚未执行</span>
             </div>
           </div>
           <div v-if="!(payload.jobs?.items?.length) && !queryLoading" class="empty-state">
@@ -597,10 +644,23 @@ function clearChat() {
 
 /* ── Job Config ── */
 .job-config-list { display: flex; flex-direction: column; gap: 6px; }
-.job-config-card { padding: 10px 14px; border-radius: 10px; background: var(--surface, #1e293b); border: 1px solid var(--border, rgba(255,255,255,0.06)); }
+.job-config-card { padding: 10px 14px; border-radius: 10px; background: var(--surface, #1e293b); border: 1px solid var(--border, rgba(255,255,255,0.06)); transition: opacity 0.2s ease; }
+.job-config-card.job-disabled { opacity: 0.5; }
 .job-config-main { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+.job-config-info { display: flex; align-items: center; gap: 10px; }
 .job-config-cron { font-family: monospace; font-size: 12px; color: var(--text-muted, #94a3b8); }
 .job-config-meta { display: flex; gap: 16px; font-size: 12px; color: var(--text-muted, #94a3b8); }
+.job-config-toggles { display: flex; gap: 12px; align-items: center; }
+
+/* ── Toggle Switch ── */
+.toggle-switch { display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
+.toggle-switch input { display: none; }
+.toggle-slider { position: relative; width: 36px; height: 20px; border-radius: 20px; background: rgba(148,163,184,0.2); transition: background 0.2s ease; flex-shrink: 0; }
+.toggle-slider::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #94a3b8; transition: all 0.2s ease; }
+.toggle-switch input:checked + .toggle-slider { background: rgba(74,222,128,0.3); }
+.toggle-switch input:checked + .toggle-slider::after { transform: translateX(16px); background: #4ade80; }
+.toggle-switch input:disabled + .toggle-slider { opacity: 0.4; cursor: not-allowed; }
+.toggle-label { font-size: 11px; color: var(--text-muted, #94a3b8); min-width: 24px; }
 
 /* ── Empty State ── */
 .empty-state { text-align: center; padding: 32px; color: var(--text-muted, #94a3b8); }
