@@ -154,7 +154,7 @@ class ClaudeCodeExecutor:
         skill_prompt: str | None = None,
     ) -> ExecuteResult:
         prompt = _build_prompt(skill_name, trading_date, data_file, output_dir, "claude-code", skill_prompt)
-        timeout = config.get("timeout_s", 600)
+        timeout = config.get("timeout_s", 1800)
 
         claude_path = _find_cli("claude")
         if not claude_path:
@@ -176,31 +176,34 @@ class ClaudeCodeExecutor:
         start = time.time()
 
         try:
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 cmd,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=timeout,
             )
+            stdout, stderr = proc.communicate(timeout=timeout)
             duration_ms = int((time.time() - start) * 1000)
 
             if proc.returncode != 0:
                 logger.error("claude-code exited with code %d: stderr=%s stdout=%s",
-                             proc.returncode, proc.stderr[:500], proc.stdout[:500])
+                             proc.returncode, stderr[:500], stdout[:500])
+                output_files = _find_new_output_files(output_dir, start)
                 return ExecuteResult(
-                    success=False,
+                    success=len(output_files) > 0,
                     skill_name=skill_name,
                     trading_date=trading_date.isoformat(),
                     engine_type="claude-code",
                     duration_ms=duration_ms,
-                    error=proc.stderr[:1000] or proc.stdout[:1000],
+                    output_files=output_files,
+                    error=stderr[:1000] or stdout[:1000] if not output_files else None,
                 )
 
             # Check for new output files
             output_files = _find_new_output_files(output_dir, start)
             if not output_files:
                 logger.warning("claude-code returned 0 but produced no output files; stdout=%s",
-                               proc.stdout[:500])
+                               stdout[:500])
             else:
                 logger.info("claude-code completed in %dms, produced %d file(s)", duration_ms, len(output_files))
 
@@ -215,15 +218,27 @@ class ClaudeCodeExecutor:
             )
 
         except subprocess.TimeoutExpired:
+            proc.terminate()
+            try:
+                stdout, stderr = proc.communicate(timeout=30)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                stdout, stderr = (proc.stdout and proc.stdout.read()) or "", (proc.stderr and proc.stderr.read()) or ""
             duration_ms = int((time.time() - start) * 1000)
-            logger.error("claude-code timed out after %dms", duration_ms)
+            # Check for partial output files even on timeout
+            output_files = _find_new_output_files(output_dir, start)
+            logger.error("claude-code timed out after %dms, output_files=%d, stdout=%s",
+                         duration_ms, len(output_files), (stdout or "")[:200])
+            if output_files:
+                logger.info("claude-code produced %d file(s) before timeout — treating as partial success", len(output_files))
             return ExecuteResult(
-                success=False,
+                success=len(output_files) > 0,
                 skill_name=skill_name,
                 trading_date=trading_date.isoformat(),
                 engine_type="claude-code",
                 duration_ms=duration_ms,
-                error=f"Timeout after {timeout}s",
+                output_files=output_files,
+                error=f"Timeout after {timeout}s" if not output_files else f"Timeout after {timeout}s but {len(output_files)} output files produced",
             )
 
 
@@ -241,7 +256,7 @@ class GooseExecutor:
         skill_prompt: str | None = None,
     ) -> ExecuteResult:
         prompt = _build_prompt(skill_name, trading_date, data_file, output_dir, "goose", skill_prompt)
-        timeout = config.get("timeout_s", 600)
+        timeout = config.get("timeout_s", 1800)
 
         cmd = [
             "goose", "session", "run",
@@ -327,7 +342,7 @@ class CustomExecutor:
                 error="No command template configured",
             )
 
-        timeout = config.get("timeout_s", 600)
+        timeout = config.get("timeout_s", 1800)
 
         # Replace placeholders
         cmd_str = command_template.format(
