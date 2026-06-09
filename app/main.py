@@ -1863,16 +1863,23 @@ def _execute_ai_skill_job(
             session.add(job)
             session.commit()
 
-            # Patch output files: ensure skill_name matches DB skill name for import
+            # Patch output files: ensure skill_name/job_name match DB skill name for import
             if result.output_files and skill.name:
                 for fpath in result.output_files:
                     try:
                         from pathlib import Path as P
                         p = P(fpath)
                         payload = json.loads(p.read_text(encoding="utf-8"))
+                        patched = False
                         if payload.get("skill_name") != skill.name:
                             payload["skill_name"] = skill.name
+                            patched = True
+                        if payload.get("job_name") != skill.name:
+                            payload["job_name"] = skill.name
+                            patched = True
+                        if patched:
                             p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                            logger.info("Patched %s: skill_name/job_name → %s", p.name, skill.name)
                     except Exception:
                         pass
 
