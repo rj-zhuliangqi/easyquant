@@ -92,9 +92,27 @@ const detailQuery = useQuery({
 });
 const resultDetail = computed(() => detailQuery.data.value || {});
 const renderedMarkdown = computed(() => {
-  const raw = resultDetail.value?.raw_output;
+  let raw = resultDetail.value?.raw_output;
   if (!raw) return "";
-  return marked(raw);
+  // Pre-process: normalize non-standard formatting to standard markdown
+  // 【xxx】→ ## xxx
+  raw = raw.replace(/^【([^】]+)】\s*$/gm, "## $1");
+  // ===xxx=== → # xxx
+  raw = raw.replace(/^={3,}\s*$/gm, "---");
+  // → at line start → - (list item)
+  raw = raw.replace(/^[→›]\s*/gm, "- ");
+  // Pre-process: escape HTML then let marked handle
+  const html = marked(raw);
+  // Post-process: colorize +XX.X% and -XX.X%
+  return html
+    .replace(/([+-]\d+\.?\d*%)/g, (m) => {
+      const color = m.startsWith("+") ? "#4ade80" : "#f87171";
+      return `<span style="color:${color};font-weight:600">${m}</span>`;
+    })
+    .replace(/(涨停|一字板|地天板)/g, '<span style="color:#f87171;font-weight:600">$1</span>')
+    .replace(/(跌停|一字跌停)/g, '<span style="color:#93c5fd;font-weight:600">$1</span>')
+    .replace(/(大幅流入|净流入|主力流入)/g, '<span style="color:#4ade80;font-weight:600">$1</span>')
+    .replace(/(大幅流出|净流出|主力流出)/g, '<span style="color:#f87171;font-weight:600">$1</span>');
 });
 
 // ── Skill Chat state ──
