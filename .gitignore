@@ -16,3 +16,4 @@ data/*.db-*
 data/uvicorn.pid
 data/playwright-nav-check/
 data/playwright-*.png
+data/sector_fund_monitor.db
