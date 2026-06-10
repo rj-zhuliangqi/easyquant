@@ -7,6 +7,16 @@
 
 | ID | Time | T | Title | Read |
 |----|------|---|-------|------|
+| #433 | 9:41 PM | 🟣 | Daily portfolio review JSON output successfully generated and verified | ~359 |
+| #426 | 9:31 PM | 🟣 | EasyQuant daily portfolio review (持仓复盘) task with structured JSON output | ~580 |
+| #425 | 8:40 PM | 🟣 | ST Stock Mining Job Output Successfully Generated and Validated | ~334 |
+| #417 | 8:31 PM | 🟣 | ST Stock Mining Analysis Pipeline (20:30 Daily Job) | ~469 |
+| #415 | 8:14 PM | 🟣 | 超短线盘后选股v3任务完整交付 | ~222 |
+| #409 | 8:13 PM | 🟣 | 大象起舞选股策略2026-06-09输出验证通过并交付 | ~154 |
+| #407 | 8:12 PM | 🟣 | 大象起舞选股策略输出文件成功生成 | ~219 |
+| #403 | 8:10 PM | 🟣 | 超短线盘后选股v3报告成功生成并保存 | ~186 |
+| #386 | 8:06 PM | 🟣 | 大象起舞选股策略 - 大市值异动与机构风格候选分析 | ~245 |
+| #374 | 8:01 PM | 🟣 | 超短线盘后选股v3输出流程定义 | ~263 |
 | #373 | 7:19 PM | 🟣 | 超短线复盘JSON输出文件验证通过并成功写入 | ~125 |
 | #372 | " | 🟣 | 超短线复盘分析结果生成：8只选股+完整HTML报告输出 | ~218 |
 | #371 | 7:14 PM | 🔵 | ai_center/inbox目录已有8个分析结果文件，含盘前/竞价/早盘/尾盘 | ~111 |
@@ -21,4 +31,11 @@
 | #286 | 2:01 PM | 🔵 | AI center inbox contains existing job outputs from earlier today | ~289 |
 | #278 | 1:55 PM | 🟣 | 盘前消息面挖掘 skill for easyquant AI center | ~474 |
 | #271 | 12:47 PM | 🔵 | EasyQuant pre-market analysis pipeline structure | ~464 |
+
+### Jun 10, 2026
+
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #438 | 9:25 AM | 🔵 | EasyQuant Pre-market Analysis Workflow and Output Schema | ~508 |
+| #434 | 9:16 AM | 🔵 | EasyQuant Pre-Market Analysis Pipeline Architecture | ~522 |
 </claude-mem-context>
