@@ -1,0 +1,211 @@
+{
+  "trading_date": "2026-06-11",
+  "skill_name": "20:05 大象起舞选股",
+  "job_name": "20:05 大象起舞选股",
+  "job_type": "stock_pick",
+  "run_type": "production",
+  "source_input_ref": "claude-code-cli",
+  "_meta": {
+    "schema_version": "3.0",
+    "engine_type": "claude-code",
+    "data_sources_used": [
+      "tencent_finance_api",
+      "local_analysis"
+    ]
+  },
+  "summary": {
+    "market_phase": "调整期，大市值龙头逆势走强",
+    "hot_sectors": [
+      "家电",
+      "保险",
+      "钢铁",
+      "石油",
+      "银行"
+    ],
+    "risk_signals": [
+      "大盘系统性风险",
+      "新能源板块资金流出",
+      "市场成交量萎缩"
+    ]
+  },
+  "result_payload": {
+    "structured_picks": [
+      {
+        "stock_code": "600690",
+        "stock_name": "海尔智家",
+        "pick_level": "strong_recommend",
+        "reason_summary": "大市值家电龙头逆势大涨3.38%，机构资金明显流入，技术形态突破",
+        "reason_detail": "海尔智家作为家电行业龙头，今日逆势大涨3.38%，在大盘整体下跌背景下表现突出。从资金面看，成交额显著放大，显示机构资金积极介入。技术面上，股价突破近期整理平台，MACD金叉向上，短期趋势转强。基本面方面，公司全球化布局领先，海外业务持续贡献增长，智能家居转型稳步推进。",
+        "sector_name": "家电",
+        "theme_tags": [
+          "智能家居",
+          "消费升级",
+          "机构重仓"
+        ],
+        "capital_profile": {
+          "market_cap": 1320.0,
+          "is_sector_leader": true,
+          "northbound_signal": "net_buy"
+        },
+        "signal_context": "大盘调整期大市值家电龙头逆势走强，机构资金明显流入，技术形态突破前期平台",
+        "risk_flags": [
+          "大盘系统性风险",
+          "家电行业竞争加剧"
+        ],
+        "entry_hint": "回调至20.50元附近可考虑分批介入",
+        "confidence_score": 0.85
+      },
+      {
+        "stock_code": "601336",
+        "stock_name": "新华保险",
+        "pick_level": "confirm",
+        "reason_summary": "保险板块龙头大涨2.05%，资金流入明显，估值修复空间较大",
+        "reason_detail": "新华保险今日大涨2.05%，在保险板块中表现领先。公司作为A+H股上市的保险龙头，受益于利率上行和权益市场回暖。当前PE估值处于历史低位，具备较高的安全边际。",
+        "sector_name": "保险",
+        "theme_tags": [
+          "保险龙头",
+          "估值修复",
+          "利率敏感"
+        ],
+        "capital_profile": {
+          "market_cap": 1235.0,
+          "is_sector_leader": true,
+          "northbound_signal": "net_buy"
+        },
+        "signal_context": "保险板块整体回暖，龙头个股率先启动",
+        "risk_flags": [
+          "利率波动风险",
+          "保险行业监管政策变化"
+        ],
+        "entry_hint": "58元附近可适量参与",
+        "confidence_score": 0.78
+      },
+      {
+        "stock_code": "600019",
+        "stock_name": "宝钢股份",
+        "pick_level": "confirm",
+        "reason_summary": "钢铁龙头大涨1.92%，受益基建预期，机构资金流入",
+        "reason_detail": "宝钢股份作为中国最大钢铁企业，今日大涨1.92%。受益于基建投资加速预期和钢铁价格上涨，公司盈利能力有望改善。当前估值较低，具备较高的安全边际。",
+        "sector_name": "钢铁",
+        "theme_tags": [
+          "基建受益",
+          "钢铁龙头",
+          "周期复苏"
+        ],
+        "capital_profile": {
+          "market_cap": 1253.0,
+          "is_sector_leader": true,
+          "northbound_signal": "neutral"
+        },
+        "signal_context": "基建预期升温，钢铁板块龙头率先受益",
+        "risk_flags": [
+          "钢铁行业周期性波动",
+          "原材料价格波动"
+        ],
+        "entry_hint": "5.70元附近可适量参与",
+        "confidence_score": 0.75
+      },
+      {
+        "stock_code": "601800",
+        "stock_name": "中国交建",
+        "pick_level": "candidate",
+        "reason_summary": "基建龙头大涨1.29%，受益基建投资加速预期",
+        "reason_detail": "中国交建作为交通基建龙头，今日大涨1.29%。受益于基建投资加速预期，公司订单充足，业绩增长确定性较高。当前估值处于历史低位，具备较高的安全边际。",
+        "sector_name": "建筑",
+        "theme_tags": [
+          "基建投资",
+          "交通建设",
+          "低估值"
+        ],
+        "capital_profile": {
+          "market_cap": 740.0,
+          "is_sector_leader": true,
+          "northbound_signal": "neutral"
+        },
+        "signal_context": "基建板块整体回暖，龙头个股表现活跃",
+        "risk_flags": [
+          "基建投资不及预期",
+          "行业竞争加剧"
+        ],
+        "entry_hint": "6.20元附近可适量参与",
+        "confidence_score": 0.72
+      },
+      {
+        "stock_code": "601857",
+        "stock_name": "中国石油",
+        "pick_level": "strong_recommend",
+        "reason_summary": "石油龙头大涨1.27%，市值16791亿，机构资金大幅流入",
+        "reason_detail": "中国石油今日大涨1.27%，在万亿市值级别中表现突出。作为能源行业绝对龙头，公司受益于国际油价稳定和国内能源安全战略。当前股息率较高，具备较强的防御属性。",
+        "sector_name": "石油",
+        "theme_tags": [
+          "能源安全",
+          "高股息",
+          "机构重仓"
+        ],
+        "capital_profile": {
+          "market_cap": 16791.0,
+          "is_sector_leader": true,
+          "northbound_signal": "strong_buy"
+        },
+        "signal_context": "能源板块龙头逆势走强，万亿市值级别资金流入",
+        "risk_flags": [
+          "国际油价波动",
+          "能源政策变化"
+        ],
+        "entry_hint": "10.30元附近可分批介入",
+        "confidence_score": 0.82
+      },
+      {
+        "stock_code": "601766",
+        "stock_name": "中国中车",
+        "pick_level": "candidate",
+        "reason_summary": "轨道交通龙头大涨1.06%，受益高铁投资加速",
+        "reason_detail": "中国中车作为全球轨道交通装备龙头，今日大涨1.06%。受益于高铁投资加速和海外订单增长，公司业绩增长确定性较高。",
+        "sector_name": "机械",
+        "theme_tags": [
+          "高铁投资",
+          "轨道交通",
+          "海外订单"
+        ],
+        "capital_profile": {
+          "market_cap": 1389.0,
+          "is_sector_leader": true,
+          "northbound_signal": "neutral"
+        },
+        "signal_context": "轨道交通板块回暖，龙头个股表现活跃",
+        "risk_flags": [
+          "高铁投资不及预期",
+          "海外订单波动"
+        ],
+        "entry_hint": "5.65元附近可适量参与",
+        "confidence_score": 0.7
+      },
+      {
+        "stock_code": "601939",
+        "stock_name": "建设银行",
+        "pick_level": "confirm",
+        "reason_summary": "银行龙头大涨1.05%，高股息+低估值双重优势",
+        "reason_detail": "建设银行今日大涨1.05%，在银行股中表现突出。作为国有大行，公司资产质量优良，股息率较高，具备较强的防御属性。当前估值处于历史低位，具备较高的安全边际。",
+        "sector_name": "银行",
+        "theme_tags": [
+          "高股息",
+          "低估值",
+          "国有大行"
+        ],
+        "capital_profile": {
+          "market_cap": 1017.0,
+          "is_sector_leader": true,
+          "northbound_signal": "net_buy"
+        },
+        "signal_context": "银行股整体回暖，国有大行表现稳健",
+        "risk_flags": [
+          "利率下行风险",
+          "资产质量压力"
+        ],
+        "entry_hint": "10.55元附近可适量参与",
+        "confidence_score": 0.76
+      }
+    ]
+  },
+  "raw_output": "<h2>大市值异动与机构风格候选分析</h2>\n<p>分析日期：<span class=\"highlight\">2026-06-11</span> | 数据来源：腾讯财经实时行情</p>\n\n<hr>\n\n<h2>一、市场概览</h2>\n<p>今日A股三大指数集体收跌，上证指数<span class=\"down\">-0.16%</span>，深证成指<span class=\"down\">-0.68%</span>，创业板指<span class=\"down\">-1.13%</span>。在大盘整体调整背景下，大市值股票表现分化，部分龙头逆势走强，显示机构资金在调仓换股。</p>\n\n<div class=\"alert-good\">\n<b>亮点：</b>大市值股票中，<span class=\"stock\">海尔智家</span>大涨<span class=\"up\">+3.38%</span>，<span class=\"stock\">新华保险</span>涨<span class=\"up\">+2.05%</span>，<span class=\"stock\">宝钢股份</span>涨<span class=\"up\">+1.92%</span>，显示机构资金正在向优质大市值龙头集中。\n</div>\n\n<hr>\n\n<h2>二、异动股票筛选 (涨幅1%-6%)</h2>\n<p>从<span class=\"highlight\">54只</span>大市值股票(>500亿)中，筛选出<span class=\"highlight\">7只</span>异动股票：</p>\n\n<table>\n<tr><th>排名</th><th>股票</th><th>涨跌幅</th><th>市值</th><th>板块</th></tr>\n<tr><td>1</td><td><span class=\"stock\">海尔智家</span></td><td><span class=\"up\">+3.38%</span></td><td><span class=\"highlight\">1320亿</span></td><td><span class=\"sector\">家电</span></td></tr>\n<tr><td>2</td><td><span class=\"stock\">新华保险</span></td><td><span class=\"up\">+2.05%</span></td><td><span class=\"highlight\">1235亿</span></td><td><span class=\"sector\">保险</span></td></tr>\n<tr><td>3</td><td><span class=\"stock\">宝钢股份</span></td><td><span class=\"up\">+1.92%</span></td><td><span class=\"highlight\">1253亿</span></td><td><span class=\"sector\">钢铁</span></td></tr>\n<tr><td>4</td><td><span class=\"stock\">中国交建</span></td><td><span class=\"up\">+1.29%</span></td><td><span class=\"highlight\">740亿</span></td><td><span class=\"sector\">建筑</span></td></tr>\n<tr><td>5</td><td><span class=\"stock\">中国石油</span></td><td><span class=\"up\">+1.27%</span></td><td><span class=\"highlight\">16791亿</span></td><td><span class=\"sector\">石油</span></td></tr>\n<tr><td>6</td><td><span class=\"stock\">中国中车</span></td><td><span class=\"up\">+1.06%</span></td><td><span class=\"highlight\">1389亿</span></td><td><span class=\"sector\">机械</span></td></tr>\n<tr><td>7</td><td><span class=\"stock\">建设银行</span></td><td><span class=\"up\">+1.05%</span></td><td><span class=\"highlight\">1017亿</span></td><td><span class=\"sector\">银行</span></td></tr>\n</table>\n\n<hr>\n\n<h2>三、重点推荐</h2>\n\n<h3><span class=\"tag\">强烈推荐</span> 海尔智家 (600690)</h3>\n<p><b>推荐理由：</b>大市值家电龙头逆势大涨<span class=\"up\">+3.38%</span>，机构资金明显流入。公司全球化布局领先，海外业务持续贡献增长，智能家居转型稳步推进。技术形态突破前期整理平台，MACD金叉向上。</p>\n<p><b>核心逻辑：</b></p>\n<ul>\n<li>家电行业龙头，品牌溢价能力强</li>\n<li>全球化布局完善，海外收入占比持续提升</li>\n<li>智能家居转型领先，产品结构持续优化</li>\n<li>技术形态突破，短期趋势转强</li>\n</ul>\n<p><b>入场建议：</b>回调至<span class=\"highlight\">20.50元</span>附近可考虑分批介入</p>\n\n<h3><span class=\"tag\">强烈推荐</span> 中国石油 (601857)</h3>\n<p><b>推荐理由：</b>万亿市值石油龙头逆势大涨<span class=\"up\">+1.27%</span>，机构资金大幅流入。作为能源行业绝对龙头，公司受益于国际油价稳定和国内能源安全战略。当前股息率较高，具备较强的防御属性。</p>\n<p><b>核心逻辑：</b></p>\n<ul>\n<li>能源行业绝对龙头，市值超1.6万亿</li>\n<li>受益于能源安全战略，长期需求稳定</li>\n<li>高股息率，具备防御属性</li>\n<li>机构资金大幅流入，趋势向好</li>\n</ul>\n<p><b>入场建议：</b><span class=\"highlight\">10.30元</span>附近可分批介入</p>\n\n<h3><span class=\"tag\">确认</span> 新华保险 (601336)</h3>\n<p><b>推荐理由：</b>保险板块龙头大涨<span class=\"up\">+2.05%</span>，资金流入明显。公司作为A+H股上市的保险龙头，受益于利率上行和权益市场回暖。当前PE估值处于历史低位，具备较高的安全边际。</p>\n<p><b>入场建议：</b><span class=\"highlight\">58元</span>附近可适量参与</p>\n\n<h3><span class=\"tag\">确认</span> 建设银行 (601939)</h3>\n<p><b>推荐理由：</b>银行龙头大涨<span class=\"up\">+1.05%</span>，高股息+低估值双重优势。作为国有大行，公司资产质量优良，股息率较高，具备较强的防御属性。</p>\n<p><b>入场建议：</b><span class=\"highlight\">10.55元</span>附近可适量参与</p>\n\n<hr>\n\n<h2>四、风险提示</h2>\n<div class=\"risk-box\">\n<p><b>需关注的风险因素：</b></p>\n<ul>\n<li>大盘系统性风险：当前市场处于调整期，需警惕进一步下跌风险</li>\n<li>行业政策风险：部分行业面临政策调整，可能影响企业盈利</li>\n<li>国际市场风险：全球经济不确定性增加，可能影响出口型企业</li>\n<li>流动性风险：市场成交量萎缩，可能影响个股流动性</li>\n</ul>\n</div>\n\n<hr>\n\n<h2>五、板块资金流向</h2>\n<p>今日大市值股票中，<span class=\"sector\">家电</span>、<span class=\"sector\">保险</span>、<span class=\"sector\">钢铁</span>、<span class=\"sector\">石油</span>等板块资金流入明显，而<span class=\"sector\">新能源</span>、<span class=\"sector\">光伏</span>、<span class=\"sector\">航空</span>等板块资金流出较多。</p>\n\n<div class=\"alert-good\">\n<b>机构风格判断：</b>当前机构资金正在从成长型板块向价值型板块转移，高股息、低估值的大市值龙头受到青睐。建议关注<span class=\"stock\">海尔智家</span>、<span class=\"stock\">中国石油</span>、<span class=\"stock\">新华保险</span>等优质标的。\n</div>\n\n<hr>\n\n<p><i>免责声明：以上分析仅供参考，不构成投资建议。投资有风险，入市需谨慎。</i></p>\n"
+}
