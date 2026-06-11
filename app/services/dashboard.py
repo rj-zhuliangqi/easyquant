@@ -71,7 +71,12 @@ class DashboardService:
                 for row in sorted(latest_rows, key=lambda row: self._metric_value(row, metric), reverse=descending)[:effective_limit]
             ]
             resolved = self._resolve_included_sector_names(session, sector_type, latest_rows, include_sector_names)
-            ranked_sector_names = self._merge_included(ranked_sector_names, resolved["valid"])
+            # When include_sector_names is provided, only return those sectors (watchlist mode)
+            # Otherwise merge with ranked sectors (default leaders mode)
+            if include_sector_names:
+                ranked_sector_names = resolved["valid"]
+            else:
+                ranked_sector_names = self._merge_included(ranked_sector_names, resolved["valid"])
             series = [
                 self._build_daily_history_series(
                     session,
@@ -130,7 +135,12 @@ class DashboardService:
             for row in sorted(latest_rows, key=lambda row: self._metric_value(row, metric), reverse=descending)[:effective_limit]
         ]
         resolved = self._resolve_included_sector_names(session, sector_type, latest_rows, include_sector_names)
-        ranked_sector_names = self._merge_included(ranked_sector_names, resolved["valid"])
+        # When include_sector_names is provided, only return those sectors (watchlist mode)
+        # Otherwise merge with ranked sectors (default leaders mode)
+        if include_sector_names:
+            ranked_sector_names = resolved["valid"]
+        else:
+            ranked_sector_names = self._merge_included(ranked_sector_names, resolved["valid"])
 
         rows = self._rows_for_sector_names_on_date(
             session,
