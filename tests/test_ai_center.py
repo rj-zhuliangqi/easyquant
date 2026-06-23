@@ -973,3 +973,71 @@ def test_catchup_mechanism_on_scheduler_startup() -> None:
         assert len(catchup_jobs) >= 1, f"Expected catch-up jobs but found {len(catchup_jobs)}, all jobs: {[j.id for j in all_jobs]}"
         # Cron jobs should also be registered
         assert len(cron_jobs) >= 1
+
+
+def test_scan_import_directory_tolerates_name_drift_and_isolates_failures(tmp_path) -> None:
+    """Regression: production payloads sometimes carry ``skill_name`` /
+    ``job_name`` with a leading schedule prefix (``08:20 X``) or a trailing
+    revision tag (``X (v3)``), but the AiSkill row stores the bare name. The
+    importer must tolerate that drift; one bad file must not block the rest.
+    """
+
+    _, session_factory = build_ai_client()
+    skill_id, _, _ = seed_skill(session_factory)  # creates 'auction-scan' + job '09:26 auction-scan'
+
+    inbox = tmp_path / "inbox"
+    processed = tmp_path / "processed"
+    inbox.mkdir()
+    processed.mkdir()
+
+    # File 1: payload uses the job_name (with time prefix) in BOTH skill_name
+    # and job_name. Lookup must strip the "09:26 " prefix to find the skill.
+    pick = stock_pick_payload(stock_code="000001", level="watch", summary="drift recovered")
+    (inbox / "good_with_prefix.json").write_text(
+        json.dumps(
+            {
+                "skill_name": "09:26 auction-scan",
+                "job_name": "09:26 auction-scan",
+                "job_type": "stock_pick",
+                "trading_date": "2026-05-07",
+                "run_type": "production",
+                "raw_output": "ok",
+                "summary": {"headline": "ok"},
+                "push": {"status": "sent"},
+                "result_payload": {"structured_picks": [pick]},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    # File 2: malformed JSON. Must not abort the batch; goes to _failed/.
+    (inbox / "bad_json.json").write_text("{ not valid json", encoding="utf-8")
+
+    # File 3: skill_name matches nothing at all (also goes to _failed/).
+    (inbox / "unknown_skill.json").write_text(
+        json.dumps(
+            {
+                "skill_name": "nonexistent",
+                "trading_date": "2026-05-07",
+                "summary": {},
+                "push": {},
+                "result_payload": {"structured_picks": []},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    service = AiCenterService(gateway=AiGateway(), now_provider=lambda: datetime(2026, 5, 8, 15, 0, 0))
+    with session_factory() as session:
+        summary = service.scan_import_directory(session, inbox_dir=inbox, processed_dir=processed)
+
+    assert skill_id > 0
+    assert summary["imported"] == 1, summary
+    assert summary["failed"] == 2, summary
+    assert {f["file"] for f in summary["failures"]} == {"bad_json.json", "unknown_skill.json"}
+    assert (processed / "good_with_prefix.json").exists()
+    assert (inbox / "_failed" / "bad_json.json").exists()
+    assert (inbox / "_failed" / "unknown_skill.json").exists()
+    assert not (inbox / "good_with_prefix.json").exists()

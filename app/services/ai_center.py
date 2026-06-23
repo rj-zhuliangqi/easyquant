@@ -5,9 +5,62 @@ from datetime import date
 from datetime import datetime
 from datetime import timedelta
 import json
+import logging
+import re
 from pathlib import Path
 import shutil
 from typing import Any
+
+
+logger = logging.getLogger(__name__)
+
+# Matches an optional "HH:MM " or "周X HH:MM " prefix used in job names like
+# "08:20 盘前消息面挖掘" / "周五22:00 超短线周度经验汇总". Used to recover the
+# bare skill name when payloads incorrectly include the time prefix.
+_NAME_TIME_PREFIX_RE = re.compile(r"^(?:周[一二三四五六日])?\s*\d{1,2}:\d{2}\s*")
+
+# Matches a trailing version tag like "(v3)" or "（v2）" on job names. Some
+# job names embed a revision tag the skill name itself does not carry — strip
+# it as a last-resort lookup fallback.
+_NAME_VERSION_SUFFIX_RE = re.compile(r"\s*[（(]v\d+[）)]\s*$", re.IGNORECASE)
+
+
+def _strip_time_prefix(name: str | None) -> str | None:
+    """Strip leading schedule prefixes like ``08:20 `` or ``周五22:00 ``."""
+
+    if not name:
+        return name
+    return _NAME_TIME_PREFIX_RE.sub("", str(name)).strip() or None
+
+
+def _strip_version_suffix(name: str | None) -> str | None:
+    """Strip a trailing ``(vN)`` revision tag from a name."""
+
+    if not name:
+        return name
+    return _NAME_VERSION_SUFFIX_RE.sub("", str(name)).strip() or None
+
+
+def _name_candidates(*names: str | None) -> list[str]:
+    """Build an ordered, de-duplicated list of name candidates to try when
+    looking up a skill/job from a payload. Tries each raw name, then the same
+    name with the schedule prefix stripped, then with the ``(vN)`` suffix
+    stripped, then with both stripped."""
+
+    out: list[str] = []
+    for raw in names:
+        if not raw:
+            continue
+        for transform in (
+            lambda x: x,
+            _strip_time_prefix,
+            _strip_version_suffix,
+            lambda x: _strip_version_suffix(_strip_time_prefix(x)),
+        ):
+            value = transform(str(raw).strip()) if raw else None
+            if value and value not in out:
+                out.append(value)
+    return out
 
 from sqlalchemy import desc
 from sqlalchemy import delete
@@ -396,7 +449,16 @@ class AiCenterService:
         if not isinstance(result_payload, dict):
             raise ValueError("result_payload must be an object")
 
-        resolved_job_type = str(payload.get("job_type") or (job.job_type if job else "stock_pick"))
+        # Resolve job_type. Payloads sometimes hard-code "stock_pick" in the
+        # skill prompt template even when the underlying job is a review/news
+        # task — trust the DB-registered job.job_type as the source of truth
+        # whenever payload's claim disagrees with the registered job.
+        payload_job_type = str(payload.get("job_type") or "").strip()
+        registered_job_type = (job.job_type if job else "").strip() if job else ""
+        if registered_job_type and (not payload_job_type or payload_job_type != registered_job_type):
+            resolved_job_type = registered_job_type
+        else:
+            resolved_job_type = payload_job_type or registered_job_type or "stock_pick"
         picks_input = self._extract_structured_picks(payload=payload, result_payload=result_payload, job_type=resolved_job_type)
 
         run = AiRun(
@@ -436,7 +498,7 @@ class AiCenterService:
                     pick_level=item.get("pick_level") or item.get("pick_type"),
                     confidence_score=self._to_float(item.get("confidence_score")),
                     reason_summary=item.get("reason_summary"),
-                    reason_detail=item.get("reason_detail"),
+                    reason_detail=self._coerce_text(item.get("reason_detail")),
                     capital_profile_json=json.dumps(item.get("capital_profile"), ensure_ascii=False) if item.get("capital_profile") else None,
                     signal_context=item.get("signal_context"),
                     risk_flags_json=json.dumps(item.get("risk_flags"), ensure_ascii=False) if item.get("risk_flags") else None,
@@ -942,22 +1004,49 @@ class AiCenterService:
         session.commit()
         return {"updated": updated}
 
-    def scan_import_directory(self, session: Session, *, inbox_dir: Path, processed_dir: Path) -> dict[str, int]:
+    def scan_import_directory(self, session: Session, *, inbox_dir: Path, processed_dir: Path) -> dict[str, Any]:
+        """Import every ``*.json`` payload from ``inbox_dir`` into the DB.
+
+        - Each file is imported in isolation: a parsing/import failure on one
+          file does not abort the rest of the batch.
+        - On success the file is moved to ``processed_dir``.
+        - On failure the file is moved to ``inbox_dir/_failed/`` so it is not
+          retried forever and the operator can inspect it.
+        - Errors are logged with the offending filename and exception type.
+        """
+
         inbox = Path(inbox_dir)
         processed = Path(processed_dir)
+        failed_dir = inbox / "_failed"
         processed.mkdir(parents=True, exist_ok=True)
+        failed_dir.mkdir(parents=True, exist_ok=True)
         imported = 0
         failed = 0
+        failures: list[dict[str, str]] = []
         for file_path in sorted(inbox.glob("*.json")):
             try:
                 payload = json.loads(file_path.read_text(encoding="utf-8"))
                 self.import_run(session, payload)
                 shutil.move(str(file_path), processed / file_path.name)
                 imported += 1
-            except Exception:
+                logger.info("ai_center.import_run ok file=%s", file_path.name)
+            except Exception as exc:  # noqa: BLE001 - per-file isolation is intentional
                 session.rollback()
                 failed += 1
-        return {"imported": imported, "failed": failed}
+                err_type = type(exc).__name__
+                err_msg = str(exc)[:300]
+                failures.append({"file": file_path.name, "error_type": err_type, "error": err_msg})
+                logger.warning(
+                    "ai_center.import_run failed file=%s error_type=%s error=%s",
+                    file_path.name,
+                    err_type,
+                    err_msg,
+                )
+                try:
+                    shutil.move(str(file_path), failed_dir / file_path.name)
+                except Exception:  # noqa: BLE001
+                    logger.exception("ai_center.import_run could not move failed file=%s", file_path.name)
+        return {"imported": imported, "failed": failed, "failures": failures}
 
     def compute_pick_outcomes(self, session: Session, pick: AiPick) -> int:
         history = self._stock_history(pick.stock_code)
@@ -1751,8 +1840,18 @@ class AiCenterService:
     def _find_skill(self, session: Session, payload: dict[str, Any]) -> AiSkill | None:
         if payload.get("skill_id"):
             return session.get(AiSkill, int(payload["skill_id"]))
-        if payload.get("skill_name"):
-            return session.scalar(select(AiSkill).where(AiSkill.name == str(payload["skill_name"])))
+        for name in _name_candidates(payload.get("skill_name"), payload.get("job_name")):
+            skill = session.scalar(select(AiSkill).where(AiSkill.name == name))
+            if skill is not None:
+                return skill
+        # Final fallback: if any job_name candidate matches a registered job,
+        # use that job's skill. Covers cases where payload's skill_name and the
+        # DB skill name diverge (typos, hyphenation, version tags) but the
+        # job_name still lines up.
+        for name in _name_candidates(payload.get("job_name")):
+            job = session.scalar(select(AiJob).where(AiJob.name == name))
+            if job is not None:
+                return session.get(AiSkill, job.skill_id)
         return None
 
     def _find_revision(self, session: Session, *, skill_id: int, payload: dict[str, Any]) -> AiSkillRevision | None:
@@ -1765,19 +1864,38 @@ class AiCenterService:
             return session.scalar(
                 select(AiSkillRevision).where(AiSkillRevision.skill_id == skill_id, AiSkillRevision.revision_no == int(payload["revision_no"]))
             )
-        if payload.get("job_name"):
-            job = session.scalar(select(AiJob).where(AiJob.name == str(payload["job_name"])))
+        for candidate in _name_candidates(payload.get("job_name")):
+            job = session.scalar(select(AiJob).where(AiJob.name == candidate, AiJob.skill_id == skill_id))
             if job and job.active_revision_id:
-                return session.get(AiSkillRevision, job.active_revision_id)
-        return None
+                revision = session.get(AiSkillRevision, job.active_revision_id)
+                if revision is not None:
+                    return revision
+        # Fallback: use the skill's active revision (most recent if multiple).
+        active = session.scalar(
+            select(AiSkillRevision)
+            .where(AiSkillRevision.skill_id == skill_id, AiSkillRevision.status == "active")
+            .order_by(desc(AiSkillRevision.revision_no))
+        )
+        if active is not None:
+            return active
+        # Last-resort: any revision for this skill (latest by revision_no).
+        return session.scalar(
+            select(AiSkillRevision)
+            .where(AiSkillRevision.skill_id == skill_id)
+            .order_by(desc(AiSkillRevision.revision_no))
+        )
 
     def _find_job(self, session: Session, payload: dict[str, Any], skill_id: int) -> AiJob | None:
         if payload.get("job_id"):
             job = session.get(AiJob, int(payload["job_id"]))
             return job if job and job.skill_id == skill_id else None
-        if payload.get("job_name"):
-            return session.scalar(select(AiJob).where(AiJob.name == str(payload["job_name"]), AiJob.skill_id == skill_id))
-        return None
+        for candidate in _name_candidates(payload.get("job_name")):
+            job = session.scalar(select(AiJob).where(AiJob.name == candidate, AiJob.skill_id == skill_id))
+            if job is not None:
+                return job
+        # Fallback: the (typically single) job for this skill — sufficient for
+        # the built-in 1:1 skill/job mapping.
+        return session.scalar(select(AiJob).where(AiJob.skill_id == skill_id).order_by(AiJob.id.asc()))
 
     def _demote_active_revisions(self, session: Session, skill_id: int) -> None:
         revisions = list(session.scalars(select(AiSkillRevision).where(AiSkillRevision.skill_id == skill_id, AiSkillRevision.status == "active")))
@@ -1838,6 +1956,23 @@ class AiCenterService:
             return float(str(value).replace("%", "").replace(",", "").strip())
         except ValueError:
             return None
+
+    @staticmethod
+    def _coerce_text(value: Any) -> str | None:
+        """Coerce a payload value into the Text-column-compatible string form.
+
+        Lists/dicts are JSON-encoded so callers that send richer structure
+        (e.g. ``reason_detail`` as a list of bullet strings) don't blow up the
+        ``str``-typed column with ``ProgrammingError: type 'list' is not
+        supported``."""
+
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (list, tuple, dict)):
+            return json.dumps(value, ensure_ascii=False)
+        return str(value)
 
     def _skill_name_map(self, session: Session) -> dict[int, str]:
         return {item.id: item.name for item in session.scalars(select(AiSkill))}
