@@ -82,6 +82,35 @@ const headlineItems = computed(() => resultPayload.value?.headline_items || []);
 const marketImplications = computed(() => resultPayload.value?.market_implications || []);
 const watchThemes = computed(() => resultPayload.value?.watch_themes || []);
 
+// 兼容 stock_pick 风格产物：6 月起 0820 任务改产 structured_picks（按个股推荐
+// 而非按新闻头条），同时仍保留 structured_summary 三段定调 + raw_output_text
+// 完整 HTML 报告。前端把这些都渲染出来，而不是显示空态。
+const structuredPicks = computed(() => resultPayload.value?.structured_picks || []);
+const rawOutputHtml = computed(() => activeRun.value?.raw_output_text || activeRun.value?.raw_output || "");
+
+const hasAnyContent = computed(
+  () =>
+    headlineItems.value.length > 0 ||
+    marketImplications.value.length > 0 ||
+    watchThemes.value.length > 0 ||
+    structuredPicks.value.length > 0 ||
+    Object.keys(summary.value).length > 0 ||
+    rawOutputHtml.value.length > 0,
+);
+
+const showRawOutput = ref(false);
+
+function pickLevelBadge(level) {
+  if (!level) return null;
+  const map = {
+    strong_recommend: { label: "强烈推荐", cls: "level-strong" },
+    recommend: { label: "推荐", cls: "level-rec" },
+    watch: { label: "观察", cls: "level-watch" },
+    hold: { label: "持仓", cls: "level-hold" },
+  };
+  return map[level] || { label: String(level), cls: "level-other" };
+}
+
 const dataSources = computed(() => {
   const meta = activeRun.value?.meta || activeRun.value?._meta || {};
   return meta?.data_sources_used || [];
@@ -247,10 +276,57 @@ watch(selectedDate, () => {
         </div>
       </DataPanel>
 
+      <!-- structured_picks：6 月起 0820 任务改产的「个股推荐池」 -->
+      <DataPanel v-if="structuredPicks.length" :title="`重点个股 · ${structuredPicks.length}`">
+        <div class="pick-grid">
+          <article v-for="(pick, i) in structuredPicks" :key="`pk-${i}`" class="pick-card">
+            <header class="pick-head">
+              <span class="pick-code">{{ pick.stock_code }}</span>
+              <span class="pick-name">{{ pick.stock_name }}</span>
+              <span
+                v-if="pickLevelBadge(pick.pick_level)"
+                :class="['pick-level-badge', pickLevelBadge(pick.pick_level).cls]"
+              >
+                {{ pickLevelBadge(pick.pick_level).label }}
+              </span>
+              <span v-if="pick.sector_name" class="chip chip-sector">{{ pick.sector_name }}</span>
+            </header>
+            <p v-if="pick.reason_summary" class="pick-reason">{{ pick.reason_summary }}</p>
+            <p v-if="pick.reason_detail" class="pick-detail">{{ pick.reason_detail }}</p>
+            <footer v-if="pick.theme_tags?.length || pick.entry_hint" class="pick-meta">
+              <span
+                v-for="(tag, idx) in pick.theme_tags || []"
+                :key="`pkt-${i}-${idx}`"
+                class="chip chip-theme"
+              >
+                {{ tag }}
+              </span>
+              <span v-if="pick.entry_hint" class="pick-entry-hint">入场提示：{{ pick.entry_hint }}</span>
+            </footer>
+          </article>
+        </div>
+      </DataPanel>
+
+      <!-- raw_output：完整 HTML 报告（折叠展开，避免一上来铺满屏幕） -->
+      <DataPanel v-if="rawOutputHtml">
+        <template #header>
+          <div class="raw-output-header">
+            <h3 class="panel-title-inline">完整分析报告</h3>
+            <button class="toggle-btn" @click="showRawOutput = !showRawOutput">
+              {{ showRawOutput ? "收起" : "展开" }}
+            </button>
+          </div>
+        </template>
+        <div v-show="showRawOutput" class="raw-output-body" v-html="rawOutputHtml"></div>
+        <p v-if="!showRawOutput" class="raw-output-hint">
+          点击右上角「展开」查看 AI 产出的完整 HTML 分析（含板块涨幅排行、资金流向、个股链路解读等）。
+        </p>
+      </DataPanel>
+
       <EmptyState
-        v-if="!headlineItems.length && !marketImplications.length && !watchThemes.length"
-        title="本期产物未包含新闻明细"
-        description="该日 0820 任务可能直接走 stock_pick 模式，未拆分 headline_items / market_implications / watch_themes 三段。"
+        v-if="!hasAnyContent"
+        title="本期产物未包含可识别字段"
+        description="该日 0820 任务结构不属于已知任何一种 (headline_items / structured_picks / raw_output)。可能仍在执行中，或产物格式有变更。"
       />
     </template>
     </template>
@@ -605,6 +681,227 @@ watch(selectedDate, () => {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
+}
+
+/* Pick 卡片（structured_picks） */
+.pick-grid {
+  display: grid;
+  gap: var(--space-3);
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+}
+
+.pick-card {
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--surface, rgba(255, 255, 255, 0.02));
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.06));
+  display: grid;
+  gap: 8px;
+}
+
+.pick-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.pick-code {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.pick-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.pick-level-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.level-strong {
+  background: rgba(239, 68, 68, 0.15);
+  color: #fca5a5;
+  border: 1px solid rgba(239, 68, 68, 0.35);
+}
+.level-rec {
+  background: rgba(245, 158, 11, 0.12);
+  color: #fcd34d;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+.level-watch {
+  background: rgba(6, 182, 212, 0.1);
+  color: #67e8f9;
+  border: 1px solid rgba(6, 182, 212, 0.25);
+}
+.level-hold,
+.level-other {
+  background: rgba(148, 163, 184, 0.1);
+  color: var(--text-secondary);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.pick-reason {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--text);
+}
+
+.pick-detail {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.pick-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding-top: 4px;
+  border-top: 1px dashed var(--border);
+}
+
+.chip-theme {
+  background: rgba(168, 85, 247, 0.1);
+  color: #d8b4fe;
+  border: 1px solid rgba(168, 85, 247, 0.25);
+}
+
+.pick-entry-hint {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  margin-left: auto;
+}
+
+/* 完整 HTML 报告（raw_output） */
+.raw-output-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.panel-title-inline {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.toggle-btn {
+  padding: 4px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+}
+.toggle-btn:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+}
+
+.raw-output-hint {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+/* raw_output 内嵌 HTML 用的内联 class — Skill 产物里有自定义 .stock / .sector /
+   .up / .down / .alert-good / .risk-box / .limit-up / .tag / .inflow / .outflow */
+.raw-output-body :deep(table) {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 12px 0;
+  font-size: 13px;
+}
+.raw-output-body :deep(th),
+.raw-output-body :deep(td) {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+.raw-output-body :deep(th) {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.raw-output-body :deep(h2) {
+  font-size: 15px;
+  margin: 16px 0 8px;
+  color: var(--text);
+}
+.raw-output-body :deep(h3) {
+  font-size: 14px;
+  margin: 12px 0 6px;
+}
+.raw-output-body :deep(p) {
+  line-height: 1.7;
+  font-size: 13.5px;
+  margin: 6px 0;
+}
+.raw-output-body :deep(.up),
+.raw-output-body :deep(.inflow) {
+  color: var(--up, #ef4444);
+  font-weight: 600;
+}
+.raw-output-body :deep(.down),
+.raw-output-body :deep(.outflow) {
+  color: var(--down, #10b981);
+  font-weight: 600;
+}
+.raw-output-body :deep(.sector) {
+  color: #67e8f9;
+  font-weight: 500;
+}
+.raw-output-body :deep(.stock) {
+  color: #fcd34d;
+  font-weight: 500;
+}
+.raw-output-body :deep(.limit-up) {
+  color: var(--up, #ef4444);
+  font-weight: 700;
+}
+.raw-output-body :deep(.alert-good),
+.raw-output-body :deep(.risk-box) {
+  display: block;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  margin: 8px 0;
+  font-size: 13px;
+}
+.raw-output-body :deep(.alert-good) {
+  background: rgba(16, 185, 129, 0.08);
+  border-left: 3px solid var(--success, #10b981);
+}
+.raw-output-body :deep(.risk-box) {
+  background: rgba(239, 68, 68, 0.06);
+  border-left: 3px solid var(--up, #ef4444);
+}
+.raw-output-body :deep(.tag) {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.1);
+  color: var(--text-secondary);
+  font-size: 11px;
+  margin: 0 2px;
+}
+.raw-output-body :deep(hr) {
+  border: 0;
+  border-top: 1px dashed var(--border);
+  margin: 16px 0;
 }
 
 @media (max-width: 640px) {
