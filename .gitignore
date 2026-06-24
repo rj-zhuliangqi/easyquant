@@ -16,3 +16,15 @@ data/*.db-*
 data/uvicorn.pid
 data/playwright-nav-check/
 data/playwright-*.png
+
+# Throwaway experiment scripts — keep root tidy. Anything that's a one-off
+# data probe / strategy validation goes under scripts/experiments/ instead
+# of the repo root, but ignore lingering top-level tmp_*.py just in case.
+/tmp_*.py
+/build_analysis.py
+/validate_output.py
+data/ai_center/*.py
+data/ai_center/_*.py
+data/*.json
+data/market_data_*.json
+
