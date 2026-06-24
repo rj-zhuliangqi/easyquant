@@ -52,6 +52,7 @@ SPA_SHELL_FILENAME = "spa/frontend/index.html"
 SPA_NAVIGATION_PATHS = (
     "/",
     "/login",
+    "/news",
     "/alerts",
     "/opportunity-pool",
     "/sector-monitor",
@@ -704,6 +705,10 @@ def create_app(
 
     @app.get("/alerts")
     def alerts_page() -> FileResponse:
+        return build_spa_shell_response()
+
+    @app.get("/news")
+    def news_page() -> FileResponse:
         return build_spa_shell_response()
 
     @app.get("/opportunity-pool")

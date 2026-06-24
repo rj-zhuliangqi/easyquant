@@ -3,6 +3,7 @@ import { isAuthenticated } from "./lib/auth";
 
 import HomeView from "./views/HomeView.vue";
 import AlertsView from "./views/AlertsView.vue";
+import NewsView from "./views/NewsView.vue";
 import SectorMonitorView from "./views/SectorMonitorView.vue";
 import LimitUpView from "./views/LimitUpView.vue";
 import OpportunityPoolView from "./views/OpportunityPoolView.vue";
@@ -14,6 +15,7 @@ import UserMgmtView from "./views/UserMgmtView.vue";
 export const routes = [
   { path: "/login", name: "login", component: LoginView, meta: { title: "登录" } },
   { path: "/", name: "home", component: HomeView, meta: { title: "首页", keepAlive: true } },
+  { path: "/news", name: "news", component: NewsView, meta: { title: "消息面", keepAlive: true } },
   { path: "/alerts", name: "alerts", component: AlertsView, meta: { title: "预警中心", keepAlive: true } },
   { path: "/opportunity-pool", name: "opportunity-pool", component: OpportunityPoolView, meta: { title: "机会池", keepAlive: true } },
   { path: "/sector-monitor", name: "sector-monitor", component: SectorMonitorView, meta: { title: "板块资金监控", keepAlive: true } },

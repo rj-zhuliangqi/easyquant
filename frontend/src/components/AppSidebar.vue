@@ -33,7 +33,7 @@ const navItems = ref(
 const navSections = computed(() => {
   const items = navItems.value;
   const sectionDefs = [
-    { label: "概览", names: ["home", "alerts"] },
+    { label: "概览", names: ["home", "news", "alerts"] },
     { label: "市场", names: ["sector-monitor", "limit-up-ladder", "opportunity-pool"] },
     { label: "工具", names: ["ai-center", "workspace", "user-mgmt"] },
   ];
@@ -53,6 +53,15 @@ async function prefetch(pathName) {
     await queryClient.prefetchQuery({
       queryKey: pageQueryKey(pathName),
       queryFn: () => fetchJson(`/api/page/${pathName}`),
+      staleTime: 30_000,
+    });
+  } else if (pathName === "news") {
+    // News view fetches /api/ai/runs?job_type=news_scan directly; warm that
+    // up so the panel paints instantly on click. Date defaults to today.
+    const today = new Date().toISOString().slice(0, 10);
+    await queryClient.prefetchQuery({
+      queryKey: ["ai-runs", "news_scan", today],
+      queryFn: () => fetchJson(`/api/ai/runs?job_type=news_scan&trading_date=${today}`),
       staleTime: 30_000,
     });
   }
@@ -97,6 +106,7 @@ onUnmounted(() => document.removeEventListener("click", onClickOutside));
 const navIcons = {
   home: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>`,
   alerts: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>`,
+  news: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16v16H4z"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="16" x2="13" y2="16"/></svg>`,
   "opportunity-pool": `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>`,
   "sector-monitor": `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>`,
   "limit-up-ladder": `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>`,
