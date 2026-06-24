@@ -1511,6 +1511,43 @@ def create_app(
 
     # ── Job Toggle Endpoints ───────────────────────────────────────────
 
+    @app.post("/api/ai/jobs/{job_id}/execute")
+    def ai_execute_job_now(job_id: int) -> dict:
+        """Manually trigger an AI Job execution outside its cron schedule.
+
+        The work is dispatched to a background thread (the same path the
+        scheduler uses), so this endpoint returns immediately with status
+        `dispatched`. The caller polls `/api/ai/jobs` or `/api/ai/runs` to
+        observe completion.
+        """
+
+        import threading
+
+        from app.models import AiJob as AiJobModel
+
+        with session_factory() as probe_session:
+            job = probe_session.get(AiJobModel, job_id)
+            if job is None:
+                raise HTTPException(status_code=404, detail="job not found")
+            if not job.enabled:
+                raise HTTPException(status_code=400, detail="job is disabled")
+            job_snapshot = {"id": job.id, "name": job.name}
+
+        def _run() -> None:
+            try:
+                _execute_ai_skill_job(job_id, session_factory, ai_center, now_provider)
+            except Exception:  # noqa: BLE001
+                logger.exception("manual execute of ai job %d failed", job_id)
+
+        threading.Thread(target=_run, name=f"ai-manual-{job_id}", daemon=True).start()
+
+        return {
+            "status": "dispatched",
+            "job_id": job_snapshot["id"],
+            "job_name": job_snapshot["name"],
+            "dispatched_at": now_provider().isoformat(),
+        }
+
     @app.patch("/api/ai/jobs/{job_id}/toggle-schedule")
     def ai_toggle_job_schedule(job_id: int, payload: dict = Body(default={}), db: Session = Depends(get_db)) -> dict:
         """切换 AI Job 的自动调度开关 (auto_schedule)"""

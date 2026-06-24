@@ -1908,12 +1908,28 @@ class AiCenterService:
         for run in runs:
             if run.job_id is None or run.job_id in latest:
                 continue
+            summary = self._loads_json(run.structured_summary_json, {}) or {}
+            # `headline` was the legacy field name. Fall back to `market_phase`
+            # (used by news_scan + day_review payloads), then to the first
+            # non-empty string the summary carries.
+            headline = summary.get("headline") or summary.get("market_phase")
+            if not headline:
+                for value in summary.values():
+                    if isinstance(value, str) and value.strip():
+                        headline = value.strip()
+                        break
+                    if isinstance(value, list) and value:
+                        first = value[0]
+                        if isinstance(first, str) and first.strip():
+                            headline = first.strip()
+                            break
             latest[run.job_id] = {
                 "run_id": run.id,
                 "status": run.status,
                 "trading_date": run.trading_date.isoformat(),
-                "headline": self._loads_json(run.structured_summary_json, {}).get("headline"),
+                "headline": headline,
                 "push_status": self._loads_json(run.push_payload_json, {}).get("status"),
+                "finished_at": run.finished_at.isoformat() if run.finished_at else None,
             }
         return latest
 
