@@ -21,6 +21,11 @@ export const routes = [
   { path: "/sector-monitor", name: "sector-monitor", component: SectorMonitorView, meta: { title: "板块资金监控", keepAlive: true } },
   { path: "/limit-up-ladder", name: "limit-up-ladder", component: LimitUpView, meta: { title: "A股连板梯队", keepAlive: true } },
   { path: "/ai-center", name: "ai-center", component: AiCenterView, meta: { title: "AI 中台", keepAlive: true } },
+  // Direct-link shortcuts into AiCenterView's tabs — same component, different
+  // initial tab. Cuts the click depth from 3 (login → sidebar → ai-center →
+  // pick tab) down to 1 for the two most-frequented tabs.
+  { path: "/review", name: "review", component: AiCenterView, meta: { title: "复盘", keepAlive: true } },
+  { path: "/ai-jobs", name: "ai-jobs", component: AiCenterView, meta: { title: "AI 任务", keepAlive: true } },
   { path: "/workspace", name: "workspace", component: WorkspaceView, meta: { title: "个人观察台", keepAlive: true } },
   { path: "/user-mgmt", name: "user-mgmt", component: UserMgmtView, meta: { title: "用户管理" } },
 ];

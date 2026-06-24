@@ -1,6 +1,7 @@
 <script setup>
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { useQuery, useQueryClient } from "@tanstack/vue-query";
+import { useRoute, useRouter } from "vue-router";
 import QueryState from "../components/QueryState.vue";
 import { fetchJson, pageQueryKey } from "../lib/api";
 import { formatDateTime } from "../lib/formatters";
@@ -9,9 +10,52 @@ import { marked } from "marked";
 defineOptions({ name: "ai-center" });
 
 const queryClient = useQueryClient();
+const route = useRoute();
+const router = useRouter();
 
-// ── Tab state ──
-const activeTab = ref("overview");
+// Valid tab keys — also used to validate query-string input.
+const TAB_KEYS = ["overview", "jobs", "results", "picks", "review", "skill-chat", "config"];
+
+// ── Tab state — persisted in URL query so a refresh keeps the user on the
+// same tab and shared links land where the sender intended. The router-level
+// /review and /ai-jobs paths set ?tab=review / ?tab=jobs respectively, so the
+// same AiCenterView component serves both alias routes.
+function initialTabFromRoute() {
+  const fromQuery = route.query?.tab;
+  if (typeof fromQuery === "string" && TAB_KEYS.includes(fromQuery)) return fromQuery;
+  // Path-level alias fallback (/review, /ai-jobs) when the alias route forgot
+  // to inject ?tab=.
+  if (route.path === "/review") return "review";
+  if (route.path === "/ai-jobs") return "jobs";
+  return "overview";
+}
+
+const activeTab = ref(initialTabFromRoute());
+
+// React to in-app route changes (e.g. clicking sidebar /review while already
+// inside AiCenterView).
+watch(
+  () => [route.path, route.query.tab],
+  () => {
+    const next = initialTabFromRoute();
+    if (next !== activeTab.value) activeTab.value = next;
+  },
+);
+
+// Persist tab changes to the URL without spamming history (replace, not push).
+watch(activeTab, (next) => {
+  const currentQuery = { ...route.query };
+  if (next === "overview") {
+    delete currentQuery.tab;
+  } else {
+    currentQuery.tab = next;
+  }
+  // Only call router.replace when the query actually changed, otherwise we
+  // recurse on the route watcher above.
+  if (currentQuery.tab !== route.query.tab) {
+    router.replace({ path: route.path, query: currentQuery }).catch(() => {});
+  }
+});
 const tabs = [
   { key: "overview", label: "今日概览", icon: "📊" },
   { key: "jobs", label: "任务运行", icon: "⚙️" },

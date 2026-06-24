@@ -58,6 +58,8 @@ SPA_NAVIGATION_PATHS = (
     "/sector-monitor",
     "/limit-up-ladder",
     "/ai-center",
+    "/ai-jobs",
+    "/review",
     "/workspace",
 )
 
@@ -709,6 +711,14 @@ def create_app(
 
     @app.get("/news")
     def news_page() -> FileResponse:
+        return build_spa_shell_response()
+
+    @app.get("/review")
+    def review_page() -> FileResponse:
+        return build_spa_shell_response()
+
+    @app.get("/ai-jobs")
+    def ai_jobs_page() -> FileResponse:
         return build_spa_shell_response()
 
     @app.get("/opportunity-pool")
