@@ -28,3 +28,23 @@ export async function fetchJson(url, options = {}) {
 export function pageQueryKey(pageName, params = {}) {
   return ["page", pageName, params];
 }
+
+export async function fetchRealtimeNews({
+  limit = 50,
+  hours = 24,
+  importance = 0,
+  sources = [],
+  industries = [],
+  actions = [],
+  sinceId = null,
+} = {}) {
+  const params = new URLSearchParams();
+  params.set("limit", String(limit));
+  params.set("hours", String(hours));
+  params.set("importance", String(importance));
+  if (sources.length) params.set("sources", sources.join(","));
+  if (industries.length) params.set("industries", industries.join(","));
+  if (actions.length) params.set("actions", actions.join(","));
+  if (sinceId != null) params.set("since_id", String(sinceId));
+  return fetchJson(`/api/news/realtime?${params.toString()}`);
+}

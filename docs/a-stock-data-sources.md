@@ -186,3 +186,46 @@ skill已内置 `em_get()` 统一节流入口，自动串行限流+会话复用�
 - 封装为常驻脚本/服务，避免每次冷启动
 - 后端缓存层，减少重复请求
 - 考虑Node.js替代方案（无Python冷启动开销）
+
+---
+
+## 六、实时资讯源接入记录（2026-06）
+
+EasyQuant 后端 `app/news_client.py` 直连下列三个开源 HTTP 接口，由
+`app/services/news_service.py` 每 5 分钟入库（cron `*/5 6-23 * * *`），前端
+`/news?tab=live` Tab 拉 DB 展示。
+
+### 6.1 接入清单
+
+| 源 | 端点 | 必带 Header | 单次返回 | source_id 来源 | published 字段 |
+|---|---|---|---|---|---|
+| 东财 7×24 | `np-weblist.eastmoney.com/comm/web/getFastNewsList?fastColumn=102&pageSize=200` | `Referer: kuaixun.eastmoney.com/` | ~200 条 | item.code | showTime（`YYYY-MM-DD HH:MM:SS`） |
+| 同花顺直播 | `news.10jqka.com.cn/tapp/news/push/stock/?page=1&pagesize=50` | `Referer: news.10jqka.com.cn/` | ~50 条 | item.seq | ctime（unix） |
+| 新浪滚动 | `feed.mix.sina.com.cn/api/roll/get?pageid=155&lid=1686&num=100` | UA | ~100 条 | sha1(url)[:16] | ctime（unix） |
+
+> `pageid=155, lid=1686` 为新浪财经「全部财经新闻」滚动流；早期 `lid=2512`
+> 返回的是体育内容，已在 v1 修正。
+
+### 6.2 节流参数
+
+- `MIN_INTERVAL_SECONDS = 0.6`（QPS ≤ 2，留余量）
+- 每次外部请求后随机抖动 100–300ms
+- 重试：手写指数退避 3 次，2 ** attempt 秒
+- 三源**串行**调用，互不并发
+- 单源连续失败 ≥ 3 次后，自动跳过 5 分钟再试
+
+### 6.3 失效降级
+
+- 单源 fetcher 失败由 `NewsService.fetch_and_persist` try/except 隔离，不影响
+  其他源；错误进 `errors` 列表，前端不展示（看 `uvicorn.log` 即可定位）。
+- 整体回滚：环境变量 `EQ_NEWS_FETCH_DISABLED=1`，`lifespan` 内跳过注册
+  `news-realtime-fetch` cron job。表 + API 保留，前端 Tab 切过去会看到 EmptyState。
+
+### 6.4 关键词识别（不调 LLM）
+
+`app/news_keywords.py` 维护两个词典：
+- **行为关键词**：涨价 / 减产 / 重大合同 / 利好 / 业绩 / 解禁 / 异动 / 政策（80+ 词）
+- **行业关键词**：化工 / 锂电 / 稀土 / 光伏 / 半导体 / 医药 / AI / 军工等（12 类）
+
+打分：双命中 → `importance_level=2` + `is_pinned=True`（前端 📌 置顶 + 红框）；
+单命中 → level=1（黄框）；无命中 → level=0。命中词存 DB，前端 hover 可看完整 tag 列表。

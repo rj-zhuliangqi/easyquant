@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 import json
 import logging
+import os
 from pathlib import Path
 import subprocess
 import time
@@ -40,6 +41,7 @@ from app.services.limit_up import LimitUpService
 from app.services.market_signal import MarketSignalService
 from app.services.market_temperature import MarketTemperatureService
 from app.services.market_time import is_trading_time
+from app.services.news_service import NewsService
 from app.services.page_payloads import PagePayloadService
 from app.services.realtime_cache import RealtimeCacheService
 from app.services.workspace import WorkspaceService
@@ -413,6 +415,7 @@ def create_app(
     )
     ai_center = AiCenterService(gateway=gateway, now_provider=now_provider)
     auth_service = AuthService()
+    news_service = NewsService()
     with session_factory() as bootstrap_session:
         try:
             ai_center.ensure_builtin_registry(bootstrap_session)
@@ -513,6 +516,37 @@ def create_app(
                 coalesce=True,
                 misfire_grace_time=120,
             )
+            # 实时资讯轮询 — 每 5 分钟从东财/同花顺/新浪抓取并入库，
+            # hour=6-23 夜间停止（消息源也基本静默）。
+            # 通过环境变量 EQ_NEWS_FETCH_DISABLED=1 可一键关闭（回滚预案）。
+            if not os.environ.get("EQ_NEWS_FETCH_DISABLED"):
+                scheduler.add_job(
+                    lambda: _run_scheduled_job(
+                        "news-realtime-fetch",
+                        session_factory,
+                        lambda session: news_service.fetch_and_persist(session),
+                    ),
+                    "cron",
+                    minute="*/5",
+                    hour="6-23",
+                    id="news-realtime-fetch",
+                    max_instances=1,
+                    coalesce=True,
+                    misfire_grace_time=120,
+                )
+                scheduler.add_job(
+                    lambda: _run_scheduled_job(
+                        "news-realtime-fetch-startup",
+                        session_factory,
+                        lambda session: news_service.fetch_and_persist(session),
+                    ),
+                    "date",
+                    run_date=now_provider(),
+                    id="news-realtime-fetch-startup",
+                    max_instances=1,
+                    coalesce=True,
+                    misfire_grace_time=60,
+                )
             scheduler.add_job(
                 lambda: _run_scheduled_job("collector-core-startup", session_factory, lambda session: _collect_once(session_factory, dashboard, collector, realtime_cache, now_provider, session=session)),
                 "date",
@@ -1300,6 +1334,36 @@ def create_app(
         if payload is None:
             raise HTTPException(status_code=404, detail="run not found")
         return payload
+
+    @app.get("/api/news/realtime")
+    def news_realtime(
+        limit: int = Query(default=50, ge=1, le=200),
+        hours: int | None = Query(default=24, ge=1, le=168),
+        importance: int = Query(default=0, ge=0, le=2),
+        sources: str | None = Query(default=None, description="CSV，如 eastmoney_724,ths_live"),
+        industries: str | None = Query(default=None, description="CSV，如 化工,锂电"),
+        actions: str | None = Query(default=None, description="CSV，如 涨价,政策"),
+        since_id: int | None = Query(default=None, description="加载更多游标：取小于该 id 的条目"),
+        db: Session = Depends(get_db),
+    ) -> dict:
+        """实时资讯流查询接口 — 由前端 RealtimeFeed.vue 调用，每 60s 自动刷新。"""
+
+        def _split_csv(value: str | None) -> list[str] | None:
+            if not value:
+                return None
+            parts = [p.strip() for p in value.split(",") if p.strip()]
+            return parts or None
+
+        return news_service.list_recent_news(
+            db,
+            limit=limit,
+            hours=hours,
+            importance_min=importance,
+            sources=_split_csv(sources),
+            industries=_split_csv(industries),
+            actions=_split_csv(actions),
+            since_id=since_id,
+        )
 
     @app.post("/api/ai/import-run")
     def ai_import_run(payload: dict = Body(default={}), db: Session = Depends(get_db)) -> dict:

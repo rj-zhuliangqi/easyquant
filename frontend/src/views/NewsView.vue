@@ -1,13 +1,46 @@
 <script setup>
 import { computed, ref, watch } from "vue";
 import { useQuery } from "@tanstack/vue-query";
+import { useRoute, useRouter } from "vue-router";
 import QueryState from "../components/QueryState.vue";
 import DataPanel from "../components/ui/DataPanel.vue";
 import EmptyState from "../components/ui/EmptyState.vue";
+import RealtimeFeed from "../components/news/RealtimeFeed.vue";
 import { fetchJson } from "../lib/api";
 import { formatDateTime } from "../lib/formatters";
 
 defineOptions({ name: "news" });
+
+// ── Tab state — URL 持久化（?tab=live / 默认 daily）
+// 与 AiCenterView 一致的做法：path-level alias 不适用，仅靠 query.tab
+const TAB_KEYS = ["daily", "live"];
+const route = useRoute();
+const router = useRouter();
+
+function initialTabFromRoute() {
+  const fromQuery = route.query?.tab;
+  if (typeof fromQuery === "string" && TAB_KEYS.includes(fromQuery)) return fromQuery;
+  return "daily";
+}
+
+const activeTab = ref(initialTabFromRoute());
+
+watch(
+  () => route.query.tab,
+  () => {
+    const next = initialTabFromRoute();
+    if (next !== activeTab.value) activeTab.value = next;
+  },
+);
+
+watch(activeTab, (next) => {
+  const currentQuery = { ...route.query };
+  if (next === "daily") delete currentQuery.tab;
+  else currentQuery.tab = next;
+  if (currentQuery.tab !== route.query.tab) {
+    router.replace({ path: route.path, query: currentQuery }).catch(() => {});
+  }
+});
 
 // Default: today, formatted YYYY-MM-DD (local time).
 function todayIso() {
@@ -110,6 +143,28 @@ watch(selectedDate, () => {
       <QueryState :is-loading="queryLoading" :is-fetching="queryFetching" :updated-at="queryUpdatedAt" />
     </header>
 
+    <!-- Tab Bar — AI 日报 / 即时资讯 -->
+    <nav class="news-tabs">
+      <button
+        class="news-tab-btn"
+        :class="{ active: activeTab === 'daily' }"
+        @click="activeTab = 'daily'"
+      >
+        <span class="tab-icon">📰</span>
+        <span class="tab-label">AI 日报 · 每日 08:20</span>
+      </button>
+      <button
+        class="news-tab-btn"
+        :class="{ active: activeTab === 'live' }"
+        @click="activeTab = 'live'"
+      >
+        <span class="tab-icon">⚡</span>
+        <span class="tab-label">即时资讯 · 实时</span>
+      </button>
+    </nav>
+
+    <!-- Tab: AI 日报（原有内容完全保留） -->
+    <template v-if="activeTab === 'daily'">
     <section class="filter-row">
       <div class="date-picker">
         <button class="date-step" @click="shiftDate(-1)" title="前一天">‹</button>
@@ -198,6 +253,12 @@ watch(selectedDate, () => {
         description="该日 0820 任务可能直接走 stock_pick 模式，未拆分 headline_items / market_implications / watch_themes 三段。"
       />
     </template>
+    </template>
+
+    <!-- Tab: 即时资讯（懒挂载 — 切到该 Tab 才开始 60s 轮询） -->
+    <template v-else-if="activeTab === 'live'">
+      <RealtimeFeed />
+    </template>
   </section>
 </template>
 
@@ -205,6 +266,42 @@ watch(selectedDate, () => {
 .page {
   display: grid;
   gap: var(--space-4);
+}
+
+/* Tab Bar — 与 AiCenterView 视觉一致 */
+.news-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  background: var(--surface-active, rgba(255, 255, 255, 0.04));
+  border-radius: 12px;
+  overflow-x: auto;
+}
+.news-tab-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-muted, #94a3b8);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+.news-tab-btn:hover {
+  color: var(--text, #e2e8f0);
+  background: rgba(255, 255, 255, 0.04);
+}
+.news-tab-btn.active {
+  color: var(--text, #e2e8f0);
+  background: var(--surface, #1e293b);
+}
+.tab-icon {
+  font-size: 14px;
 }
 
 .page-hero {

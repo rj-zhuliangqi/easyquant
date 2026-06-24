@@ -1,0 +1,115 @@
+"""tests for app.services.news_service — 去重 / importance / 单源容错。"""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta
+
+import pytest
+
+from app import news_client
+from app.services import news_service as ns
+
+
+@pytest.fixture(autouse=True)
+def _reset_failure_state(monkeypatch):
+    """每个测试前重置模块级失败计数，避免相互污染。"""
+
+    ns._consecutive_failures.clear()
+    ns._skip_until.clear()
+    yield
+
+
+def _make_item(source: str, source_id: str, title: str, *, summary: str = "",
+               minutes_ago: int = 1) -> news_client.NormalizedNewsItem:
+    return news_client.NormalizedNewsItem(
+        source=source,
+        source_id=source_id,
+        title=title,
+        summary=summary,
+        url=f"https://example.com/{source_id}",
+        published_at=datetime.now() - timedelta(minutes=minutes_ago),
+        raw={},
+    )
+
+
+def test_dedup_same_source(db_session, monkeypatch):
+    """同 (source, source_id) 跑两次 fetch_and_persist 只入库 1 行。"""
+
+    item = _make_item("eastmoney_724", "abc123", "测试标题 1")
+    monkeypatch.setattr(
+        ns,
+        "_FETCHERS",
+        [("eastmoney_724", lambda: [item])],
+    )
+
+    svc = ns.NewsService()
+    first = svc.fetch_and_persist(db_session)
+    second = svc.fetch_and_persist(db_session)
+
+    assert first["fetched"] == 1
+    assert first["inserted"] == 1
+    assert first["errors"] == []
+    # 第二次跑：源仍返回同一条 → existing_keys 命中 → inserted=0
+    assert second["fetched"] == 1
+    assert second["inserted"] == 0
+
+    listing = svc.list_recent_news(db_session, limit=10)
+    assert listing["counts"]["total"] == 1
+
+
+def test_importance_double_match_pinned():
+    """命中行为 + 行业 → level=2、is_pinned=True。"""
+
+    level, action_hits, industry_hits, pinned = ns.NewsService._compute_importance(
+        "华鲁恒升宣布纯碱涨价 10%", "化工龙头集体跟涨"
+    )
+    assert level == 2
+    assert "涨价" in action_hits
+    assert "化工" in industry_hits
+    assert pinned is True
+
+    # 单命中（仅行为）→ level=1、不置顶
+    level1, action1, industry1, pinned1 = ns.NewsService._compute_importance(
+        "某公司业绩预增 80%", ""
+    )
+    assert level1 == 1
+    assert action1 == ["业绩"]
+    assert industry1 == []
+    assert pinned1 is False
+
+    # 都没命中
+    level0, *_ = ns.NewsService._compute_importance("赛事结果公布", "围棋甲级联赛对决")
+    assert level0 == 0
+
+
+def test_single_source_failure_isolated(db_session, monkeypatch):
+    """同花顺源 fetcher 抛错 → 不 raise；东财 + 新浪照常入库；errors 列出失败源。"""
+
+    em_item = _make_item("eastmoney_724", "em1", "东财快讯")
+    sina_item = _make_item("sina_roll", "sina1", "新浪头条")
+
+    def _failing_ths() -> list[news_client.NormalizedNewsItem]:
+        raise RuntimeError("simulated ths outage")
+
+    monkeypatch.setattr(
+        ns,
+        "_FETCHERS",
+        [
+            ("eastmoney_724", lambda: [em_item]),
+            ("ths_live", _failing_ths),
+            ("sina_roll", lambda: [sina_item]),
+        ],
+    )
+
+    svc = ns.NewsService()
+    result = svc.fetch_and_persist(db_session)
+
+    assert result["fetched"] == 2  # 只有 em + sina 成功
+    assert result["inserted"] == 2
+    assert len(result["errors"]) == 1
+    assert result["errors"][0]["source"] == "ths_live"
+    assert "simulated ths outage" in result["errors"][0]["msg"]
+
+    listing = svc.list_recent_news(db_session, limit=10)
+    sources_in_db = {item["source"] for item in listing["items"]}
+    assert sources_in_db == {"eastmoney_724", "sina_roll"}

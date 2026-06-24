@@ -425,3 +425,44 @@ class AiReviewNote(Base):
     failure_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
     improvement_hint: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class NewsItem(Base):
+    """实时资讯条目 — 由 news_service 每 5 分钟从东财/同花顺/新浪轮询入库。
+
+    去重策略两层：
+    1. `(source, source_id)` 联合唯一约束 — 同源硬去重；
+    2. `title_hash` (sha1(normalize(title))[:40]) — 跨源软去重，30 分钟内同
+       title 视为同一新闻，由 NewsService 在入库前判断。
+    """
+
+    __tablename__ = "news_items"
+    __table_args__ = (
+        UniqueConstraint("source", "source_id", name="uq_news_item_source"),
+        Index("ix_news_items_published", "published_at"),
+        Index("ix_news_items_importance_published", "importance_level", "published_at"),
+        Index("ix_news_items_title_hash", "title_hash"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # 数据源标识：eastmoney_724 / ths_live / sina_roll
+    source: Mapped[str] = mapped_column(String(20))
+    # 源侧唯一 ID（东财 code、同花顺 seq、新浪 docurl 的 sha1[:16]）
+    source_id: Mapped[str] = mapped_column(String(80))
+    # 标题归一化后的 sha1[:40]，跨源去重用
+    title_hash: Mapped[str] = mapped_column(String(40))
+    title: Mapped[str] = mapped_column(String(300))
+    summary: Mapped[str | None] = mapped_column(String(800), nullable=True)
+    url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    published_at: Mapped[datetime] = mapped_column(DateTime)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    # 0=普通 1=单命中（行为或行业） 2=双命中（行为+行业，置顶）
+    importance_level: Mapped[int] = mapped_column(Integer, default=0)
+    # 命中关键词，JSON 序列化的字符串数组，前端 hover 展示
+    matched_action: Mapped[str | None] = mapped_column(Text, nullable=True)
+    matched_industry: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 受影响个股 — v1 留口，仅当源给了股票代码时才填
+    affected_stocks: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_pinned: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 原始单条响应，便于排错；可后续归档
+    raw_json: Mapped[str | None] = mapped_column(Text, nullable=True)
