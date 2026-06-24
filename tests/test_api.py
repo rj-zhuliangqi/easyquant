@@ -885,7 +885,7 @@ def test_system_home_and_page_routes_are_available() -> None:
     assert opportunity_page.status_code == 200
     assert opportunity_page.text == home.text
     assert review_page.status_code in {302, 307}
-    assert review_page.headers["location"] == "/ai-center?tab=reviews"
+    assert review_page.headers["location"] == "/review"
     assert ai_page.status_code == 200
     assert ai_page.text == home.text
     assert workspace_page.status_code == 200
@@ -905,7 +905,7 @@ def test_system_home_and_page_routes_are_available() -> None:
     assert opportunity_page.status_code == 200
     assert "机会" in opportunity_page.text
     assert review_page.status_code in {302, 307}
-    assert review_page.headers["location"] == "/ai-center?tab=reviews"
+    assert review_page.headers["location"] == "/review"
     assert ai_page.status_code == 200
     assert "AI" in ai_page.text
     assert workspace_page.status_code == 200

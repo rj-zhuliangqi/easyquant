@@ -248,11 +248,6 @@ def ensure_ai_center_schema(engine: Engine) -> None:
             conn.execute(text("CREATE INDEX ix_ai_skill_templates_skill_active ON ai_skill_templates (skill_id, is_active)"))
 
 
-def build_static_page_response(filename: str) -> FileResponse:
-    response = FileResponse(Path(__file__).parent / "static" / filename)
-    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-
-
 def _check_cli_available(name: str) -> bool:
     """Check if a CLI tool is available in PATH or common install locations."""
     import shutil
@@ -727,7 +722,10 @@ def create_app(
 
     @app.get("/review-center")
     def review_center_page() -> RedirectResponse:
-        response = RedirectResponse(url="/ai-center?tab=reviews")
+        # Legacy alias — pre-SPA users had bookmarked this. The SPA equivalent
+        # now lives at /review (top-level route) but keep this redirect for
+        # link compatibility.
+        response = RedirectResponse(url="/review")
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
@@ -737,6 +735,13 @@ def create_app(
     def workspace_page() -> FileResponse:
         return build_spa_shell_response()
 
+    @app.get("/api/page/{page_name}")
+    def page_bootstrap(page_name: str, db: Session = Depends(get_db)) -> dict:
+        try:
+            return page_payloads.get_page_payload(page_name, db)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"unknown page: {page_name}") from exc
+
     @app.get("/ai-center")
     def ai_center_page() -> FileResponse:
         return build_spa_shell_response()
@@ -744,41 +749,6 @@ def create_app(
     @app.get("/user-mgmt")
     def user_mgmt_page() -> FileResponse:
         return build_spa_shell_response()
-
-    @app.get("/legacy/home")
-    def legacy_home_page() -> FileResponse:
-        return build_static_page_response("home.html")
-
-    @app.get("/legacy/alerts")
-    def legacy_alerts_page() -> FileResponse:
-        return build_static_page_response("alerts.html")
-
-    @app.get("/legacy/opportunity-pool")
-    def legacy_opportunity_pool_page() -> FileResponse:
-        return build_static_page_response("opportunity-pool.html")
-
-    @app.get("/legacy/sector-monitor")
-    def legacy_sector_monitor_page() -> FileResponse:
-        return build_static_page_response("index.html")
-
-    @app.get("/legacy/limit-up-ladder")
-    def legacy_limit_up_ladder_page() -> FileResponse:
-        return build_static_page_response("limit-up.html")
-
-    @app.get("/legacy/ai-center")
-    def legacy_ai_center_page() -> FileResponse:
-        return build_static_page_response("ai-center.html")
-
-    @app.get("/legacy/workspace")
-    def legacy_workspace_page() -> FileResponse:
-        return build_static_page_response("workspace.html")
-
-    @app.get("/api/page/{page_name}")
-    def page_bootstrap(page_name: str, db: Session = Depends(get_db)) -> dict:
-        try:
-            return page_payloads.get_page_payload(page_name, db)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail=f"unknown page: {page_name}") from exc
 
     @app.get("/api/overview")
     def overview(
