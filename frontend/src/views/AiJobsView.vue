@@ -32,6 +32,7 @@ const schedulerQuery = useQuery({
   staleTime: 15_000,
 });
 
+const jobs = computed(() => aiJobsQuery.data.value?.items || []);
 const selectedJob = computed(() => jobs.value.find((job) => job.id === selectedJobId.value) || jobs.value[0] || null);
 
 const historyQuery = useQuery({
@@ -41,7 +42,6 @@ const historyQuery = useQuery({
   staleTime: 30_000,
 });
 
-const jobs = computed(() => aiJobsQuery.data.value?.items || []);
 const schedulerStatuses = computed(() => schedulerQuery.data.value?.db_job_statuses || []);
 const schedulerStatusById = computed(() => {
   const map = new Map();
