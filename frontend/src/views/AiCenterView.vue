@@ -117,26 +117,71 @@ const enginesQuery = useQuery({
 const engines = computed(() => enginesQuery.data.value?.engines || []);
 
 // ── Job Results state ──
-const resultDate = ref(new Date().toISOString().slice(0, 10));
-const selectedJobName = ref(null);
+function todayIso() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+const resultDate = ref(typeof route.query.trading_date === "string" ? route.query.trading_date : todayIso());
+const selectedRunId = ref(route.query.run_id ? Number(route.query.run_id) : null);
 
 const resultsQuery = useQuery({
-  queryKey: computed(() => ["ai-job-results", resultDate.value]),
-  queryFn: () => fetchJson(`/api/ai/job-results?trading_date=${resultDate.value}`),
+  queryKey: computed(() => ["ai-runs-by-date", resultDate.value]),
+  queryFn: () => fetchJson(`/api/ai/runs?trading_date=${resultDate.value}&status=success`),
   enabled: computed(() => activeTab.value === "results"),
   staleTime: 30_000,
 });
 const resultItems = computed(() => resultsQuery.data.value?.items || []);
 
+watch(
+  () => [route.query.trading_date, route.query.run_id, route.query.tab],
+  () => {
+    if (typeof route.query.trading_date === "string" && route.query.trading_date !== resultDate.value) {
+      resultDate.value = route.query.trading_date;
+    }
+    const nextRunId = route.query.run_id ? Number(route.query.run_id) : null;
+    if (nextRunId !== selectedRunId.value) selectedRunId.value = nextRunId;
+  },
+);
+
+watch(resultItems, (items) => {
+  if (!selectedRunId.value && items.length) {
+    selectedRunId.value = items[0].id;
+  }
+});
+
+watch(selectedRunId, (next) => {
+  if (activeTab.value !== "results") return;
+  const currentQuery = { ...route.query, tab: "results", trading_date: resultDate.value };
+  if (next) currentQuery.run_id = String(next);
+  else delete currentQuery.run_id;
+  if (currentQuery.run_id !== route.query.run_id || currentQuery.trading_date !== route.query.trading_date) {
+    router.replace({ path: route.path, query: currentQuery }).catch(() => {});
+  }
+});
+
 const detailQuery = useQuery({
-  queryKey: computed(() => ["ai-job-result-detail", selectedJobName.value, resultDate.value]),
-  queryFn: () => fetchJson(`/api/ai/job-results/${encodeURIComponent(selectedJobName.value)}/latest?trading_date=${resultDate.value}`),
-  enabled: computed(() => activeTab.value === "results" && !!selectedJobName.value),
+  queryKey: computed(() => ["ai-run-detail", selectedRunId.value]),
+  queryFn: () => fetchJson(`/api/ai/runs/${selectedRunId.value}`),
+  enabled: computed(() => activeTab.value === "results" && !!selectedRunId.value),
   staleTime: 60_000,
 });
 const resultDetail = computed(() => detailQuery.data.value || {});
+const rawResultOutput = computed(() =>
+  resultDetail.value?.raw_output_text ||
+  resultDetail.value?.raw_output ||
+  resultDetail.value?.result_payload?.raw_output ||
+  "",
+);
+const structuredPicks = computed(() =>
+  resultDetail.value?.picks || resultDetail.value?.result_payload?.structured_picks || [],
+);
+const resultPayloadJson = computed(() => {
+  const payload = resultDetail.value?.result_payload;
+  if (!payload || !Object.keys(payload).length) return "";
+  return JSON.stringify(payload, null, 2);
+});
 const renderedMarkdown = computed(() => {
-  let raw = resultDetail.value?.raw_output;
+  let raw = rawResultOutput.value;
   if (!raw) return "";
 
   // Auto-detect: if raw_output contains HTML tags, render directly
@@ -380,28 +425,66 @@ async function toggleJobEnabled(job) {
         <div class="panel-head">
           <h3>任务结果</h3>
           <div class="result-filters">
-            <input type="date" v-model="resultDate" class="date-input" @change="selectedJobName = null" />
-            <select v-if="resultItems.length" v-model="selectedJobName" class="job-select">
+            <input
+              type="date"
+              v-model="resultDate"
+              class="date-input"
+              @change="selectedRunId = null"
+            />
+            <select v-if="resultItems.length" v-model.number="selectedRunId" class="job-select">
               <option :value="null" disabled>选择任务...</option>
-              <option v-for="item in resultItems" :key="item.job_name" :value="item.job_name">
-                {{ item.job_name }} {{ item.summary_headline ? `— ${item.summary_headline}` : '' }}
+              <option v-for="item in resultItems" :key="item.id" :value="item.id">
+                {{ item.job_name || item.skill_name || item.id }} · {{ item.status }}
+                {{ item.structured_summary?.market_phase ? `— ${item.structured_summary.market_phase}` : '' }}
               </option>
             </select>
           </div>
         </div>
 
-        <div v-if="selectedJobName && resultDetail.raw_output" class="result-content">
-          <div class="markdown-body" v-html="renderedMarkdown"></div>
+        <div v-if="selectedRunId && (renderedMarkdown || structuredPicks.length || resultPayloadJson)" class="result-content">
+          <div class="result-meta-row">
+            <strong>{{ resultDetail.job_name || resultDetail.skill_name || '任务结果' }}</strong>
+            <span class="run-type">{{ resultDetail.job_type || resultDetail.result_type }}</span>
+            <span class="run-date">{{ resultDetail.trading_date }}</span>
+            <span class="status-badge" :class="statusClass(resultDetail.status)">{{ resultDetail.status }}</span>
+          </div>
+
+          <div v-if="structuredPicks.length" class="result-pick-grid">
+            <article v-for="pick in structuredPicks" :key="`${pick.stock_code}-${pick.stock_name}`" class="result-pick-card">
+              <div class="pick-header">
+                <span class="pick-code">{{ pick.stock_code }}</span>
+                <span class="pick-name">{{ pick.stock_name }}</span>
+                <span v-if="pick.pick_level" class="pick-badge" :class="pick.pick_level">{{ pickLevelLabel(pick.pick_level) }}</span>
+              </div>
+              <div class="pick-meta">
+                <span v-if="pick.sector_name" class="pick-sector">{{ pick.sector_name }}</span>
+                <span v-if="pick.confidence_score != null">置信度 {{ pick.confidence_score }}</span>
+              </div>
+              <p v-if="pick.reason_summary" class="pick-reason">{{ pick.reason_summary }}</p>
+              <p v-if="pick.entry_hint" class="pick-reason">入场提示：{{ pick.entry_hint }}</p>
+              <div v-if="pick.theme_tags?.length" class="pick-tags">
+                <span v-for="tag in pick.theme_tags" :key="tag" class="tag-chip">{{ tag }}</span>
+              </div>
+            </article>
+          </div>
+
+          <div v-if="renderedMarkdown" class="markdown-body" v-html="renderedMarkdown"></div>
+          <pre v-else-if="resultPayloadJson" class="result-json">{{ resultPayloadJson }}</pre>
         </div>
 
-        <div v-else-if="selectedJobName && !resultDetail.raw_output" class="empty-state">
-          <p>该日期暂无执行结果</p>
-          <span>{{ selectedJobName }} 在 {{ resultDate }} 没有产出</span>
+        <div v-else-if="selectedRunId && resultDetail.status === 'failed'" class="empty-state">
+          <p>任务执行失败</p>
+          <span>{{ resultDetail.error_stage || '' }} {{ resultDetail.error_text || '未返回错误详情' }}</span>
+        </div>
+
+        <div v-else-if="selectedRunId" class="empty-state">
+          <p>该任务暂无可展示结果</p>
+          <span>run_id={{ selectedRunId }} 未返回 raw_output_text / structured_picks / result_payload。</span>
         </div>
 
         <div v-else-if="!resultItems.length" class="empty-state">
           <p>暂无结果</p>
-          <span>{{ resultDate }} 没有任何任务执行结果</span>
+          <span>{{ resultDate }} 没有任何成功执行的任务结果</span>
         </div>
 
         <div v-else class="result-hint">
@@ -843,8 +926,12 @@ async function toggleJobEnabled(job) {
 /* ── Job Results ── */
 .date-input { padding: 6px 10px; border-radius: 8px; background: var(--surface, #1e293b); border: 1px solid var(--border, rgba(255,255,255,0.06)); color: var(--text, #e2e8f0); font-size: 13px; font-family: monospace; }
 .date-input:focus { outline: none; border-color: rgba(255,255,255,0.15); }
-.job-select { padding: 6px 10px; border-radius: 8px; background: var(--surface, #1e293b); border: 1px solid var(--border, rgba(255,255,255,0.06)); color: var(--text, #e2e8f0); font-size: 13px; min-width: 160px; }
+.job-select { padding: 6px 10px; border-radius: 8px; background: var(--surface, #1e293b); border: 1px solid var(--border, rgba(255,255,255,0.06)); color: var(--text, #e2e8f0); font-size: 13px; min-width: 260px; max-width: 560px; }
 .job-select:focus { outline: none; border-color: rgba(255,255,255,0.15); }
+.result-meta-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid var(--border, rgba(255,255,255,0.06)); }
+.result-pick-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; margin-bottom: 18px; }
+.result-pick-card { padding: 12px; border-radius: 10px; background: rgba(255,255,255,0.025); border: 1px solid var(--border, rgba(255,255,255,0.06)); }
+.result-json { padding: 12px; border-radius: 10px; background: rgba(0,0,0,0.28); border: 1px solid var(--border, rgba(255,255,255,0.06)); color: var(--text-secondary, #cbd5e1); overflow-x: auto; font-size: 12px; line-height: 1.6; }
 
 /* ── Markdown Body — 金融报告风格 ── */
 .markdown-body {

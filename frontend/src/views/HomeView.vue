@@ -139,13 +139,19 @@ async function executeNow(job) {
 }
 
 function goDetail(job) {
+  const latest = job.latest_run_summary || {};
+  const tradingDate = latest.trading_date || today.value;
   // Route to the most relevant detail view for this job type.
   if (job.job_type === "news_scan") {
     router.push({ path: "/news" });
     return;
   }
-  // Other types — go to AI center on the results tab, filtered by job name.
-  router.push({ path: "/ai-center", query: { tab: "results", job: job.name } });
+  // Other types — open the concrete ai_run by run_id so the result page reads DB
+  // records, not the transient inbox files (which are moved to processed after import).
+  const query = { tab: "results", trading_date: tradingDate, job: job.name };
+  if (latest.run_id) query.run_id = String(latest.run_id);
+  else query.job_id = String(job.id);
+  router.push({ path: "/ai-center", query });
 }
 
 const chartOption = computed(() => ({
