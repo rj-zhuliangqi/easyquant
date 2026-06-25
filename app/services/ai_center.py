@@ -348,6 +348,7 @@ class AiCenterService:
                     "auto_schedule": job.auto_schedule,
                     "enabled": job.enabled,
                     "latest_run_summary": latest_run_map.get(job.id),
+                    "last_executed_at": job.last_executed_at.isoformat() if job.last_executed_at else None,
                     "created_at": job.created_at.isoformat() if job.created_at else None,
                 }
                 for job in jobs
@@ -1929,7 +1930,11 @@ class AiCenterService:
                 "trading_date": run.trading_date.isoformat(),
                 "headline": headline,
                 "push_status": self._loads_json(run.push_payload_json, {}).get("status"),
+                "started_at": run.started_at.isoformat() if run.started_at else None,
                 "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+                "duration_ms": run.duration_ms,
+                "error_stage": run.error_stage,
+                "error_text": run.error_text,
             }
         return latest
 

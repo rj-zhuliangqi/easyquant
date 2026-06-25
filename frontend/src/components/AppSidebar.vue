@@ -55,12 +55,24 @@ async function prefetch(pathName) {
       queryFn: () => fetchJson(`/api/page/${pathName}`),
       staleTime: 30_000,
     });
-  } else if (pathName === "review" || pathName === "ai-jobs") {
-    // /review and /ai-jobs reuse the AiCenterView component, so warm up the
-    // same payload AiCenterView's bootstrap query consumes.
+  } else if (pathName === "ai-jobs") {
+    await Promise.all([
+      queryClient.prefetchQuery({
+        queryKey: ["ai-jobs"],
+        queryFn: () => fetchJson("/api/ai/jobs"),
+        staleTime: 30_000,
+      }),
+      queryClient.prefetchQuery({
+        queryKey: ["ai-scheduler-status"],
+        queryFn: () => fetchJson("/api/ai/scheduler-status"),
+        staleTime: 30_000,
+      }),
+    ]);
+  } else if (pathName === "review") {
+    const today = new Date().toISOString().slice(0, 10);
     await queryClient.prefetchQuery({
-      queryKey: pageQueryKey("ai-center"),
-      queryFn: () => fetchJson("/api/page/ai-center"),
+      queryKey: ["ai-trading-day-review", today],
+      queryFn: () => fetchJson(`/api/ai/trading-days/${today}`),
       staleTime: 30_000,
     });
   } else if (pathName === "news") {

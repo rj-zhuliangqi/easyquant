@@ -330,6 +330,9 @@ def test_create_session_factory_upgrades_legacy_ai_center_schema(tmp_path) -> No
         now_provider=lambda: datetime(2026, 5, 8, 15, 0, 0),
     )
     client = TestClient(app)
+    login_resp = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
+    assert login_resp.status_code == 200
+    client.headers["Authorization"] = f"Bearer {login_resp.json()['access_token']}"
 
     jobs = client.get("/api/ai/jobs")
     runs = client.get("/api/ai/runs")

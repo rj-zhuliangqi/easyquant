@@ -7,7 +7,7 @@ import { getUsername } from "./lib/auth";
 
 const route = useRoute();
 const isLoginPage = computed(() => route.path === "/login");
-const keepAliveNames = computed(() => ["home", "alerts", "opportunity-pool", "sector-monitor", "limit-up-ladder", "ai-center", "workspace"]);
+const keepAliveNames = computed(() => ["home", "alerts", "opportunity-pool", "sector-monitor", "limit-up-ladder", "ai-center", "ai-jobs", "review", "workspace"]);
 
 const sidebarOpen = ref(false);
 const username = computed(() => getUsername());

@@ -1503,58 +1503,6 @@ def create_app(
 
     # ── Skill Execution Endpoints ──────────────────────────────────────
 
-    @app.post("/api/ai/jobs/{job_id}/execute")
-    def ai_execute_job(job_id: int, payload: dict = Body(default={}), db: Session = Depends(get_db)) -> dict:
-        """手动触发一个 AI Job 的执行"""
-        from app.services.skill_executor import get_executor, prefetch_market_data
-        from app.models import AiJob as AiJobModel, AiSkill as AiSkillModel
-
-        job = session.get(AiJobModel, job_id) if (session := db) else None
-        if job is None:
-            raise HTTPException(status_code=404, detail="job not found")
-
-        trading_date_val = payload.get("trading_date")
-        trading_date_obj = date.fromisoformat(str(trading_date_val)) if trading_date_val else now_provider().date()
-
-        engine_type = job.engine_type or "claude-code"
-        engine_config = json.loads(job.engine_config_json or "{}")
-
-        try:
-            executor = get_executor(engine_type)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-
-        # Prefetch market data
-        data_file = prefetch_market_data(trading_date_obj)
-
-        skill_name = job.name
-        skill = session.get(AiSkillModel, job.skill_id) if job.skill_id else None
-        skill_desc = skill.description if skill else ""
-
-        result = executor.execute(
-            skill_name=skill_name,
-            trading_date=trading_date_obj,
-            data_file=data_file,
-            output_dir=str(AI_CENTER_INBOX_DIR),
-            config=engine_config,
-            skill_prompt=skill_desc,
-        )
-
-        # Update last_executed_at
-        job.last_executed_at = now_provider()
-        session.add(job)
-        session.commit()
-
-        return {
-            "success": result.success,
-            "skill_name": result.skill_name,
-            "trading_date": result.trading_date,
-            "engine_type": result.engine_type,
-            "duration_ms": result.duration_ms,
-            "output_files": result.output_files,
-            "error": result.error,
-        }
-
     # ── Job Toggle Endpoints ───────────────────────────────────────────
 
     @app.post("/api/ai/jobs/{job_id}/execute")
