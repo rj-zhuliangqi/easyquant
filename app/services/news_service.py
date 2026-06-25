@@ -175,61 +175,106 @@ class NewsService:
         session: Session,
         *,
         limit: int = 50,
-        hours: int | None = 24,
+        hours: int | None = 48,
         importance_min: int = 0,
         sources: list[str] | None = None,
         industries: list[str] | None = None,
         actions: list[str] | None = None,
         since_id: int | None = None,
+        sort: str = "mixed",
     ) -> dict:
         """查询最近资讯。
 
-        排序：``is_pinned DESC, published_at DESC``，置顶条目在前。
-        游标：``since_id`` 用于「加载更多」，给出当前展示列表中最小 id，下一页返回
-        ``id < since_id`` 的条目。
+        排序模式 ``sort``：
+          - ``mixed``（默认）：``is_pinned DESC, published_at DESC`` — 重要置顶 + 时间倒序
+          - ``latest``：``published_at DESC`` — 纯按时间，最新最上
+          - ``important``：``importance_level DESC, published_at DESC`` — 红框 > 黄框 > 普通
+
+        游标：``since_id`` 用于「加载更多」，下一页返回 ``id < since_id`` 的条目。
+
+        返回 ``counts`` 是过滤窗口内**全量统计**（不是 limit 截断后的本页计数），
+        ``window_total`` 给出窗口内符合 source/industry/action 筛选的总条数。
+
+        返回 ``last_fetched_at`` 是 DB 里最新一条的 ``fetched_at`` —— 用户在 UI 上
+        可看到「最近一次拉取数据 X 分钟前」，知道系统在动。
         """
 
-        stmt = select(NewsItem)
-        if hours is not None:
-            stmt = stmt.where(NewsItem.published_at >= datetime.now() - timedelta(hours=hours))
+        from sqlalchemy import case, func, or_
+
+        # ── 1. 构建公共 WHERE（counts / items 共用）──
+        cutoff = datetime.now() - timedelta(hours=hours) if hours is not None else None
+
+        def _apply_window_filters(s):
+            """窗口 + source/industry/action 过滤；不应用 importance_min 和 since_id。"""
+
+            if cutoff is not None:
+                s = s.where(NewsItem.published_at >= cutoff)
+            if sources:
+                s = s.where(NewsItem.source.in_(sources))
+            if industries:
+                s = s.where(or_(*[NewsItem.matched_industry.like(f'%"{ind}"%') for ind in industries]))
+            if actions:
+                s = s.where(or_(*[NewsItem.matched_action.like(f'%"{act}"%') for act in actions]))
+            return s
+
+        # ── 2. 窗口内的真实计数（无 LIMIT）──
+        count_stmt = _apply_window_filters(
+            select(
+                func.count(NewsItem.id),
+                func.sum(case((NewsItem.is_pinned == True, 1), else_=0)),  # noqa: E712
+                func.sum(case((NewsItem.importance_level == 2, 1), else_=0)),
+                func.sum(case((NewsItem.importance_level == 1, 1), else_=0)),
+            )
+        )
+        row = session.execute(count_stmt).one()
+        window_total = int(row[0] or 0)
+        counts = {
+            "total": window_total,
+            "pinned": int(row[1] or 0),
+            "high": int(row[2] or 0),
+            "medium": int(row[3] or 0),
+        }
+
+        # ── 3. items 查询 — 在窗口过滤基础上加 importance_min / since_id / 排序 / LIMIT ──
+        stmt = _apply_window_filters(select(NewsItem))
         if importance_min > 0:
             stmt = stmt.where(NewsItem.importance_level >= importance_min)
-        if sources:
-            stmt = stmt.where(NewsItem.source.in_(sources))
         if since_id is not None:
             stmt = stmt.where(NewsItem.id < since_id)
 
-        # industries / actions 用 LIKE 命中 JSON 字符串（SQLite 上 JSON1 函数不普及，
-        # 用粗暴的子串 LIKE 即可 — JSON 字符串里出现 "化工" 就算命中）
-        if industries:
-            from sqlalchemy import or_
-
-            stmt = stmt.where(
-                or_(*[NewsItem.matched_industry.like(f'%"{ind}"%') for ind in industries])
+        if sort == "latest":
+            stmt = stmt.order_by(NewsItem.published_at.desc(), NewsItem.id.desc())
+        elif sort == "important":
+            stmt = stmt.order_by(
+                NewsItem.importance_level.desc(),
+                NewsItem.published_at.desc(),
+                NewsItem.id.desc(),
             )
-        if actions:
-            from sqlalchemy import or_
-
-            stmt = stmt.where(
-                or_(*[NewsItem.matched_action.like(f'%"{act}"%') for act in actions])
+        else:  # mixed（默认）
+            stmt = stmt.order_by(
+                NewsItem.is_pinned.desc(),
+                NewsItem.published_at.desc(),
+                NewsItem.id.desc(),
             )
-
-        stmt = stmt.order_by(NewsItem.is_pinned.desc(), NewsItem.published_at.desc()).limit(limit)
+        stmt = stmt.limit(limit)
 
         items = session.execute(stmt).scalars().all()
-
         out_items = [self._serialize(item) for item in items]
-        counts = {
-            "total": len(out_items),
-            "pinned": sum(1 for x in out_items if x["is_pinned"]),
-            "high": sum(1 for x in out_items if x["importance_level"] == 2),
-            "medium": sum(1 for x in out_items if x["importance_level"] == 1),
-        }
+
+        # ── 4. 最近一次拉取时间 — DB 里 max(fetched_at) ──
+        last_fetched = session.execute(select(func.max(NewsItem.fetched_at))).scalar()
+        last_fetched_iso = (
+            last_fetched.isoformat(timespec="seconds") if last_fetched else None
+        )
+
         return {
             "items": out_items,
             "next_cursor": out_items[-1]["id"] if out_items else None,
             "fetched_at": datetime.now().isoformat(timespec="seconds"),
+            "last_fetched_at": last_fetched_iso,
             "counts": counts,
+            "window_hours": hours,
+            "sort": sort,
         }
 
     @staticmethod
@@ -267,6 +312,7 @@ class NewsService:
             "summary": item.summary,
             "url": item.url,
             "published_at": item.published_at.isoformat(timespec="seconds"),
+            "fetched_at": item.fetched_at.isoformat(timespec="seconds") if item.fetched_at else None,
             "importance_level": item.importance_level,
             "matched_action": _decode(item.matched_action),
             "matched_industry": _decode(item.matched_industry),

@@ -31,8 +31,9 @@ export function pageQueryKey(pageName, params = {}) {
 
 export async function fetchRealtimeNews({
   limit = 50,
-  hours = 24,
+  hours = 48,
   importance = 0,
+  sort = "mixed",
   sources = [],
   industries = [],
   actions = [],
@@ -42,6 +43,7 @@ export async function fetchRealtimeNews({
   params.set("limit", String(limit));
   params.set("hours", String(hours));
   params.set("importance", String(importance));
+  params.set("sort", sort);
   if (sources.length) params.set("sources", sources.join(","));
   if (industries.length) params.set("industries", industries.join(","));
   if (actions.length) params.set("actions", actions.join(","));

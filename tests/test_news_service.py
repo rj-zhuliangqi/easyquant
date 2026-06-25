@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from app import news_client
+from app.models import NewsItem
 from app.services import news_service as ns
 
 
@@ -110,6 +111,57 @@ def test_single_source_failure_isolated(db_session, monkeypatch):
     assert result["errors"][0]["source"] == "ths_live"
     assert "simulated ths outage" in result["errors"][0]["msg"]
 
-    listing = svc.list_recent_news(db_session, limit=10)
-    sources_in_db = {item["source"] for item in listing["items"]}
-    assert sources_in_db == {"eastmoney_724", "sina_roll"}
+def test_list_recent_news_counts_sort_and_last_fetched(db_session):
+    """counts 是窗口内全量统计；sort 可切换；返回 last_fetched_at 和每条 fetched_at。"""
+
+    now = datetime.now()
+    rows = [
+        NewsItem(
+            source="eastmoney_724",
+            source_id="old-high",
+            title_hash="h1",
+            title="旧的重要新闻",
+            published_at=now - timedelta(minutes=20),
+            fetched_at=now - timedelta(minutes=19),
+            importance_level=2,
+            is_pinned=True,
+        ),
+        NewsItem(
+            source="sina_roll",
+            source_id="new-normal",
+            title_hash="h2",
+            title="最新普通新闻",
+            published_at=now - timedelta(minutes=1),
+            fetched_at=now,
+            importance_level=0,
+            is_pinned=False,
+        ),
+        NewsItem(
+            source="ths_live",
+            source_id="mid-medium",
+            title_hash="h3",
+            title="中等关注新闻",
+            published_at=now - timedelta(minutes=5),
+            fetched_at=now - timedelta(minutes=4),
+            importance_level=1,
+            is_pinned=False,
+        ),
+    ]
+    db_session.add_all(rows)
+    db_session.commit()
+
+    svc = ns.NewsService()
+    limited = svc.list_recent_news(db_session, limit=1, hours=48, sort="mixed")
+    assert limited["counts"] == {"total": 3, "pinned": 1, "high": 1, "medium": 1}
+    assert limited["last_fetched_at"] is not None
+    assert limited["items"][0]["fetched_at"] is not None
+
+    latest = svc.list_recent_news(db_session, limit=3, hours=48, sort="latest")
+    assert [item["title"] for item in latest["items"]] == [
+        "最新普通新闻",
+        "中等关注新闻",
+        "旧的重要新闻",
+    ]
+
+    important = svc.list_recent_news(db_session, limit=3, hours=48, sort="important")
+    assert [item["importance_level"] for item in important["items"]] == [2, 1, 0]

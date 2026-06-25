@@ -12,6 +12,7 @@ defineOptions({ name: "realtime-feed" });
 // 过滤器：用户切换 chip 时变更，vue-query 自动 refetch
 const filters = ref({
   importance: 0, // 0=全部 / 1=重要 / 2=高度重要
+  sort: "mixed", // mixed=重要置顶 / latest=最新 / important=重要性
   sources: [], // 来源 CSV
 });
 
@@ -24,15 +25,16 @@ const newsQuery = useQuery({
   queryFn: () =>
     fetchRealtimeNews({
       limit: 50,
-      hours: 24,
+      hours: 48,
       importance: filters.value.importance,
+      sort: filters.value.sort,
       sources: filters.value.sources,
     }),
   refetchInterval: 60_000,
   staleTime: 30_000,
 });
 
-// 合并：第一页（newsQuery）+ 加载更多（accumulated），按 id 去重；按 is_pinned 优先 + 时间倒序
+// 合并：第一页（newsQuery）+ 加载更多（accumulated），按 id 去重；按当前排序方式本地稳定排序
 const mergedItems = computed(() => {
   const base = newsQuery.data.value?.items ?? [];
   const all = [...base, ...accumulated.value];
@@ -40,13 +42,27 @@ const mergedItems = computed(() => {
   for (const item of all) {
     if (!dedup.has(item.id)) dedup.set(item.id, item);
   }
-  return Array.from(dedup.values()).sort((a, b) => {
+  const items = Array.from(dedup.values());
+  if (filters.value.sort === "latest") {
+    return items.sort((a, b) => b.published_at.localeCompare(a.published_at));
+  }
+  if (filters.value.sort === "important") {
+    return items.sort((a, b) => {
+      if (a.importance_level !== b.importance_level) return b.importance_level - a.importance_level;
+      return b.published_at.localeCompare(a.published_at);
+    });
+  }
+  return items.sort((a, b) => {
     if (a.is_pinned !== b.is_pinned) return a.is_pinned ? -1 : 1;
     return b.published_at.localeCompare(a.published_at);
   });
 });
 
 const counts = computed(() => newsQuery.data.value?.counts || { total: 0, pinned: 0, high: 0, medium: 0 });
+const lastFetchedAt = computed(() => newsQuery.data.value?.last_fetched_at || "");
+const lastFetchedText = computed(() =>
+  lastFetchedAt.value ? `${formatDateTime(lastFetchedAt.value)} · ${formatRelativeTime(lastFetchedAt.value)}` : "--",
+);
 const queryLoading = computed(() => newsQuery.isLoading.value);
 const queryFetching = computed(() => newsQuery.isFetching.value);
 const queryUpdatedAt = computed(() =>
@@ -59,6 +75,17 @@ const SOURCE_OPTIONS = [
   { key: "ths_live", label: "同花顺直播" },
   { key: "sina_roll", label: "新浪滚动" },
 ];
+
+const SORT_OPTIONS = [
+  { key: "mixed", label: "重要置顶" },
+  { key: "latest", label: "最新优先" },
+  { key: "important", label: "重要性" },
+];
+
+function setSort(sort) {
+  filters.value = { ...filters.value, sort };
+  accumulated.value = [];
+}
 
 function setImportance(level) {
   filters.value = { ...filters.value, importance: level };
@@ -89,6 +116,7 @@ async function loadMore() {
       limit: 50,
       hours: 168, // 翻页时放宽到 7 天，避免一直翻不出新条
       importance: filters.value.importance,
+      sort: filters.value.sort,
       sources: filters.value.sources,
       sinceId: lastId,
     });
@@ -123,7 +151,7 @@ function tagsTooltip(item) {
         <div class="feed-title-block">
           <h3 class="feed-title">即时资讯流</h3>
           <p class="feed-subtitle">
-            东财 7×24 / 同花顺直播 / 新浪滚动 · 每 5 分钟自动入库 · 关键词命中即高亮
+            东财 7×24 / 同花顺直播 / 新浪滚动 · 每 5 分钟自动入库 · 最近拉取 {{ lastFetchedText }}
           </p>
         </div>
         <div class="feed-status">
@@ -136,6 +164,19 @@ function tagsTooltip(item) {
 
       <!-- 筛选 chip 行 -->
       <div class="feed-filters">
+        <span class="filter-group-label">排序</span>
+        <button
+          v-for="opt in SORT_OPTIONS"
+          :key="opt.key"
+          class="chip-btn"
+          :class="{ active: filters.sort === opt.key }"
+          @click="setSort(opt.key)"
+        >
+          {{ opt.label }}
+        </button>
+
+        <span class="filter-divider"></span>
+
         <span class="filter-group-label">重要性</span>
         <button
           class="chip-btn"
@@ -205,7 +246,10 @@ function tagsTooltip(item) {
           <p v-if="item.summary" class="news-summary">{{ item.summary }}</p>
           <footer class="news-meta">
             <span class="source-chip">{{ sourceLabel(item.source) }}</span>
-            <span class="rel-time">{{ formatRelativeTime(item.published_at) }}</span>
+            <span class="rel-time">发布时间 {{ formatRelativeTime(item.published_at) }}</span>
+            <span v-if="item.fetched_at" class="fetch-time" :title="formatDateTime(item.fetched_at)">
+              拉取 {{ formatRelativeTime(item.fetched_at) }}
+            </span>
             <span
               v-for="tag in item.matched_action || []"
               :key="`act-${item.id}-${tag}`"
@@ -445,8 +489,14 @@ a.news-title:hover {
   border: 1px solid rgba(148, 163, 184, 0.18);
 }
 
-.rel-time {
+.rel-time,
+.fetch-time {
   color: var(--text-muted);
+}
+
+.fetch-time {
+  padding-left: 6px;
+  border-left: 1px solid var(--border);
 }
 
 .match-chip {
