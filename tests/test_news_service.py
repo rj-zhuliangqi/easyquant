@@ -165,3 +165,135 @@ def test_list_recent_news_counts_sort_and_last_fetched(db_session):
 
     important = svc.list_recent_news(db_session, limit=3, hours=48, sort="important")
     assert [item["importance_level"] for item in important["items"]] == [2, 1, 0]
+
+
+def test_cross_source_similarity_dedup_cluster(db_session):
+    """东财/同花顺轻微改写的同一条新闻，查询层聚合为一条展示。"""
+
+    now = datetime.now()
+    db_session.add_all(
+        [
+            NewsItem(
+                source="eastmoney_724",
+                source_id="em-mu",
+                title_hash="h-em-mu",
+                title="美光科技涨幅收窄至10%",
+                summary="此前一度上涨20%",
+                url="https://example.com/em",
+                published_at=now - timedelta(minutes=2),
+                fetched_at=now - timedelta(minutes=1),
+                importance_level=0,
+                is_pinned=False,
+            ),
+            NewsItem(
+                source="ths_live",
+                source_id="ths-mu",
+                title_hash="h-ths-mu",
+                title="美光科技涨幅收窄至10%，此前一度上涨20%",
+                summary="美光科技盘中涨幅回落",
+                url="https://example.com/ths",
+                published_at=now - timedelta(minutes=3),
+                fetched_at=now - timedelta(minutes=1),
+                importance_level=0,
+                is_pinned=False,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    svc = ns.NewsService()
+    result = svc.list_recent_news(db_session, limit=10, hours=48, sort="latest")
+
+    assert result["counts"]["total"] == 2  # 原始条数仍保留
+    assert result["display_counts"]["deduped_total"] == 1
+    assert len(result["items"]) == 1
+    item = result["items"][0]
+    assert item["duplicate_count"] == 2
+    assert set(item["duplicate_sources"]) == {"eastmoney_724", "ths_live"}
+    assert len(item["duplicates"]) == 1
+    assert item["duplicates"][0]["similarity"] >= 0.84
+
+
+def test_similarity_does_not_merge_conflicting_stock_codes(db_session):
+    """标题结构相似但股票代码不同，不能错误聚合。"""
+
+    now = datetime.now()
+    db_session.add_all(
+        [
+            NewsItem(
+                source="eastmoney_724",
+                source_id="em-a",
+                title_hash="h-a",
+                title="600519 贵州茅台拟回购股份",
+                published_at=now - timedelta(minutes=2),
+                fetched_at=now,
+                importance_level=1,
+                is_pinned=False,
+            ),
+            NewsItem(
+                source="ths_live",
+                source_id="ths-b",
+                title_hash="h-b",
+                title="000858 五粮液拟回购股份",
+                published_at=now - timedelta(minutes=3),
+                fetched_at=now,
+                importance_level=1,
+                is_pinned=False,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    result = ns.NewsService().list_recent_news(db_session, limit=10, hours=48)
+    assert result["display_counts"]["deduped_total"] == 2
+    assert all(item["duplicate_count"] == 1 for item in result["items"])
+
+
+def test_hot_sort_uses_duplicate_boost(db_session):
+    """综合热度排序中，多源重复新闻应排在同级别单源新闻前。"""
+
+    now = datetime.now()
+    db_session.add_all(
+        [
+            NewsItem(
+                source="eastmoney_724",
+                source_id="em-ai",
+                title_hash="h-ai-1",
+                title="AI算力芯片需求持续增长",
+                summary="多家机构关注",
+                published_at=now - timedelta(minutes=5),
+                fetched_at=now,
+                importance_level=1,
+                matched_industry='["AI", "半导体"]',
+                is_pinned=False,
+            ),
+            NewsItem(
+                source="ths_live",
+                source_id="ths-ai",
+                title_hash="h-ai-2",
+                title="AI算力芯片需求持续增长 多家机构关注",
+                summary="同花顺跟进报道",
+                published_at=now - timedelta(minutes=6),
+                fetched_at=now,
+                importance_level=1,
+                matched_industry='["AI", "半导体"]',
+                is_pinned=False,
+            ),
+            NewsItem(
+                source="sina_roll",
+                source_id="sina-single",
+                title_hash="h-single",
+                title="普通单源关注新闻",
+                summary="单源消息",
+                published_at=now - timedelta(minutes=4),
+                fetched_at=now,
+                importance_level=1,
+                is_pinned=False,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    result = ns.NewsService().list_recent_news(db_session, limit=10, hours=48, sort="hot")
+    assert result["items"][0]["duplicate_count"] == 2
+    assert result["items"][0]["rank_score"] > result["items"][1]["rank_score"]

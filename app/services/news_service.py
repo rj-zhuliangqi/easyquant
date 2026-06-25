@@ -13,9 +13,12 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import re
 import time
+import unicodedata
 from datetime import datetime, timedelta
+from difflib import SequenceMatcher
 from typing import Callable
 
 from sqlalchemy import select
@@ -49,6 +52,179 @@ _FETCHERS: list[tuple[str, Fetcher]] = [
 
 
 _WHITESPACE_RE = re.compile(r"\s+")
+_SIMILARITY_PUNCT_RE = re.compile(r"[，。！？、：；,.!?;:()（）【】\[\]《》“”\"'`·|｜/\\-]")
+_NOISE_PREFIX_RE = re.compile(r"^(?:快讯|异动快报|公告精选|盘中快讯|午评|早评|财经早参|财联社|同花顺财经讯)[:：\s]*")
+_NOISE_WORDS = ("消息称", "据悉", "财经讯", "表示", "称", "相关", "方面")
+_EVENT_WORDS = (
+    "回购", "并购", "收购", "中标", "签约", "涨价", "提价", "调价", "停牌", "复牌",
+    "业绩", "预增", "减持", "增持", "重组", "涨停", "跌停", "减产", "限产", "订单",
+    "合同", "合作", "投资", "涨幅", "跌幅", "上市", "获批", "调研",
+)
+_CONFLICT_EVENT_PAIRS = (("增持", "减持"), ("涨停", "跌停"), ("涨幅", "跌幅"), ("涨价", "降价"))
+_CODE_RE = re.compile(r"(?<!\d)(?:[036]\d{5}|[68]\d{5})(?!\d)")
+_PERCENT_RE = re.compile(r"\d+(?:\.\d+)?%")
+_AMOUNT_RE = re.compile(r"\d+(?:\.\d+)?(?:亿元|万元|亿|万)")
+_SOURCE_WEIGHT = {"ths_live": 90, "eastmoney_724": 85, "sina_roll": 75}
+_SIMILARITY_WINDOW = timedelta(minutes=60)
+_SIMILARITY_STRICT_WINDOW = timedelta(hours=2)
+
+
+def _to_half_width(text: str) -> str:
+    return unicodedata.normalize("NFKC", text or "")
+
+
+def _normalize_title_for_similarity(title: str) -> str:
+    """更激进的相似度比较用标题归一化。
+
+    保留数字/百分比/股票代码/金额，去掉来源前缀、标点、弱噪声词。
+    """
+
+    text = _to_half_width(title).lower().strip()
+    text = _NOISE_PREFIX_RE.sub("", text)
+    for word in _NOISE_WORDS:
+        text = text.replace(word, "")
+    text = _SIMILARITY_PUNCT_RE.sub("", text)
+    text = _WHITESPACE_RE.sub("", text)
+    return text
+
+
+def _similarity_threshold(length: int) -> float | None:
+    if length < 10:
+        return None
+    if length < 18:
+        return 0.93
+    if length <= 35:
+        return 0.88
+    return 0.84
+
+
+def _extract_title_entities(title: str) -> dict[str, set[str]]:
+    text = _to_half_width(title)
+    return {
+        "codes": set(_CODE_RE.findall(text)),
+        "percents": set(_PERCENT_RE.findall(text)),
+        "amounts": set(_AMOUNT_RE.findall(text)),
+        "events": {word for word in _EVENT_WORDS if word in text},
+    }
+
+
+def _has_entity_conflict(a: dict[str, set[str]], b: dict[str, set[str]]) -> bool:
+    if a["codes"] and b["codes"] and a["codes"].isdisjoint(b["codes"]):
+        return True
+    if a["amounts"] and b["amounts"] and a["amounts"].isdisjoint(b["amounts"]):
+        return True
+    for left, right in _CONFLICT_EVENT_PAIRS:
+        if (left in a["events"] and right in b["events"]) or (right in a["events"] and left in b["events"]):
+            return True
+    return False
+
+
+def _news_similarity(a: NewsItem, b: NewsItem) -> float:
+    norm_a = _normalize_title_for_similarity(a.title)
+    norm_b = _normalize_title_for_similarity(b.title)
+    if norm_a == norm_b and norm_a:
+        return 1.0
+    threshold = _similarity_threshold(min(len(norm_a), len(norm_b)))
+    if threshold is None:
+        return 0.0
+    if _has_entity_conflict(_extract_title_entities(a.title), _extract_title_entities(b.title)):
+        return 0.0
+    # 常见跨源改写：一个来源是短标题，另一个来源在后面追加背景信息。
+    # 例如「美光科技涨幅收窄至10%」 vs 「美光科技涨幅收窄至10%，此前一度上涨20%」。
+    # 只要较短标题已经达到动态阈值长度，就视为强相似。
+    shorter, longer = sorted((norm_a, norm_b), key=len)
+    if shorter and shorter in longer:
+        return 0.98
+    return SequenceMatcher(None, norm_a, norm_b).ratio()
+
+
+def _is_duplicate_candidate(a: NewsItem, b: NewsItem) -> tuple[bool, float]:
+    # 同源连续快讯不做模糊聚合，只允许精确标题 hash 聚合。
+    if a.source == b.source and a.title_hash != b.title_hash:
+        return False, 0.0
+    delta = abs(a.published_at - b.published_at)
+    similarity = _news_similarity(a, b)
+    if similarity >= 1.0 and delta <= _SIMILARITY_STRICT_WINDOW:
+        return True, similarity
+    norm_len = min(
+        len(_normalize_title_for_similarity(a.title)),
+        len(_normalize_title_for_similarity(b.title)),
+    )
+    threshold = _similarity_threshold(norm_len)
+    if threshold is None:
+        return False, similarity
+    if delta <= _SIMILARITY_WINDOW and similarity >= threshold:
+        return True, similarity
+    if delta <= _SIMILARITY_STRICT_WINDOW and similarity >= 0.96:
+        return True, similarity
+    return False, similarity
+
+
+def _decode_json_list(text: str | None) -> list[str]:
+    if not text:
+        return []
+    try:
+        value = json.loads(text)
+        return value if isinstance(value, list) else []
+    except json.JSONDecodeError:
+        return []
+
+
+def _source_weight(source: str) -> int:
+    return _SOURCE_WEIGHT.get(source, 70)
+
+
+def _choose_representative(items: list[NewsItem]) -> NewsItem:
+    return sorted(
+        items,
+        key=lambda item: (
+            bool(item.is_pinned),
+            item.importance_level,
+            _source_weight(item.source),
+            bool(item.summary),
+            bool(item.url),
+            item.published_at,
+            item.id,
+        ),
+        reverse=True,
+    )[0]
+
+
+def _rank_score(item: NewsItem, cluster_size: int = 1) -> float:
+    now = datetime.now()
+    age_minutes = max(0.0, (now - (item.published_at or item.fetched_at)).total_seconds() / 60)
+    freshness_score = 100 * math.exp(-age_minutes / 180)
+    importance_score = {0: 20, 1: 65, 2: 100}.get(item.importance_level or 0, 20)
+    duplicate_score = min(100, 45 + 25 * math.log2(max(cluster_size, 1)))
+    source_score = _source_weight(item.source)
+    matched_action = _decode_json_list(item.matched_action)
+    matched_industry = _decode_json_list(item.matched_industry)
+    affected_stocks = _decode_json_list(item.affected_stocks)
+    relevance_score = min(
+        100,
+        (35 if matched_action else 0)
+        + (25 if matched_industry else 0)
+        + (30 if affected_stocks else 0),
+    )
+    quality_score = min(
+        100,
+        (30 if item.summary else 0)
+        + (20 if item.url else 0)
+        + (20 if 8 <= len(item.title or "") <= 80 else 0)
+        + (10 if item.published_at else 0)
+        + (20 if cluster_size > 1 else 0),
+    )
+    pinned_boost = 15 if item.is_pinned else 0
+    return round(
+        freshness_score * 0.35
+        + importance_score * 0.25
+        + duplicate_score * 0.15
+        + source_score * 0.10
+        + relevance_score * 0.10
+        + quality_score * 0.05
+        + pinned_boost,
+        2,
+    )
 
 
 def _normalize_title(title: str) -> str:
@@ -235,31 +411,49 @@ class NewsService:
             "medium": int(row[3] or 0),
         }
 
-        # ── 3. items 查询 — 在窗口过滤基础上加 importance_min / since_id / 排序 / LIMIT ──
+        # ── 3. items 查询 — 多取候选后在查询层做 cluster 聚合去重 ──
+        candidate_limit = min(max(limit * 8, 300), 1000)
         stmt = _apply_window_filters(select(NewsItem))
         if importance_min > 0:
             stmt = stmt.where(NewsItem.importance_level >= importance_min)
         if since_id is not None:
             stmt = stmt.where(NewsItem.id < since_id)
+        stmt = stmt.order_by(NewsItem.published_at.desc(), NewsItem.id.desc()).limit(candidate_limit)
+
+        candidates = session.execute(stmt).scalars().all()
+        clusters = self._cluster_news_items(candidates)
+        cluster_payloads = [self._serialize_cluster(cluster) for cluster in clusters]
 
         if sort == "latest":
-            stmt = stmt.order_by(NewsItem.published_at.desc(), NewsItem.id.desc())
+            cluster_payloads.sort(key=lambda x: (x["published_at"], x["id"]), reverse=True)
         elif sort == "important":
-            stmt = stmt.order_by(
-                NewsItem.importance_level.desc(),
-                NewsItem.published_at.desc(),
-                NewsItem.id.desc(),
+            cluster_payloads.sort(
+                key=lambda x: (
+                    x["importance_level"],
+                    x["published_at"],
+                    x["duplicate_count"],
+                    x["id"],
+                ),
+                reverse=True,
+            )
+        elif sort == "hot":
+            cluster_payloads.sort(
+                key=lambda x: (
+                    x["rank_score"],
+                    x["is_pinned"],
+                    x["importance_level"],
+                    x["duplicate_count"],
+                    x["published_at"],
+                    x["id"],
+                ),
+                reverse=True,
             )
         else:  # mixed（默认）
-            stmt = stmt.order_by(
-                NewsItem.is_pinned.desc(),
-                NewsItem.published_at.desc(),
-                NewsItem.id.desc(),
+            cluster_payloads.sort(
+                key=lambda x: (x["is_pinned"], x["published_at"], x["id"]),
+                reverse=True,
             )
-        stmt = stmt.limit(limit)
-
-        items = session.execute(stmt).scalars().all()
-        out_items = [self._serialize(item) for item in items]
+        out_items = cluster_payloads[:limit]
 
         # ── 4. 最近一次拉取时间 — DB 里 max(fetched_at) ──
         last_fetched = session.execute(select(func.max(NewsItem.fetched_at))).scalar()
@@ -273,9 +467,54 @@ class NewsService:
             "fetched_at": datetime.now().isoformat(timespec="seconds"),
             "last_fetched_at": last_fetched_iso,
             "counts": counts,
+            "display_counts": {"raw_total": window_total, "deduped_total": len(cluster_payloads)},
             "window_hours": hours,
             "sort": sort,
         }
+
+    @staticmethod
+    def _cluster_news_items(items: list[NewsItem]) -> list[list[NewsItem]]:
+        """查询层聚合去重：保留原始新闻，只把展示结果合并为 cluster。"""
+
+        clusters: list[list[NewsItem]] = []
+        representatives: list[NewsItem] = []
+        for item in items:
+            matched_idx: int | None = None
+            matched_similarity = 0.0
+            for idx, rep in enumerate(representatives):
+                ok, similarity = _is_duplicate_candidate(rep, item)
+                if ok and similarity > matched_similarity:
+                    matched_idx = idx
+                    matched_similarity = similarity
+            if matched_idx is None:
+                clusters.append([item])
+                representatives.append(item)
+            else:
+                clusters[matched_idx].append(item)
+                representatives[matched_idx] = _choose_representative(clusters[matched_idx])
+        return clusters
+
+    @staticmethod
+    def _serialize_cluster(cluster: list[NewsItem]) -> dict:
+        representative = _choose_representative(cluster)
+        payload = NewsService._serialize(representative)
+        duplicates = [item for item in cluster if item.id != representative.id]
+        serialized_duplicates = []
+        for item in sorted(duplicates, key=lambda x: x.published_at, reverse=True):
+            data = NewsService._serialize(item)
+            data["similarity"] = round(_news_similarity(representative, item), 4)
+            serialized_duplicates.append(data)
+        sources = sorted({item.source for item in cluster}, key=_source_weight, reverse=True)
+        rank_score = _rank_score(representative, len(cluster))
+        payload.update(
+            {
+                "duplicate_count": len(cluster),
+                "duplicate_sources": sources,
+                "duplicates": serialized_duplicates,
+                "rank_score": rank_score,
+            }
+        )
+        return payload
 
     @staticmethod
     def _compute_importance(title: str, summary: str) -> tuple[int, list[str], list[str], bool]:

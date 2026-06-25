@@ -52,6 +52,12 @@ const mergedItems = computed(() => {
       return b.published_at.localeCompare(a.published_at);
     });
   }
+  if (filters.value.sort === "hot") {
+    return items.sort((a, b) => {
+      if ((a.rank_score || 0) !== (b.rank_score || 0)) return (b.rank_score || 0) - (a.rank_score || 0);
+      return b.published_at.localeCompare(a.published_at);
+    });
+  }
   return items.sort((a, b) => {
     if (a.is_pinned !== b.is_pinned) return a.is_pinned ? -1 : 1;
     return b.published_at.localeCompare(a.published_at);
@@ -78,9 +84,27 @@ const SOURCE_OPTIONS = [
 
 const SORT_OPTIONS = [
   { key: "mixed", label: "重要置顶" },
+  { key: "hot", label: "综合热度" },
   { key: "latest", label: "最新优先" },
   { key: "important", label: "重要性" },
 ];
+
+const expandedDuplicateIds = ref(new Set());
+
+function toggleDuplicates(id) {
+  const next = new Set(expandedDuplicateIds.value);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  expandedDuplicateIds.value = next;
+}
+
+function isDuplicatesExpanded(id) {
+  return expandedDuplicateIds.value.has(id);
+}
+
+function duplicateSourceLabels(item) {
+  return (item.duplicate_sources || []).map(sourceLabel).join(" / ");
+}
 
 function setSort(sort) {
   filters.value = { ...filters.value, sort };
@@ -250,6 +274,9 @@ function tagsTooltip(item) {
             <span v-if="item.fetched_at" class="fetch-time" :title="formatDateTime(item.fetched_at)">
               拉取 {{ formatRelativeTime(item.fetched_at) }}
             </span>
+            <span v-if="item.duplicate_count > 1" class="duplicate-chip" :title="duplicateSourceLabels(item)">
+              重复 ×{{ item.duplicate_count }}：{{ duplicateSourceLabels(item) }}
+            </span>
             <span
               v-for="tag in item.matched_action || []"
               :key="`act-${item.id}-${tag}`"
@@ -267,6 +294,25 @@ function tagsTooltip(item) {
               {{ tag }}
             </span>
           </footer>
+          <div v-if="item.duplicate_count > 1" class="duplicates-block">
+            <button class="duplicates-toggle" @click="toggleDuplicates(item.id)">
+              {{ isDuplicatesExpanded(item.id) ? "收起重复来源" : "展开重复来源" }}
+            </button>
+            <div v-if="isDuplicatesExpanded(item.id)" class="duplicates-list">
+              <a
+                v-for="dup in item.duplicates || []"
+                :key="dup.id"
+                class="duplicate-row"
+                :href="dup.url || '#'"
+                target="_blank"
+                rel="noopener"
+              >
+                <span class="duplicate-source">{{ sourceLabel(dup.source) }}</span>
+                <span class="duplicate-title">{{ dup.title }}</span>
+                <span class="duplicate-time">{{ formatRelativeTime(dup.published_at) }}</span>
+              </a>
+            </div>
+          </div>
         </div>
       </li>
     </ol>
@@ -497,6 +543,62 @@ a.news-title:hover {
 .fetch-time {
   padding-left: 6px;
   border-left: 1px solid var(--border);
+}
+
+.duplicate-chip {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: rgba(168, 85, 247, 0.1);
+  color: #d8b4fe;
+  border: 1px solid rgba(168, 85, 247, 0.25);
+}
+
+.duplicates-block {
+  margin-top: 2px;
+}
+.duplicates-toggle {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.duplicates-toggle:hover {
+  text-decoration: underline;
+}
+.duplicates-list {
+  display: grid;
+  gap: 4px;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px dashed var(--border);
+}
+.duplicate-row {
+  display: grid;
+  grid-template-columns: 88px 1fr auto;
+  gap: 8px;
+  align-items: center;
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-size: 11.5px;
+}
+.duplicate-row:hover {
+  color: var(--accent);
+}
+.duplicate-source {
+  color: var(--text-muted);
+}
+.duplicate-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.duplicate-time {
+  color: var(--text-muted);
 }
 
 .match-chip {

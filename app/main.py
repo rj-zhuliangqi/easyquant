@@ -1340,7 +1340,7 @@ def create_app(
         limit: int = Query(default=50, ge=1, le=200),
         hours: int | None = Query(default=48, ge=1, le=168),
         importance: int = Query(default=0, ge=0, le=2),
-        sort: str = Query(default="mixed", pattern="^(mixed|latest|important)$"),
+        sort: str = Query(default="mixed", pattern="^(mixed|latest|important|hot)$"),
         sources: str | None = Query(default=None, description="CSV，如 eastmoney_724,ths_live"),
         industries: str | None = Query(default=None, description="CSV，如 化工,锂电"),
         actions: str | None = Query(default=None, description="CSV，如 涨价,政策"),
