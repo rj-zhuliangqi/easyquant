@@ -5,6 +5,7 @@ from datetime import datetime
 import json
 
 import pandas as pd
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy import create_engine
@@ -1044,3 +1045,190 @@ def test_scan_import_directory_tolerates_name_drift_and_isolates_failures(tmp_pa
     assert (inbox / "_failed" / "bad_json.json").exists()
     assert (inbox / "_failed" / "unknown_skill.json").exists()
     assert not (inbox / "good_with_prefix.json").exists()
+
+
+# ── Skill Chat SSE streaming ─────────────────────────────────────────────────
+
+
+class _FakePopen:
+    """Mock subprocess.Popen yielding a fixed line stream + small delays.
+
+    Mirrors the surface used by `_skill_chat_stream_generator`:
+      - stdout.readline() blocking call returning "" on EOF
+      - .poll() returning the exit code only after all lines drained
+      - .wait(timeout) / .kill()
+    """
+
+    def __init__(self, args, stdout=None, stderr=None, bufsize=1, text=True, **kwargs):
+        import threading as _threading
+        self.args = args
+        self._lines = ["你好", "，", "我", "是", " AI", " 助手", "。",
+                        "```json\n{\"name\": \"test\"}\n```", ""]
+        self._idx = 0
+        self._lock = _threading.Lock()
+        self.returncode = None
+        # Make `.stdout` / `.stderr` point to `self` so the generator's
+        # `proc.stdout.readline()` / `proc.stderr.read()` resolves to our mocked
+        # methods rather than the empty StringIO default.
+        self.stdout = self
+        self.stderr = self
+
+    def _next_line(self):
+        with self._lock:
+            if self._idx >= len(self._lines):
+                return ""
+            line = self._lines[self._idx]
+            self._idx += 1
+        return line
+
+    def readline(self):
+        import time as _time
+        line = self._next_line()
+        # Simulate a tiny pause between lines so the streaming generator yields
+        if line == "":
+            _time.sleep(0.01)
+        return line
+
+    def poll(self):
+        if self._idx >= len(self._lines):
+            self.returncode = 0
+            return 0
+        return None
+
+    def wait(self, timeout=None):
+        self.returncode = 0
+        return 0
+
+    def kill(self):
+        self.returncode = -9
+
+    def communicate(self, input=None, timeout=None):
+        # drain the (already consumed by .stdout.readline() if used) buffer; for non-stream
+        # branch (subprocess.run) we haven't consumed anything yet, so drain by index.
+        lines = []
+        while True:
+            with self._lock:
+                if self._idx >= len(self._lines):
+                    break
+                line = self._lines[self._idx]
+                self._idx += 1
+            lines.append(line)
+        self.returncode = 0
+        return ("".join(lines), "")
+
+    # `subprocess.run(..., capture_output=True)` 在 subprocess 内部用 `with Popen(...) as process:`
+    # 上下文协议 → 测试 mock 必须实现，否则非流式路径会 TypeError
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        try:
+            self.wait(timeout=5)
+        except Exception:
+            pass
+        return False
+
+
+@pytest.fixture
+def patched_skill_chat(monkeypatch):
+    """Inject fake claude CLI for skill-chat streaming tests."""
+    from app import main as app_main
+
+    monkeypatch.setattr(app_main, "_find_cli_path", lambda name: "/fake/claude")
+    monkeypatch.setattr(app_main.subprocess, "Popen", _FakePopen)
+    # Shrink heartbeat so tests are quick
+    monkeypatch.setattr(app_main, "_SKILL_CHAT_HEARTBEAT_SECONDS", 0.05)
+    return app_main
+
+
+def _parse_sse_events(raw_chunks):
+    """Concatenate raw SSE line chunks and yield parsed `data:` JSON payloads."""
+    import json as _json
+    buf = ""
+    for chunk in raw_chunks:
+        buf += chunk
+        while "\n\n" in buf:
+            raw_event, buf = buf.split("\n\n", 1)
+            for ln in raw_event.split("\n"):
+                if ln.startswith(":"):
+                    continue
+                if ln.startswith("data:"):
+                    try:
+                        yield _json.loads(ln[5:].strip())
+                    except Exception:
+                        pass
+
+
+def test_skill_chat_streams_deltas_and_done(patched_skill_chat):
+    client, _ = build_ai_client()
+    raw_text = ""
+    with client.stream("POST", "/api/ai/skill-chat", json={"message": "写一句问候"}) as response:
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/event-stream")
+        # TestClient/httpx 流式响应：iter_text() 累加原始字节流（不会按 HTTP chunk 切 SSE 事件）
+        for chunk in response.iter_text():
+            raw_text += chunk
+
+    events = list(_parse_sse_events([raw_text]))
+    types = [e.get("type") for e in events]
+
+    # 至少有一个 delta + 一个 done
+    assert "delta" in types, f"raw={raw_text!r} events={events}"
+    assert types.count("done") == 1, f"events={events}"
+
+    # delta 文本累积还原出原文
+    full_text = "".join(e["text"] for e in events if e.get("type") == "delta")
+    assert "你好" in full_text
+    assert "AI" in full_text
+
+    # done 事件里 skill_draft 必须解析到 JSON 草案
+    done = next(e for e in events if e.get("type") == "done")
+    assert done["skill_draft"] == {"name": "test"}
+    assert "duration_ms" in done
+    assert isinstance(done["duration_ms"], int)
+
+
+def test_skill_chat_non_stream_fallback(patched_skill_chat):
+    client, _ = build_ai_client()
+    response = client.post(
+        "/api/ai/skill-chat?stream=false",
+        json={"message": "写一句问候"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "你好" in data["response"]
+    assert data["skill_draft"] == {"name": "test"}
+    assert "duration_ms" in data
+
+
+def test_skill_chat_cli_missing(monkeypatch):
+    from app import main as app_main
+    monkeypatch.setattr(app_main, "_find_cli_path", lambda name: None)
+    client, _ = build_ai_client()
+    with client.stream("POST", "/api/ai/skill-chat", json={"message": "x"}) as response:
+        # CLI 缺失也会回 SSE（错误+done 两个事件）
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/event-stream")
+        raw_chunks = list(response.iter_lines())
+        raw_text = "\n".join(raw_chunks)
+
+    events = list(_parse_sse_events([raw_text + "\n"] if raw_text else []))
+    types = [e.get("type") for e in events]
+    assert "error" in types, f"events={events}, raw_text={raw_text!r}"
+    assert "done" in types, f"events={events}, raw_text={raw_text!r}"
+
+    error = next(e for e in events if e.get("type") == "error")
+    assert "未找到" in error["message"] or "Claude" in error["message"]
+
+
+def test_skill_chat_body_stream_false_overrides_default(patched_skill_chat):
+    client, _ = build_ai_client()
+    response = client.post(
+        "/api/ai/skill-chat",
+        json={"message": "hi", "stream": False},
+    )
+    # JSON fallback path returns application/json, not text/event-stream
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/json")
+    data = response.json()
+    assert "你好" in data["response"]

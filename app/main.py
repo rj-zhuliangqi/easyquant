@@ -6,14 +6,17 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import subprocess
+import threading
 import time
 from typing import Callable
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from fastapi import Body, Depends, FastAPI, HTTPException, Query
+from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from fastapi.responses import RedirectResponse
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import create_engine, event
 from sqlalchemy import inspect
@@ -300,6 +303,242 @@ def _find_cli_path(name: str) -> str | None:
         if p.exists():
             return str(p)
     return None
+
+
+# ── Skill Chat SSE ─────────────────────────────────────────────
+# _SKILL_CHAT_TIMEOUT_SECONDS: subprocess 兜底超时（远大于 cloudflared 100s 边缘空闲超时，
+#   中间只要有 SSE delta/心跳流出，cloudflared 不会切断）
+# _SKILL_CHAT_HEARTBEAT_SECONDS: SSE 注释行 ": ping\n\n" 周期，防止 cloudflared idle 切断
+_SKILL_CHAT_TIMEOUT_SECONDS = 300
+_SKILL_CHAT_HEARTBEAT_SECONDS = 15
+
+# 系统 prompt 必须下沉到模块级，因为 helper 函数（_build_skill_chat_prompt 等）会在模块作用域调用
+_SKILL_CHAT_SYSTEM_PROMPT = """你是一个专业的A股选股策略专家。请根据用户的需求，生成选股策略配置或回答策略相关问题。
+
+如果用户要求创建新策略，请生成以下格式的JSON：
+
+{
+  "skill_name": "策略名称（简短）",
+  "skill_category": "stock-pick|news-scan|review|stock-confirm|position-review|weekly-review",
+  "description": "策略描述（一句话）",
+  "revision_title": "版本标题",
+  "revision_content": "策略执行逻辑的详细描述，包括选股条件、过滤规则、排序方式等",
+  "job_name": "定时任务名称（如 09:30 某某选股）",
+  "schedule_label": "显示标签（如 09:30）",
+  "schedule_rrule_or_cron": "标准5字段cron表达式",
+  "job_type": "stock_pick|news_scan|day_review|stock_confirm|position_review|weekly_review",
+  "display_group": "盘前|盘中|盘后|夜间|周报",
+  "result_schema_version": "2.0"
+}
+
+Cron表达式规则（标准5字段：分 时 日 月 星期）：
+- 盘前任务：20 8 * * 1-5（工作日8:20）
+- 盘中任务：26 9 * * 1-5（工作日9:26）
+- 盘后任务：0 19 * * 1-5（工作日19:00）
+- 夜间任务：0 20 * * 1-5（工作日20:00）
+- 周报任务：0 22 * * 5（周五22:00）
+
+请用中文回复，JSON配置放在代码块中。"""
+
+
+def _build_skill_chat_prompt(history: list, message: str) -> str:
+    """拼装 Claude CLI 单次调用的最终 prompt。"""
+    conversation = []
+    for h in history:
+        if h.get("role") == "user":
+            conversation.append(f"用户: {h.get('content', '')}")
+        elif h.get("role") == "assistant":
+            conversation.append(f"助手: {h.get('content', '')}")
+    conversation_text = "\n".join(conversation)
+    return f"""{_SKILL_CHAT_SYSTEM_PROMPT}
+
+{conversation_text}
+
+用户: {message}
+
+请回复："""
+
+
+def _extract_skill_draft(output: str):
+    """从 Claude 文本输出中提取 ```json ... ``` 代码块作为 skill 草案。"""
+    if not output:
+        return None
+    json_match = re.search(r'```json\s*(.*?)\s*```', output, re.DOTALL)
+    if not json_match:
+        json_match = re.search(r'```\s*(\{.*?\})\s*```', output, re.DOTALL)
+    if not json_match:
+        return None
+    try:
+        return json.loads(json_match.group(1))
+    except json.JSONDecodeError:
+        return None
+
+
+def _skill_chat_event(payload: dict) -> bytes:
+    """把 dict 序列化成 SSE `data: {...}\\n\\n` 字节流。"""
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
+
+
+def _kill_proc(proc: subprocess.Popen | None) -> None:
+    """安全终止 Claude 子进程并等待回收（用于客户端断开 / 兜底超时）。"""
+    if proc is None:
+        return
+    if proc.poll() is None:
+        try:
+            proc.kill()
+        except Exception:
+            logger.exception("skill-chat: proc.kill() failed")
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            logger.exception("skill-chat: proc.wait() after kill failed")
+
+
+def _skill_chat_kill_watcher(proc: subprocess.Popen, stop_event: threading.Event) -> None:
+    """后台 watcher 线程：到 _SKILL_CHAT_TIMEOUT_SECONDS 兜底 kill 子进程。"""
+    deadline = time.time() + _SKILL_CHAT_TIMEOUT_SECONDS
+    while not stop_event.is_set():
+        if time.time() >= deadline:
+            logger.warning(
+                "skill-chat: watcher reached timeout (%ds), killing proc",
+                _SKILL_CHAT_TIMEOUT_SECONDS,
+            )
+            _kill_proc(proc)
+            return
+        # 1s 轮询间隔足以兜底（及时 kill 即可）
+        if stop_event.wait(1.0):
+            return
+        if proc.poll() is not None:
+            return
+
+
+def _skill_chat_stream_generator(claude_path: str, cli_prompt: str):
+    """SSE 流式生成器：按行读 Claude stdout，每行 yield delta；15s 一次心跳。"""
+    start = time.time()
+    full_output_chunks: list[str] = []
+    proc: subprocess.Popen | None = None
+    stop_event = threading.Event()
+    watcher: threading.Thread | None = None
+    timed_out = False
+
+    try:
+        try:
+            proc = subprocess.Popen(
+                [
+                    claude_path, "-p", cli_prompt,
+                    "--allowedTools", "Bash(curl*)", "Bash(python*)", "Write", "Read",
+                    "--output-format", "text",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                bufsize=1,
+                text=True,
+            )
+        except OSError as exc:
+            logger.exception("skill-chat: failed to spawn claude")
+            yield _skill_chat_event({"type": "error", "message": f"无法启动 Claude CLI: {exc}"})
+            yield _skill_chat_event({"type": "done", "response": "", "skill_draft": None, "duration_ms": 0})
+            return
+
+        watcher = threading.Thread(
+            target=_skill_chat_kill_watcher,
+            args=(proc, stop_event),
+            daemon=True,
+        )
+        watcher.start()
+
+        last_heartbeat = time.time()
+        try:
+            while True:
+                line = proc.stdout.readline()
+                now = time.time()
+                # 心跳：每 _SKILL_CHAT_HEARTBEAT_SECONDS 秒发一次 SSE 注释行
+                if now - last_heartbeat >= _SKILL_CHAT_HEARTBEAT_SECONDS:
+                    yield b": ping\n\n"
+                    last_heartbeat = now
+                if not line:
+                    # EOF
+                    break
+                full_output_chunks.append(line)
+                yield _skill_chat_event({"type": "delta", "text": line})
+        except (GeneratorExit, ConnectionError):
+            logger.info("skill-chat: client disconnected, killing proc")
+            _kill_proc(proc)
+            return
+
+        stop_event.set()
+        if watcher and watcher.is_alive():
+            watcher.join(timeout=1.0)
+
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            logger.warning("skill-chat: proc.wait() timed out, killing")
+            _kill_proc(proc)
+
+        duration_ms = int((time.time() - start) * 1000)
+        full_output = "".join(full_output_chunks)
+        skill_draft = _extract_skill_draft(full_output)
+
+        # watcher 兜底超时已 kill → returncode 不为 0
+        if proc.returncode not in (0, None):
+            stderr_text = (proc.stderr.read() if proc.stderr else "")[:500]
+            if not full_output and "timed out" in stderr_text.lower():
+                timed_out = True
+            logger.error(
+                "skill-chat: claude exit=%d duration=%dms stderr=%s",
+                proc.returncode, duration_ms, stderr_text,
+            )
+            if timed_out:
+                yield _skill_chat_event({
+                    "type": "error",
+                    "message": f"请求超时（{_SKILL_CHAT_TIMEOUT_SECONDS}s），请重试或简化需求描述。",
+                })
+            else:
+                yield _skill_chat_event({
+                    "type": "error",
+                    "message": f"Claude 退出码 {proc.returncode}: {stderr_text}",
+                })
+            yield _skill_chat_event({
+                "type": "done",
+                "response": full_output or stderr_text or "执行出错",
+                "skill_draft": None,
+                "duration_ms": duration_ms,
+            })
+            return
+
+        logger.info(
+            "skill-chat (stream): completed duration=%dms output_length=%d has_draft=%s",
+            duration_ms, len(full_output), bool(skill_draft),
+        )
+        yield _skill_chat_event({
+            "type": "done",
+            "response": full_output,
+            "skill_draft": skill_draft,
+            "duration_ms": duration_ms,
+        })
+    except GeneratorExit:
+        _kill_proc(proc)
+        raise
+    except Exception as exc:
+        logger.exception("skill-chat: unexpected error in stream generator")
+        try:
+            yield _skill_chat_event({"type": "error", "message": f"内部错误: {exc}"})
+            duration_ms = int((time.time() - start) * 1000)
+            yield _skill_chat_event({
+                "type": "done",
+                "response": "",
+                "skill_draft": None,
+                "duration_ms": duration_ms,
+            })
+        except GeneratorExit:
+            _kill_proc(proc)
+            raise
+    finally:
+        stop_event.set()
+        if watcher and watcher.is_alive():
+            watcher.join(timeout=1.0)
+        _kill_proc(proc)
 
 
 def build_spa_shell_response() -> FileResponse:
@@ -1600,133 +1839,87 @@ def create_app(
 
     # ── Skill Chat / Creation Endpoints ───────────────────────────────
 
-    _SKILL_CHAT_SYSTEM_PROMPT = """你是一个专业的A股选股策略专家。请根据用户的需求，生成选股策略配置或回答策略相关问题。
-
-如果用户要求创建新策略，请生成以下格式的JSON：
-
-{
-  "skill_name": "策略名称（简短）",
-  "skill_category": "stock-pick|news-scan|review|stock-confirm|position-review|weekly-review",
-  "description": "策略描述（一句话）",
-  "revision_title": "版本标题",
-  "revision_content": "策略执行逻辑的详细描述，包括选股条件、过滤规则、排序方式等",
-  "job_name": "定时任务名称（如 09:30 某某选股）",
-  "schedule_label": "显示标签（如 09:30）",
-  "schedule_rrule_or_cron": "标准5字段cron表达式",
-  "job_type": "stock_pick|news_scan|day_review|stock_confirm|position_review|weekly_review",
-  "display_group": "盘前|盘中|盘后|夜间|周报",
-  "result_schema_version": "2.0"
-}
-
-Cron表达式规则（标准5字段：分 时 日 月 星期）：
-- 盘前任务：20 8 * * 1-5（工作日8:20）
-- 盘中任务：26 9 * * 1-5（工作日9:26）
-- 盘后任务：0 19 * * 1-5（工作日19:00）
-- 夜间任务：0 20 * * 1-5（工作日20:00）
-- 周报任务：0 22 * * 5（周五22:00）
-
-请用中文回复，JSON配置放在代码块中。"""
-
-    @app.post("/api/ai/skill-chat")
-    def ai_skill_chat(payload: dict = Body(default={})) -> dict:
-        """AI Skill 对话入口 - 通过自然语言创建或修改选股策略"""
+    @app.post("/api/ai/skill-chat", response_model=None)
+    def ai_skill_chat(request: Request, payload: dict = Body(default={})):
+        """AI Skill 对话入口 - 默认走 SSE 流式；?stream=false 走旧 JSON 回退"""
         message = payload.get("message", "")
         if not message:
             raise HTTPException(status_code=400, detail="message is required")
 
         history = payload.get("history", [])
-        conversation = []
-        for h in history:
-            if h.get("role") == "user":
-                conversation.append(f"用户: {h.get('content', '')}")
-            elif h.get("role") == "assistant":
-                conversation.append(f"助手: {h.get('content', '')}")
 
-        conversation_text = "\n".join(conversation)
+        # stream 决策：query 优先，其次 body 字段，最后默认 True
+        stream_q = request.query_params.get("stream", "true").lower()
+        stream = stream_q not in ("false", "0", "no")
+        if isinstance(payload.get("stream"), bool):
+            stream = payload["stream"]
 
-        full_prompt = f"""{_SKILL_CHAT_SYSTEM_PROMPT}
+        cli_prompt = _build_skill_chat_prompt(history, message)
 
-{conversation_text}
-
-用户: {message}
-
-请回复："""
-
-        # Build the actual prompt for claude CLI
-        cli_prompt = f"""{_SKILL_CHAT_SYSTEM_PROMPT}
-
-{conversation_text}
-
-用户: {message}
-
-请回复："""
-
-        import subprocess
-        import time
-
-        logger.info("skill-chat: processing message from user")
-        start = time.time()
-
-        # Find claude CLI path
         claude_path = _find_cli_path("claude")
-        if not claude_path:
-            return {
-                "response": "Claude Code CLI 未找到，请检查安装。",
-                "skill_draft": None,
-                "duration_ms": 0,
-            }
 
-        try:
-            proc = subprocess.run(
-                [
-                    claude_path, "-p", cli_prompt,
-                    "--allowedTools", "Bash(curl*)", "Bash(python*)", "Write", "Read",
-                    "--output-format", "text",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
-            duration_ms = int((time.time() - start) * 1000)
-
-            if proc.returncode != 0:
-                logger.error("skill-chat claude-code exited with code %d: %s", proc.returncode, proc.stderr[:500])
+        # ── 分支 A：?stream=false → 旧 JSON 回退 ────────────────────────
+        if not stream:
+            import time as _time
+            start = _time.time()
+            if not claude_path:
                 return {
-                    "response": f"执行出错: {proc.stderr[:500]}",
+                    "response": "Claude Code CLI 未找到，请检查安装。",
                     "skill_draft": None,
+                    "duration_ms": 0,
+                }
+            try:
+                proc = subprocess.run(
+                    [
+                        claude_path, "-p", cli_prompt,
+                        "--allowedTools", "Bash(curl*)", "Bash(python*)", "Write", "Read",
+                        "--output-format", "text",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+                duration_ms = int((_time.time() - start) * 1000)
+                if proc.returncode != 0:
+                    logger.error("skill-chat (non-stream) exit=%d stderr=%s", proc.returncode, proc.stderr[:500])
+                    return {
+                        "response": f"执行出错: {proc.stderr[:500]}",
+                        "skill_draft": None,
+                        "duration_ms": duration_ms,
+                    }
+                return {
+                    "response": proc.stdout,
+                    "skill_draft": _extract_skill_draft(proc.stdout),
                     "duration_ms": duration_ms,
                 }
+            except subprocess.TimeoutExpired:
+                return {
+                    "response": "请求超时，请重试或简化需求描述。",
+                    "skill_draft": None,
+                    "duration_ms": 120000,
+                }
 
-            output = proc.stdout
-            logger.info("skill-chat completed in %dms, output length=%d", duration_ms, len(output))
+        # ── 分支 B：SSE 流式（默认） ─────────────────────────────────
+        if not claude_path:
+            def _cli_missing_gen():
+                yield _skill_chat_event({"type": "error", "message": "Claude Code CLI 未找到，请检查安装。"})
+                yield _skill_chat_event({
+                    "type": "done",
+                    "response": "Claude Code CLI 未找到，请检查安装。",
+                    "skill_draft": None,
+                    "duration_ms": 0,
+                })
+            return StreamingResponse(
+                _cli_missing_gen(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+            )
 
-            # Try to extract JSON skill draft from output
-            skill_draft = None
-            import re
-            # Look for JSON code block
-            json_match = re.search(r'```json\s*(.*?)\s*```', output, re.DOTALL)
-            if not json_match:
-                json_match = re.search(r'```\s*(\{.*?\})\s*```', output, re.DOTALL)
-            if json_match:
-                try:
-                    skill_draft = json.loads(json_match.group(1))
-                except json.JSONDecodeError:
-                    pass
-
-            return {
-                "response": output,
-                "skill_draft": skill_draft,
-                "duration_ms": duration_ms,
-            }
-
-        except subprocess.TimeoutExpired:
-            duration_ms = int((time.time() - start) * 1000)
-            logger.error("skill-chat timed out after %dms", duration_ms)
-            return {
-                "response": "请求超时，请重试或简化需求描述。",
-                "skill_draft": None,
-                "duration_ms": duration_ms,
-            }
+        return StreamingResponse(
+            _skill_chat_stream_generator(claude_path, cli_prompt),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+        )
 
     @app.put("/api/ai/jobs/{job_id}/engine")
     def ai_update_job_engine(job_id: int, payload: dict = Body(default={}), db: Session = Depends(get_db)) -> dict:

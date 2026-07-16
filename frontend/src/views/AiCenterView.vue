@@ -3,7 +3,7 @@ import { computed, ref, watch } from "vue";
 import { useQuery } from "@tanstack/vue-query";
 import { useRoute, useRouter } from "vue-router";
 import QueryState from "../components/QueryState.vue";
-import { fetchJson, pageQueryKey } from "../lib/api";
+import { fetchJson, fetchStream, pageQueryKey } from "../lib/api";
 import { marked } from "marked";
 
 defineOptions({ name: "ai-center" });
@@ -224,7 +224,9 @@ const renderedMarkdown = computed(() => {
 const chatMessages = ref([]);
 const chatInput = ref("");
 const chatLoading = ref(false);
+const chatStreaming = ref(false);
 const chatDraft = ref(null);
+let chatAbortController = null;
 
 async function sendChatMessage() {
   const message = chatInput.value.trim();
@@ -235,38 +237,77 @@ async function sendChatMessage() {
   chatLoading.value = true;
   chatDraft.value = null;
 
+  // 流式占位：先 push 一个空的 assistant 消息，每收到 delta 就 in-place 写入
+  const assistantMsg = { role: "assistant", content: "" };
+  chatMessages.value.push(assistantMsg);
+  chatStreaming.value = true;
+  chatAbortController = new AbortController();
+
+  let streamedText = "";
+
   try {
-    const response = await fetchJson("/api/ai/skill-chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        message,
-        history: chatMessages.value.slice(0, -1),
-      }),
-    });
-
-    chatMessages.value.push({
-      role: "assistant",
-      content: response.response || "无响应",
-    });
-
-    if (response.skill_draft) {
-      chatDraft.value = response.skill_draft;
-    }
+    await fetchStream(
+      "/api/ai/skill-chat",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message,
+          history: chatMessages.value.slice(0, -2), // 排除 user + 占位 assistant
+        }),
+        signal: chatAbortController.signal,
+      },
+      (event) => {
+        if (event?.type === "delta" && typeof event.text === "string") {
+          streamedText += event.text;
+          assistantMsg.content = streamedText;
+        } else if (event?.type === "done") {
+          if (!streamedText && event.response) {
+            assistantMsg.content = event.response;
+            streamedText = event.response;
+          }
+          if (event.skill_draft) {
+            chatDraft.value = event.skill_draft;
+          }
+        } else if (event?.type === "error") {
+          const msg = event.message || "未知错误";
+          assistantMsg.content = streamedText
+            ? `${streamedText}\n\n[错误] ${msg}`
+            : `[错误] ${msg}`;
+        }
+      },
+    );
+    if (!assistantMsg.content) assistantMsg.content = "无响应";
   } catch (error) {
-    chatMessages.value.push({
-      role: "assistant",
-      content: `请求失败: ${error.message || "未知错误"}`,
-    });
+    if (error?.name === "AbortError") {
+      assistantMsg.content = streamedText
+        ? `${streamedText}\n\n[已停止生成]`
+        : "[已停止生成]";
+    } else {
+      assistantMsg.content = streamedText
+        ? `${streamedText}\n\n[请求失败] ${error.message || "未知错误"}`
+        : `请求失败: ${error.message || "未知错误"}`;
+    }
   } finally {
     chatLoading.value = false;
+    chatStreaming.value = false;
+    chatAbortController = null;
+  }
+}
+
+function stopChat() {
+  if (chatAbortController) {
+    chatAbortController.abort();
   }
 }
 
 function clearChat() {
+  if (chatAbortController) chatAbortController.abort();
   chatMessages.value = [];
   chatDraft.value = null;
   chatInput.value = "";
+  chatLoading.value = false;
+  chatStreaming.value = false;
 }
 
 function applySkillDraft() {
@@ -470,10 +511,15 @@ function applySkillDraft() {
             >
               <div class="chat-avatar">{{ msg.role === 'user' ? '👤' : '🤖' }}</div>
               <div class="chat-bubble">
-                <pre class="chat-text">{{ msg.content }}</pre>
+                <div class="chat-text">
+                  {{ msg.content }}<span
+                    v-if="chatStreaming && idx === chatMessages.length - 1"
+                    class="caret"
+                  >▍</span>
+                </div>
               </div>
             </div>
-            <div v-if="chatLoading" class="chat-message assistant">
+            <div v-if="chatLoading && !chatStreaming" class="chat-message assistant">
               <div class="chat-avatar">🤖</div>
               <div class="chat-bubble loading">
                 <span class="typing-dot"></span>
@@ -499,10 +545,21 @@ function applySkillDraft() {
               class="chat-input"
               placeholder="描述你的选股策略需求..."
               rows="3"
+              :disabled="chatStreaming"
               @keydown.enter.prevent="sendChatMessage"
             ></textarea>
             <button
+              v-if="chatStreaming"
+              class="chat-stop-btn"
+              type="button"
+              @click="stopChat"
+            >
+              ⏹ 停止
+            </button>
+            <button
+              v-else
               class="chat-send-btn"
+              type="button"
               :disabled="!chatInput.trim() || chatLoading"
               @click="sendChatMessage"
             >
@@ -658,14 +715,19 @@ function applySkillDraft() {
 .chat-bubble { padding: 10px 14px; border-radius: 12px; max-width: 80%; }
 .chat-message.user .chat-bubble { background: var(--surface-active, rgba(255,255,255,0.04)); border: 1px solid var(--border, rgba(255,255,255,0.06)); }
 .chat-message.assistant .chat-bubble { background: var(--surface, #1e293b); border: 1px solid var(--border, rgba(255,255,255,0.06)); }
-.chat-text { margin: 0; white-space: pre-wrap; font-family: inherit; font-size: 13px; line-height: 1.6; color: var(--text, #e2e8f0); }
+.chat-text { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: inherit; font-size: 13px; line-height: 1.6; color: var(--text, #e2e8f0); }
+.caret { display: inline-block; width: 7px; margin-left: 2px; color: var(--accent, #0ea5e9); animation: caret-blink 1s steps(1) infinite; }
+@keyframes caret-blink { 50% { opacity: 0; } }
 
 .chat-input-area { display: flex; gap: 10px; align-items: flex-end; }
 .chat-input { flex: 1; padding: 10px 14px; border-radius: 10px; background: var(--surface, #1e293b); border: 1px solid var(--border, rgba(255,255,255,0.06)); color: var(--text, #e2e8f0); font-size: 13px; resize: vertical; min-height: 60px; }
 .chat-input:focus { outline: none; border-color: rgba(255,255,255,0.15); }
+.chat-input:disabled { opacity: 0.6; cursor: not-allowed; }
 .chat-send-btn { padding: 10px 20px; border-radius: 10px; background: var(--accent, #0ea5e9); color: white; font-size: 13px; font-weight: 600; border: none; cursor: pointer; transition: all 0.15s ease; }
 .chat-send-btn:hover:not(:disabled) { background: #0284c7; }
 .chat-send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.chat-stop-btn { padding: 10px 20px; border-radius: 10px; background: rgba(248,113,113,0.15); color: #f87171; font-size: 13px; font-weight: 600; border: 1px solid rgba(248,113,113,0.35); cursor: pointer; transition: all 0.15s ease; }
+.chat-stop-btn:hover { background: rgba(248,113,113,0.25); }
 
 .chat-draft { padding: 16px; border-radius: 10px; background: var(--surface, #1e293b); border: 1px solid var(--border, rgba(255,255,255,0.06)); }
 .chat-draft h4 { font-size: 14px; font-weight: 600; margin-bottom: 10px; color: var(--text, #e2e8f0); }
