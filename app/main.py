@@ -10,6 +10,7 @@ from pathlib import Path
 import queue
 import re
 import subprocess
+import sys
 import threading
 import time
 from typing import Callable
@@ -2301,4 +2302,18 @@ def _prefetch_priority_sector_stocks(
     return {"prefetched": total_prefetched, "cold_rotated": cold_prefetched}
 
 
-app = create_app()
+def _is_test_context() -> bool:
+    """是否运行在 pytest 下。
+
+    用于守卫模块顶层 ``app = create_app()``：测试通过 ``from app.main import``
+    触发导入时，不应执行 ``create_app()``（它会对**生产库路径**跑
+    ``_recover_sqlite_if_corrupted`` + ``Base.metadata.create_all``，曾导致
+    生产 DB 被砸成 4K 空库 -- 见 incident-2026-07-19）。测试用例改用
+    ``create_app(session_factory=...)`` 显式传入 in-memory 引擎。
+    """
+    return "pytest" in sys.modules or os.getenv("EQ_TESTING") == "1"
+
+
+# 生产环境（uvicorn ``app.main:app``）才建 app；pytest 导入时跳过，
+# 由测试自行 ``create_app(session_factory=...)`` 装配 in-memory 引擎。
+app = create_app() if not _is_test_context() else None
