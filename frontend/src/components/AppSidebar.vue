@@ -6,6 +6,7 @@ import { routes } from "../router";
 import { fetchJson, pageQueryKey } from "../lib/api";
 import { getUsername, isAdmin, clearToken } from "../lib/auth";
 import { sanitizeHtml } from "../lib/sanitize";
+import { todayIso } from "../lib/formatters";
 
 const props = defineProps({
   isOpen: {
@@ -70,7 +71,7 @@ async function prefetch(pathName) {
       }),
     ]);
   } else if (pathName === "review") {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayIso();
     await queryClient.prefetchQuery({
       queryKey: ["ai-trading-day-review", today],
       queryFn: () => fetchJson(`/api/ai/trading-days/${today}`),
@@ -79,7 +80,7 @@ async function prefetch(pathName) {
   } else if (pathName === "news") {
     // News view fetches /api/ai/runs?job_type=news_scan directly; warm that
     // up so the panel paints instantly on click. Date defaults to today.
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayIso();
     await queryClient.prefetchQuery({
       queryKey: ["ai-runs", "news_scan", today],
       queryFn: () => fetchJson(`/api/ai/runs?job_type=news_scan&trading_date=${today}`),

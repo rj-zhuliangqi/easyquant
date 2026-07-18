@@ -1,4 +1,6 @@
 <script setup>
+import { computed } from "vue";
+
 const props = defineProps({
   status: { type: String, required: true }, // 'success', 'warning', 'danger', 'info', 'neutral'
   size: { type: String, default: "md" }, // 'sm', 'md', 'lg'
@@ -18,8 +20,9 @@ const sizeConfig = {
   lg: { padding: "4px 14px", fontSize: "13px", height: "28px" },
 };
 
-const config = statusConfig[props.status] || statusConfig.neutral;
-const size = sizeConfig[props.size] || sizeConfig.md;
+// 改 computed：props.status 变化时颜色/文案即时跟随（原 setup 顶层只算一次）
+const config = computed(() => statusConfig[props.status] || statusConfig.neutral);
+const size = computed(() => sizeConfig[props.size] || sizeConfig.md);
 </script>
 
 <template>

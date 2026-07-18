@@ -6,7 +6,7 @@ import { CanvasRenderer } from "echarts/renderers";
 
 echarts.use([LineChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer]);
 
-import { onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
 const props = defineProps({
   option: {
@@ -16,10 +16,6 @@ const props = defineProps({
   autoresize: {
     type: Boolean,
     default: true,
-  },
-  theme: {
-    type: String,
-    default: "dark",
   },
   title: {
     type: String,
@@ -108,8 +104,8 @@ function applyOption() {
   chart.setOption(themedOption, true);
 }
 
-// Generate screen reader summary from chart data
-function generateSummary() {
+// P2-8l: 改 computed，避免模板每次渲染全量重算
+const chartSummary = computed(() => {
   if (!props.option) return "";
   const series = props.option.series || [];
   if (!series.length) return props.description || "图表数据加载中";
@@ -126,7 +122,7 @@ function generateSummary() {
   });
 
   return summaries.join("；") + (props.description ? `。${props.description}` : "");
-}
+});
 
 onMounted(() => {
   chart = echarts.init(host.value);
@@ -147,8 +143,8 @@ onBeforeUnmount(() => {
 
 <template>
   <figure class="chart-wrapper" role="img" :aria-label="title || '数据图表'">
-    <div ref="host" class="chart-panel" role="img" :aria-label="generateSummary()"></div>
-    <figcaption class="sr-only">{{ generateSummary() }}</figcaption>
+    <div ref="host" class="chart-panel" role="img" :aria-label="chartSummary"></div>
+    <figcaption class="sr-only">{{ chartSummary }}</figcaption>
   </figure>
 </template>
 

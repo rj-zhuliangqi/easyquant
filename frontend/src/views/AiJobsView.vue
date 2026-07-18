@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from "vue";
+import { computed, ref, onBeforeUnmount } from "vue";
 import { useQuery, useQueryClient } from "@tanstack/vue-query";
 import { useRouter } from "vue-router";
 import QueryState from "../components/QueryState.vue";
@@ -7,7 +7,7 @@ import MetricCard from "../components/ui/MetricCard.vue";
 import DataPanel from "../components/ui/DataPanel.vue";
 import EmptyState from "../components/ui/EmptyState.vue";
 import { fetchJson } from "../lib/api";
-import { formatDateTime } from "../lib/formatters";
+import { formatDateTime, todayIso } from "../lib/formatters";
 
 defineOptions({ name: "ai-jobs" });
 
@@ -17,18 +17,22 @@ const queryClient = useQueryClient();
 const selectedJobId = ref(null);
 const executingIds = ref(new Set());
 const actionError = ref("");
+// P2-8j: setTimeout 集中管理，卸载时清理避免泄漏
+const _timers = [];
+function later(fn, ms) { const id = setTimeout(fn, ms); _timers.push(id); return id; }
+onBeforeUnmount(() => { _timers.forEach(clearTimeout); });
 
 const aiJobsQuery = useQuery({
   queryKey: ["ai-jobs"],
   queryFn: () => fetchJson("/api/ai/jobs"),
-  refetchInterval: 30_000,
+  refetchInterval: () => (document.hidden ? false : 30_000),
   staleTime: 15_000,
 });
 
 const schedulerQuery = useQuery({
   queryKey: ["ai-scheduler-status"],
   queryFn: () => fetchJson("/api/ai/scheduler-status"),
-  refetchInterval: 30_000,
+  refetchInterval: () => (document.hidden ? false : 30_000),
   staleTime: 15_000,
 });
 
@@ -53,14 +57,21 @@ const queryLoading = computed(() => aiJobsQuery.isLoading.value || schedulerQuer
 const queryFetching = computed(() => aiJobsQuery.isFetching.value || schedulerQuery.isFetching.value);
 const schedulerLoading = computed(() => schedulerQuery.isLoading.value);
 const historyLoading = computed(() => historyQuery.isLoading.value);
-const queryUpdatedAt = computed(() => formatDateTime(new Date().toISOString()));
+// P2-4: 跟随 vue-query dataUpdatedAt，每次 30s 刷新重算，避免 keep-alive 下时间冻结
+const queryUpdatedAt = computed(() => {
+  void aiJobsQuery.dataUpdatedAt.value;
+  return formatDateTime(new Date().toISOString());
+});
 
 const today = computed(() => {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  void aiJobsQuery.dataUpdatedAt.value;
+  return todayIso();
 });
 
 const nowMinutes = computed(() => {
+  // 依赖 dataUpdatedAt，past-due 判断才会随刷新前进
+  void aiJobsQuery.dataUpdatedAt.value;
+  void schedulerQuery.dataUpdatedAt.value;
   const d = new Date();
   return d.getHours() * 60 + d.getMinutes();
 });
@@ -79,7 +90,7 @@ function deriveState(job) {
     if (latest.status === "success") return "success";
     if (latest.status === "failed") return "failed";
     if (["running", "pending", "dispatched"].includes(latest.status)) return "running";
-    return "success";
+    return "unknown";
   }
   const sched = parseScheduleMinutes(job.schedule_label);
   if (sched !== null && sched < nowMinutes.value) return "past-due";
@@ -87,12 +98,13 @@ function deriveState(job) {
 }
 
 const stateMeta = {
-  success: { label: "已完成", color: "var(--up, #ef4444)", emoji: "✓" },
+  success: { label: "已完成", color: "var(--success, #10b981)", emoji: "✓" },
   failed: { label: "失败", color: "#ef4444", emoji: "!" },
   running: { label: "运行中", color: "#06b6d4", emoji: "…" },
   "past-due": { label: "未执行", color: "#f59e0b", emoji: "?" },
   upcoming: { label: "待执行", color: "#94a3b8", emoji: "○" },
   disabled: { label: "已停用", color: "#475569", emoji: "—" },
+  unknown: { label: "未知", color: "var(--text-muted, #94a3b8)", emoji: "?" },
 };
 
 const timelineGroups = computed(() => {
@@ -169,11 +181,11 @@ async function executeNow(job) {
       headers: { "Content-Type": "application/json" },
       body: "{}",
     });
-    setTimeout(() => refreshAll(), 3_000);
+    later(() => refreshAll(), 3_000);
   } catch (error) {
     actionError.value = `执行失败：${error.message || error}`;
   } finally {
-    setTimeout(() => {
+    later(() => {
       const next = new Set(executingIds.value);
       next.delete(job.id);
       executingIds.value = next;

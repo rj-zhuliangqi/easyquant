@@ -30,7 +30,7 @@ const newsQuery = useQuery({
       sort: filters.value.sort,
       sources: filters.value.sources,
     }),
-  refetchInterval: 60_000,
+  refetchInterval: () => (document.hidden ? false : 60_000),
   staleTime: 30_000,
 });
 
@@ -129,11 +129,19 @@ function refreshNow() {
   newsQuery.refetch();
 }
 
+// P2-6: 翻页游标基于服务端排序键（最小 id = 最旧），与本地展示排序解耦，
+// 避免 sort=important/hot 时用本地排序末项当 since_id 导致翻漏/翻重
+const oldestId = computed(() => {
+  const base = newsQuery.data.value?.items ?? [];
+  const all = [...base, ...accumulated.value];
+  if (!all.length) return null;
+  return all.reduce((min, item) => (min == null || item.id < min ? item.id : min), null);
+});
+
 async function loadMore() {
   if (isLoadingMore.value) return;
-  const items = mergedItems.value;
-  const lastId = items.length ? items[items.length - 1].id : null;
-  if (!lastId) return;
+  const cursor = oldestId.value;
+  if (cursor == null) return;
   isLoadingMore.value = true;
   try {
     const result = await fetchRealtimeNews({
@@ -142,7 +150,7 @@ async function loadMore() {
       importance: filters.value.importance,
       sort: filters.value.sort,
       sources: filters.value.sources,
-      sinceId: lastId,
+      sinceId: cursor,
     });
     accumulated.value = [...accumulated.value, ...(result.items || [])];
   } finally {

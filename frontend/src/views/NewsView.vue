@@ -7,7 +7,7 @@ import DataPanel from "../components/ui/DataPanel.vue";
 import EmptyState from "../components/ui/EmptyState.vue";
 import RealtimeFeed from "../components/news/RealtimeFeed.vue";
 import { fetchJson } from "../lib/api";
-import { formatDateTime } from "../lib/formatters";
+import { formatDateTime, todayIso } from "../lib/formatters";
 import { sanitizeHtml } from "../lib/sanitize";
 
 defineOptions({ name: "news" });
@@ -43,15 +43,7 @@ watch(activeTab, (next) => {
   }
 });
 
-// Default: today, formatted YYYY-MM-DD (local time).
-function todayIso() {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
+// Default: today, formatted YYYY-MM-DD (local time, 统一用 formatters.todayIso)。
 const selectedDate = ref(todayIso());
 
 // Fetch all news_scan runs; we then pick the latest for the selected date
@@ -157,10 +149,6 @@ function shiftDate(delta) {
 function goToday() {
   selectedDate.value = todayIso();
 }
-
-watch(selectedDate, () => {
-  // Vue-query auto-refetches via the reactive queryKey.
-});
 </script>
 
 <template>

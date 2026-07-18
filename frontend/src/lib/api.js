@@ -1,4 +1,13 @@
+import { router } from "../router";
 import { getToken, clearToken } from "./auth";
+
+/** 401 时跳登录页，保留 SPA 状态（避免整页刷新）；login 页自身不跳防循环 */
+function redirectToLogin() {
+  clearToken();
+  if (router.currentRoute.value?.name !== "login") {
+    router.push({ name: "login" });
+  }
+}
 
 export async function fetchJson(url, options = {}) {
   const token = getToken();
@@ -6,21 +15,29 @@ export async function fetchJson(url, options = {}) {
   if (token) {
     headers["Authorization"] = `Bearer ${token}`;
   }
+  // 透传 options.signal 供 vue-query 取消请求（P2-8f）
   const response = await fetch(url, { ...options, headers });
   if (response.status === 401) {
-    clearToken();
-    window.location.href = "/login";
+    redirectToLogin();
     throw new Error("登录已过期，请重新登录");
   }
   if (!response.ok) {
     let detail = "";
-    try {
-      const payload = await response.json();
-      if (payload?.detail) detail = `: ${payload.detail}`;
-    } catch {
-      // ignore JSON parsing failure
+    const ct = response.headers.get("content-type") || "";
+    if (ct.includes("application/json")) {
+      try {
+        const payload = await response.json();
+        if (payload?.detail) detail = `: ${payload.detail}`;
+      } catch {
+        // ignore JSON parsing failure
+      }
     }
     throw new Error(`Request failed ${response.status}${detail}`);
+  }
+  // 检查 content-type 再 parse，避免非 JSON 200 抛未处理异常（P2-8g）
+  const contentType = response.headers.get("content-type") || "";
+  if (!contentType.includes("application/json")) {
+    return null;
   }
   return response.json();
 }
@@ -45,8 +62,7 @@ export async function fetchStream(url, options = {}, onChunk) {
   }
   const response = await fetch(url, { ...options, headers });
   if (response.status === 401) {
-    clearToken();
-    window.location.href = "/login";
+    redirectToLogin();
     throw new Error("登录已过期，请重新登录");
   }
   if (!response.ok) {

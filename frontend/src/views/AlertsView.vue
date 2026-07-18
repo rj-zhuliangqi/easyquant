@@ -21,6 +21,8 @@ const summary = ref({});
 const feed = ref({ items: [], updated_at: null });
 const listLoading = ref(true);
 const listFetching = ref(false);
+const listError = ref(null);
+let requestSeq = 0;
 const detailPanel = ref(null);
 
 const bootstrapQuery = useQuery({
@@ -36,7 +38,9 @@ function applyBootstrap(payload) {
 }
 
 async function refreshAlerts() {
+  const seq = ++requestSeq;
   listFetching.value = true;
+  listError.value = null;
   try {
     const [nextSummary, nextFeed] = await Promise.all([
       fetchJson("/api/alerts/summary"),
@@ -44,11 +48,17 @@ async function refreshAlerts() {
         `/api/alerts/feed?signal_type=${encodeURIComponent(signalType.value)}&strength=${encodeURIComponent(strength.value)}&time_window=${encodeURIComponent(timeWindow.value)}&limit=20`,
       ),
     ]);
+    // P2-5: 快速切筛选时旧响应可能晚到，序号不匹配则丢弃
+    if (seq !== requestSeq) return;
     summary.value = nextSummary;
     feed.value = nextFeed;
+  } catch (error) {
+    if (seq === requestSeq) listError.value = error.message || String(error);
   } finally {
-    listLoading.value = false;
-    listFetching.value = false;
+    if (seq === requestSeq) {
+      listLoading.value = false;
+      listFetching.value = false;
+    }
   }
 }
 
@@ -78,6 +88,7 @@ const activeAlert = computed(() => items.value[selectedIndex.value] || null);
 const queryUpdatedAt = computed(() => formatDateTime(feed.value.updated_at || bootstrapQuery.data.value?.updated_at));
 const queryLoading = computed(() => bootstrapQuery.isLoading.value && listLoading.value);
 const queryFetching = computed(() => bootstrapQuery.isFetching.value || listFetching.value);
+const queryError = computed(() => bootstrapQuery.isError.value || !!listError.value);
 </script>
 
 <template>
@@ -88,7 +99,7 @@ const queryFetching = computed(() => bootstrapQuery.isFetching.value || listFetc
         <h2>预警中心</h2>
         <p class="hero-copy">筛选切换时保留列表与详情，只做局部刷新。</p>
       </div>
-      <QueryState :is-loading="queryLoading" :is-fetching="queryFetching" :updated-at="queryUpdatedAt" />
+      <QueryState :is-loading="queryLoading" :is-fetching="queryFetching" :is-error="queryError" :updated-at="queryUpdatedAt" @retry="refreshAlerts" />
     </header>
 
     <section class="filter-grid">
@@ -123,7 +134,7 @@ const queryFetching = computed(() => bootstrapQuery.isFetching.value || listFetc
 
     <section class="card-grid three-up">
       <MetricCard label="预警总数" :value="summary.total ?? 0" :loading="queryLoading" />
-      <MetricCard label="高优先级" :value="summary.high_priority_count ?? 0" :loading="queryLoading" trend="warning" />
+      <MetricCard label="高优先级" :value="summary.high_priority_count ?? 0" :loading="queryLoading" trend="neutral" />
       <MetricCard label="顶部信号" :value="summary.top_signal?.subject_name || '--'" :loading="queryLoading" />
     </section>
 
@@ -141,8 +152,12 @@ const queryFetching = computed(() => bootstrapQuery.isFetching.value || listFetc
             <span>{{ item.subject_name }} · {{ item.freshness_level }}</span>
             <small>{{ item.reason }}</small>
           </button>
+          <div v-if="listError" class="list-error">
+            加载失败：{{ listError }}
+            <button class="inline-retry" type="button" @click="refreshAlerts">重试</button>
+          </div>
           <EmptyState
-            v-if="!items.length && !queryLoading"
+            v-else-if="!items.length && !queryLoading"
             title="暂无预警"
             description="当前筛选条件下没有匹配的信号"
           />

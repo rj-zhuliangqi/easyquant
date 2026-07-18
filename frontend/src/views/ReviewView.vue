@@ -6,17 +6,12 @@ import QueryState from "../components/QueryState.vue";
 import DataPanel from "../components/ui/DataPanel.vue";
 import EmptyState from "../components/ui/EmptyState.vue";
 import { fetchJson } from "../lib/api";
-import { formatDateTime } from "../lib/formatters";
+import { formatDateTime, todayIso } from "../lib/formatters";
 
 defineOptions({ name: "review" });
 
 const route = useRoute();
 const router = useRouter();
-
-function todayIso() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
 
 const selectedDate = ref(typeof route.query.trading_date === "string" ? route.query.trading_date : todayIso());
 

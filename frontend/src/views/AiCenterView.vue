@@ -6,6 +6,7 @@ import QueryState from "../components/QueryState.vue";
 import { fetchJson, fetchStream, pageQueryKey } from "../lib/api";
 import { marked } from "marked";
 import { sanitizeHtml } from "../lib/sanitize";
+import { todayIso } from "../lib/formatters";
 
 defineOptions({ name: "ai-center" });
 
@@ -136,10 +137,6 @@ const enginesQuery = useQuery({
 const engines = computed(() => enginesQuery.data.value?.engines || []);
 
 // ── Job Results state ──
-function todayIso() {
-  return new Date().toISOString().slice(0, 10);
-}
-
 const resultDate = ref(typeof route.query.trading_date === "string" ? route.query.trading_date : todayIso());
 const selectedRunId = ref(route.query.run_id ? Number(route.query.run_id) : null);
 
@@ -228,6 +225,12 @@ const chatLoading = ref(false);
 const chatStreaming = ref(false);
 const chatDraft = ref(null);
 let chatAbortController = null;
+
+function onEnterSend(e) {
+  // IME 组词中（中文拼音选词）回车不发送
+  if (e.isComposing) return;
+  sendChatMessage();
+}
 
 async function sendChatMessage() {
   const message = chatInput.value.trim();
@@ -547,7 +550,7 @@ function applySkillDraft() {
               placeholder="描述你的选股策略需求..."
               rows="3"
               :disabled="chatStreaming"
-              @keydown.enter.prevent="sendChatMessage"
+              @keydown.enter.exact.prevent="onEnterSend"
             ></textarea>
             <button
               v-if="chatStreaming"
@@ -567,6 +570,7 @@ function applySkillDraft() {
               {{ chatLoading ? '生成中...' : '发送' }}
             </button>
           </div>
+          <small class="chat-input-hint">Enter 发送，Shift+Enter 换行</small>
         </div>
       </section>
     </template>
@@ -606,6 +610,21 @@ function applySkillDraft() {
 </template>
 
 <style scoped>
+/* P2-8a: status-badge 此前无样式渲染为裸文本，补最小样式（P3-2 推全 StatusBadge 组件后统一） */
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.status-success { color: var(--success, #10b981); background: var(--success-soft, rgba(16, 185, 129, 0.12)); }
+.status-danger { color: var(--danger, #ef4444); background: var(--danger-soft, rgba(239, 68, 68, 0.12)); }
+
 /* ── Tab Navigation ── */
 .tab-nav {
   display: flex;
@@ -724,6 +743,7 @@ function applySkillDraft() {
 .chat-input { flex: 1; padding: 10px 14px; border-radius: 10px; background: var(--surface, #1e293b); border: 1px solid var(--border, rgba(255,255,255,0.06)); color: var(--text, #e2e8f0); font-size: 13px; resize: vertical; min-height: 60px; }
 .chat-input:focus { outline: none; border-color: rgba(255,255,255,0.15); }
 .chat-input:disabled { opacity: 0.6; cursor: not-allowed; }
+.chat-input-hint { display: block; margin-top: 6px; font-size: 11px; color: var(--text-muted, #94a3b8); opacity: 0.7; }
 .chat-send-btn { padding: 10px 20px; border-radius: 10px; background: var(--accent, #0ea5e9); color: white; font-size: 13px; font-weight: 600; border: none; cursor: pointer; transition: all 0.15s ease; }
 .chat-send-btn:hover:not(:disabled) { background: #0284c7; }
 .chat-send-btn:disabled { opacity: 0.5; cursor: not-allowed; }

@@ -1,3 +1,11 @@
+/** 返回本地时区的 YYYY-MM-DD（全站唯一 todayIso 实现）。
+ * 后端 trading_date 用 naive 北京时间，故这里用本地时区而非 UTC，
+ * 避免 0:00-8:00 之间预热 key 与页面 key 对不上（P2-7）。 */
+export function todayIso() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 export function formatDateTime(value) {
   if (!value) return "--";
   return String(value).replace("T", " ").slice(0, 16);

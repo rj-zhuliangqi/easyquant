@@ -1,17 +1,25 @@
 <script setup>
-defineProps({
+const props = defineProps({
   isLoading: Boolean,
   isFetching: Boolean,
+  isError: { type: Boolean, default: false },
+  error: { type: String, default: "" },
   updatedAt: {
     type: String,
     default: "",
   },
 });
+const emit = defineEmits(["retry"]);
 </script>
 
 <template>
-  <div class="query-state" :class="{ fetching: isFetching }">
-    <div class="status-indicator">
+  <div class="query-state" :class="{ fetching: isFetching, error: isError }">
+    <div v-if="isError" class="error-state">
+      <span class="status-dot error-dot"></span>
+      <span class="status-text error-text">加载失败</span>
+      <button class="retry-btn" type="button" @click="emit('retry')">重试</button>
+    </div>
+    <div v-else class="status-indicator">
       <span class="status-dot" :class="{ pulse: isFetching, idle: !isLoading && !isFetching }"></span>
       <span v-if="isLoading" class="status-text">首次加载中</span>
       <span v-else-if="isFetching" class="status-text">正在刷新</span>
@@ -35,6 +43,12 @@ defineProps({
   gap: 8px;
 }
 
+.error-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .status-dot {
   width: 8px;
   height: 8px;
@@ -45,6 +59,10 @@ defineProps({
 
 .status-dot.idle {
   background: var(--success);
+}
+
+.status-dot.error-dot {
+  background: var(--danger, #ef4444);
 }
 
 .status-dot.pulse {
@@ -73,6 +91,26 @@ defineProps({
 
 .fetching .status-text {
   color: var(--accent);
+}
+
+.error-text {
+  color: var(--danger, #ef4444);
+}
+
+.retry-btn {
+  padding: 2px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+  border-radius: var(--radius-full, 999px);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.retry-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
 }
 
 .update-time {

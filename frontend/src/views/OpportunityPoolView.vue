@@ -17,6 +17,8 @@ const selectedIndex = ref(0);
 const items = ref([]);
 const queryLoadingState = ref(true);
 const queryFetchingState = ref(false);
+const listError = ref(null);
+let requestSeq = 0;
 const detailPanel = ref(null);
 
 const bootstrapQuery = useQuery({
@@ -44,18 +46,26 @@ function applyBootstrap(payload) {
 }
 
 async function refreshOpportunities() {
+  const seq = ++requestSeq;
   queryFetchingState.value = true;
+  listError.value = null;
   try {
     if (mode.value === "ai-t-plus-1") {
       const payload = await fetchJson("/api/ai/picks?run_type=production");
+      if (seq !== requestSeq) return;  // P2-5 竞态保护
       items.value = (payload.items || []).map(normalizeAiPick);
     } else {
       const payload = await fetchJson(`/api/opportunities?mode=${encodeURIComponent(mode.value)}&limit=20`);
+      if (seq !== requestSeq) return;
       items.value = payload.items || [];
     }
+  } catch (error) {
+    if (seq === requestSeq) listError.value = error.message || String(error);
   } finally {
-    queryLoadingState.value = false;
-    queryFetchingState.value = false;
+    if (seq === requestSeq) {
+      queryLoadingState.value = false;
+      queryFetchingState.value = false;
+    }
   }
 }
 
@@ -83,6 +93,7 @@ watch(selectedIndex, async () => {
 const activeItem = computed(() => items.value[selectedIndex.value] || null);
 const queryLoading = computed(() => bootstrapQuery.isLoading.value && queryLoadingState.value);
 const queryFetching = computed(() => bootstrapQuery.isFetching.value || queryFetchingState.value);
+const queryError = computed(() => bootstrapQuery.isError.value || !!listError.value);
 </script>
 
 <template>
@@ -93,7 +104,7 @@ const queryFetching = computed(() => bootstrapQuery.isFetching.value || queryFet
         <h2>机会池</h2>
         <p class="hero-copy">支持切模式时保留旧列表，后台补新结果。</p>
       </div>
-      <QueryState :is-loading="queryLoading" :is-fetching="queryFetching" />
+      <QueryState :is-loading="queryLoading" :is-fetching="queryFetching" :is-error="queryError" @retry="refreshOpportunities" />
     </header>
 
     <section class="filter-grid one-up">
@@ -124,8 +135,12 @@ const queryFetching = computed(() => bootstrapQuery.isFetching.value || queryFet
             <span>{{ item.theme || item.mode || "--" }}</span>
             <small>{{ item.entry_reason || item.reason_summary || "--" }}</small>
           </button>
+          <div v-if="listError" class="list-error">
+            加载失败：{{ listError }}
+            <button class="inline-retry" type="button" @click="refreshOpportunities">重试</button>
+          </div>
           <EmptyState
-            v-if="!items.length && !queryLoading"
+            v-else-if="!items.length && !queryLoading"
             title="暂无候选"
             description="当前模式下没有匹配的机会"
           />

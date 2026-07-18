@@ -44,7 +44,7 @@ const isEmpty = computed(() =>
             <span class="step-number">1</span>
             <div>
               <strong>添加观察板块</strong>
-              <p>前往<a href="/sector-monitor">板块资金监控</a>，在自选编辑区将板块加入观察池</p>
+              <p>前往<RouterLink to="/sector-monitor">板块资金监控</RouterLink>，在自选编辑区将板块加入观察池</p>
             </div>
           </div>
           <div class="guide-step">
