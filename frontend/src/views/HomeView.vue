@@ -139,14 +139,16 @@ const chartOption = computed(() => ({
           <strong>{{ systemSummary.action_priority?.title || "--" }}</strong>
           <p>{{ systemSummary.action_priority?.reason || "等待数据" }}</p>
           <small>告警 {{ systemSummary.alert_summary?.count ?? 0 }} 条，机会 {{ systemSummary.opportunity_summary?.count ?? 0 }} 个</small>
-        </div>
-      </DataPanel>
-
-      <DataPanel title="AI 定时任务">
-        <div class="detail-block">
-          <strong>盘前到夜间自动运行</strong>
-          <p>定时任务、手动执行和最近运行状态已集中到 AI任务 页面。</p>
-          <RouterLink class="home-link" to="/ai-jobs">进入 AI任务 →</RouterLink>
+          <!-- P4-4: 行动优先级补来源/时间/点击跳详情 -->
+          <small v-if="systemSummary.action_priority?.source" class="priority-meta">
+            来源 {{ systemSummary.action_priority.source }} ·
+            更新于 {{ formatDateTime(systemSummary.action_priority.updated_at) }}
+          </small>
+          <RouterLink
+            v-if="systemSummary.action_priority?.link"
+            class="home-link"
+            :to="systemSummary.action_priority.link"
+          >查看详情 →</RouterLink>
         </div>
       </DataPanel>
     </section>
@@ -166,4 +168,5 @@ const chartOption = computed(() => ({
 .home-link:hover {
   text-decoration: underline;
 }
+.priority-meta { display: block; margin-top: 4px; color: var(--text-muted, #94a3b8); font-size: 11px; }
 </style>

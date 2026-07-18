@@ -92,11 +92,24 @@ const chartOption = computed(() => ({
     <section class="card-grid two-up">
       <DataPanel title="梯队分组">
         <div class="list-stack">
-          <div v-for="group in payload.ladder?.groups || []" :key="group.board_count" class="row-card">
-            <strong>{{ group.board_count }} 连板</strong>
-            <span>{{ group.stock_count }} 只</span>
-            <small>{{ group.leader?.name || "无龙头" }}</small>
-          </div>
+          <!-- P4-3: 梯队组行可展开看组内个股 -->
+          <details v-for="group in payload.ladder?.groups || []" :key="group.board_count" class="ladder-group">
+            <summary class="row-card">
+              <strong>{{ group.board_count }} 连板</strong>
+              <span>{{ group.stock_count }} 只</span>
+              <small>龙头：{{ group.leader?.name || "—" }}</small>
+              <span class="expand-hint">{{ group.stocks?.length ? '▾ 点击展开' : '' }}</span>
+            </summary>
+            <div v-if="group.stocks?.length" class="ladder-children">
+              <div v-for="stock in group.stocks" :key="stock.code" class="child-row">
+                <strong>{{ stock.name }}</strong>
+                <span>{{ stock.code }}</span>
+                <button class="action-btn" type="button" :disabled="watchingCode === stock.code" @click="watchStock(stock)">
+                  {{ watchingCode === stock.code ? "加入中…" : "＋ 观察" }}
+                </button>
+              </div>
+            </div>
+          </details>
           <EmptyState
             v-if="!(payload.ladder?.groups?.length) && !queryLoading"
             title="暂无数据"

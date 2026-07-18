@@ -18,7 +18,36 @@ const items = ref([]);
 const queryLoadingState = ref(true);
 const queryFetchingState = ref(false);
 const listError = ref(null);
+const watchInFlight = ref(false);
+const watchActionMessage = ref("");
 let requestSeq = 0;
+
+async function watchFromOpportunity(item) {
+  if (!item?.stock_code) return;
+  watchInFlight.value = true;
+  watchActionMessage.value = "加入中…";
+  try {
+    const current = await fetchJson("/api/workspace");
+    const stocks = current.watched_stocks || [];
+    if (stocks.some((s) => s.stock_code === item.stock_code)) {
+      watchActionMessage.value = `已在观察列表：${item.stock_code}`;
+      return;
+    }
+    await fetchJson("/api/workspace", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        watched_sectors: current.watched_sectors || [],
+        watched_stocks: [...stocks, { stock_code: item.stock_code, stock_name: item.stock_name || item.stock_code }],
+      }),
+    });
+    watchActionMessage.value = `✅ 已加入观察：${item.stock_code}`;
+  } catch (error) {
+    watchActionMessage.value = `加入失败：${error.message || error}`;
+  } finally {
+    watchInFlight.value = false;
+  }
+}
 const detailPanel = ref(null);
 
 const bootstrapQuery = useQuery({
@@ -152,6 +181,22 @@ const queryError = computed(() => bootstrapQuery.isError.value || !!listError.va
           <strong>{{ activeItem.stock_name || activeItem.sector_name || "--" }}</strong>
           <p>{{ activeItem.entry_reason || activeItem.reason_summary || "--" }}</p>
           <small>{{ activeItem.risk_flag || activeItem.signal_context || "等待风控标签" }}</small>
+          <!-- P4-3: 详情补可执行动作 -->
+          <div class="detail-actions">
+            <button
+              v-if="activeItem.stock_code"
+              class="action-btn"
+              type="button"
+              :disabled="watchInFlight"
+              @click="watchFromOpportunity(activeItem)"
+            >{{ watchInFlight ? "加入中…" : "＋ 加入观察" }}</button>
+            <RouterLink
+              v-else-if="activeItem.sector_name"
+              class="action-link"
+              :to="{ path: '/sector-monitor', query: { sector: activeItem.sector_name } }"
+            >查看板块</RouterLink>
+          </div>
+          <small v-if="watchActionMessage" class="watch-action-msg">{{ watchActionMessage }}</small>
         </div>
         <EmptyState
           v-else
@@ -169,4 +214,13 @@ const queryError = computed(() => bootstrapQuery.isError.value || !!listError.va
     border-top: 2px solid var(--border-hover);
   }
 }
+.detail-actions { display: flex; gap: 12px; margin-top: 8px; align-items: center; flex-wrap: wrap; }
+.action-link { font-size: 12px; color: var(--accent, #06b6d4); text-decoration: none; padding: 4px 10px; border: 1px solid rgba(6,182,212,0.3); border-radius: 6px; }
+.action-link:hover { background: rgba(6,182,212,0.1); }
+.action-btn { font-size: 12px; padding: 4px 10px; border-radius: 6px; border: none; background: var(--accent, #06b6d4); color: #fff; cursor: pointer; font-weight: 600; }
+.action-btn:hover:not(:disabled) { opacity: 0.9; }
+.action-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.watch-action-msg { display: block; margin-top: 6px; color: var(--text-muted, #94a3b8); }
+.list-error { padding: 10px; color: var(--danger, #ef4444); font-size: 13px; }
+.inline-retry { margin-left: 8px; padding: 2px 10px; border-radius: 4px; border: 1px solid var(--border, rgba(255,255,255,0.1)); background: transparent; color: var(--text, #e2e8f0); cursor: pointer; }
 </style>

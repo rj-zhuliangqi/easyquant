@@ -37,6 +37,69 @@ function applyBootstrap(payload) {
   listLoading.value = false;
 }
 
+const watchActionMessage = ref("");
+function extractCodeFromName(name) {
+  // 个股 subject_name 可能是 "600900 长江电力" 或纯名称；尽量提取 6 位数字代码
+  const m = String(name || "").match(/\b(\d{6})\b/);
+  return m ? m[1] : "";
+}
+async function watchStockFromAlert(alert) {
+  const subjectName = String(alert.subject_name || "");
+  const code = alert.stock_code || extractCodeFromName(subjectName);
+  if (!code) {
+    watchActionMessage.value = `未提取到代码：${subjectName}`;
+    return;
+  }
+  watchActionMessage.value = "加入中…";
+  try {
+    const current = await fetchJson("/api/workspace");
+    const stocks = current.watched_stocks || [];
+    if (stocks.some((s) => s.stock_code === code)) {
+      watchActionMessage.value = `已在观察列表：${code}`;
+      return;
+    }
+    await fetchJson("/api/workspace", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        watched_sectors: current.watched_sectors || [],
+        watched_stocks: [...stocks, { stock_code: code, stock_name: subjectName.replace(/\b\d{6}\b\s*/, "").trim() || code }],
+      }),
+    });
+    watchActionMessage.value = `✅ 已加入观察：${code}`;
+  } catch (error) {
+    watchActionMessage.value = `加入失败：${error.message || error}`;
+  }
+}
+async function watchSectorFromAlert(alert) {
+  const sectorType = alert.sector_type || (alert.subject_type === "sector" ? "industry" : "industry");
+  const sectorName = alert.sector_name || alert.subject_name;
+  if (!sectorName) {
+    watchActionMessage.value = "未取到板块名";
+    return;
+  }
+  watchActionMessage.value = "加入中…";
+  try {
+    const current = await fetchJson("/api/workspace");
+    const sectors = current.watched_sectors || [];
+    if (sectors.some((s) => s.sector_name === sectorName)) {
+      watchActionMessage.value = `已在观察列表：${sectorName}`;
+      return;
+    }
+    await fetchJson("/api/workspace", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        watched_sectors: [...sectors, { sector_type: sectorType, sector_name: sectorName }],
+        watched_stocks: current.watched_stocks || [],
+      }),
+    });
+    watchActionMessage.value = `✅ 已加入观察：${sectorName}`;
+  } catch (error) {
+    watchActionMessage.value = `加入失败：${error.message || error}`;
+  }
+}
+
 async function refreshAlerts() {
   const seq = ++requestSeq;
   listFetching.value = true;
@@ -169,6 +232,27 @@ const queryError = computed(() => bootstrapQuery.isError.value || !!listError.va
           <strong>{{ activeAlert.title }}</strong>
           <p>{{ activeAlert.reason }}</p>
           <small>{{ activeAlert.subject_name }} · {{ activeAlert.status }} · {{ activeAlert.source_label }}</small>
+          <!-- P4-3: 详情补两个可执行动作 -->
+          <div class="detail-actions">
+            <RouterLink
+              v-if="activeAlert.sector_name || activeAlert.subject_type === 'sector'"
+              class="action-link"
+              :to="{ path: '/sector-monitor', query: { sector: activeAlert.sector_name || activeAlert.subject_name } }"
+            >查看板块</RouterLink>
+            <button
+              v-if="activeAlert.subject_type === 'stock' && activeAlert.subject_name"
+              class="action-btn"
+              type="button"
+              @click="watchStockFromAlert(activeAlert)"
+            >＋ 加入观察</button>
+            <button
+              v-else-if="(activeAlert.sector_name || activeAlert.subject_type === 'sector') && activeAlert.subject_name"
+              class="action-btn"
+              type="button"
+              @click="watchSectorFromAlert(activeAlert)"
+            >＋ 加入观察</button>
+          </div>
+          <small v-if="watchActionMessage" class="watch-action-msg">{{ watchActionMessage }}</small>
         </div>
         <EmptyState
           v-else
@@ -186,4 +270,19 @@ const queryError = computed(() => bootstrapQuery.isError.value || !!listError.va
     border-top: 2px solid var(--border-hover);
   }
 }
+/* P4-3: 详情区动作按钮 */
+.detail-actions { display: flex; gap: 12px; margin-top: 8px; align-items: center; flex-wrap: wrap; }
+.action-link {
+  font-size: 12px; color: var(--accent, #06b6d4); text-decoration: none;
+  padding: 4px 10px; border: 1px solid rgba(6,182,212,0.3); border-radius: 6px;
+}
+.action-link:hover { background: rgba(6,182,212,0.1); }
+.action-btn {
+  font-size: 12px; padding: 4px 10px; border-radius: 6px; border: none;
+  background: var(--accent, #06b6d4); color: #fff; cursor: pointer; font-weight: 600;
+}
+.action-btn:hover { opacity: 0.9; }
+.watch-action-msg { display: block; margin-top: 6px; color: var(--text-muted, #94a3b8); }
+.list-error { padding: 10px; color: var(--danger, #ef4444); font-size: 13px; }
+.inline-retry { margin-left: 8px; padding: 2px 10px; border-radius: 4px; border: 1px solid var(--border, rgba(255,255,255,0.1)); background: transparent; color: var(--text, #e2e8f0); cursor: pointer; }
 </style>
