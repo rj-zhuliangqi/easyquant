@@ -1,6 +1,6 @@
 <script setup>
 import { computed, ref, watch } from "vue";
-import { useQuery } from "@tanstack/vue-query";
+import { useQuery, useQueryClient } from "@tanstack/vue-query";
 import { useRoute, useRouter } from "vue-router";
 import QueryState from "../components/QueryState.vue";
 import { fetchJson, fetchStream, pageQueryKey } from "../lib/api";
@@ -12,6 +12,7 @@ defineOptions({ name: "ai-center" });
 
 const route = useRoute();
 const router = useRouter();
+const queryClient = useQueryClient();
 
 // AI 中台只保留平台驾驶舱、通用结果、Skill 工坊与引擎配置。
 // 业务域页面（AI任务 / 机会池 / 复盘）由各自独立路由承接。
@@ -225,6 +226,8 @@ const chatInput = ref("");
 const chatLoading = ref(false);
 const chatStreaming = ref(false);
 const chatDraft = ref(null);
+const applyTargetJobId = ref("");
+const applyInFlight = ref(false);
 let chatAbortController = null;
 
 function onEnterSend(e) {
@@ -316,10 +319,43 @@ function clearChat() {
 }
 
 function applySkillDraft() {
-  chatMessages.value.push({
-    role: "assistant",
-    content: "当前版本仅生成策略配置草案；应用到任务请先在 AI任务 / 配置流程中人工确认。",
-  });
+  // P4-2: 真正接通引擎配置 PUT 端点（不再是空操作）。
+  // 流程：选 job → 从 draft 取 engine_type + engine_config → PUT /api/ai/jobs/{id}/engine
+  if (!chatDraft.value) return;
+  const jobId = Number(applyTargetJobId.value);
+  if (!Number.isFinite(jobId) || jobId <= 0) {
+    actionError.value = "请选择要应用到的 AI 任务";
+    return;
+  }
+  // 草案为任意 JSON；从常见字段提取引擎配置，缺省值兜底
+  const draft = chatDraft.value || {};
+  const engineType = String(draft.engine_type || draft.engine || "claude-code");
+  const engineConfig = draft.engine_config && typeof draft.engine_config === "object"
+    ? draft.engine_config
+    : (draft.config && typeof draft.config === "object" ? draft.config : draft);
+  applyInFlight.value = true;
+  actionError.value = "";
+  fetchJson(`/api/ai/jobs/${jobId}/engine`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ engine_type: engineType, engine_config: engineConfig }),
+  })
+    .then(() => {
+      chatMessages.value.push({
+        role: "assistant",
+        content: `✅ 已将配置应用到任务 #${jobId}（engine=${engineType}）。下次执行即生效。`,
+      });
+      chatDraft.value = null;
+      applyTargetJobId.value = "";
+      // 刷新 job 列表
+      queryClient.invalidateQueries({ queryKey: ["ai-jobs"] });
+    })
+    .catch((error) => {
+      actionError.value = `应用失败：${error.message || error}`;
+    })
+    .finally(() => {
+      applyInFlight.value = false;
+    });
 }
 
 </script>
@@ -539,8 +575,19 @@ function applySkillDraft() {
             <h4>📋 生成的策略配置</h4>
             <pre class="draft-json">{{ JSON.stringify(chatDraft, null, 2) }}</pre>
             <div class="draft-actions">
-              <button class="btn-apply" @click="applySkillDraft">✅ 应用此配置</button>
-              <button class="btn-cancel" @click="chatDraft = null">❌ 放弃</button>
+              <label class="apply-target">
+                <span>应用到任务</span>
+                <select v-model="applyTargetJobId" :disabled="applyInFlight">
+                  <option value="">— 选择任务 —</option>
+                  <option v-for="job in aiJobsQuery.data.value?.items || []" :key="job.id" :value="job.id">
+                    {{ job.name }}
+                  </option>
+                </select>
+              </label>
+              <button class="btn-apply" :disabled="applyInFlight || !applyTargetJobId" @click="applySkillDraft">
+                {{ applyInFlight ? "应用中…" : "✅ 应用此配置" }}
+              </button>
+              <button class="btn-cancel" :disabled="applyInFlight" @click="chatDraft = null">❌ 放弃</button>
             </div>
           </div>
 
