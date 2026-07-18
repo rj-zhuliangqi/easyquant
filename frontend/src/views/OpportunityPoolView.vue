@@ -7,6 +7,7 @@ import DataPanel from "../components/ui/DataPanel.vue";
 import EmptyState from "../components/ui/EmptyState.vue";
 import { fetchJson, pageQueryKey } from "../lib/api";
 import { useResponsive } from "../composables/useResponsive";
+import { useFilteredList } from "../composables/useFilteredList";
 
 defineOptions({ name: "opportunity-pool" });
 
@@ -15,12 +16,25 @@ const { isMobileLayout } = useResponsive();
 const mode = ref("strong-sector");
 const selectedIndex = ref(0);
 const items = ref([]);
-const queryLoadingState = ref(true);
-const queryFetchingState = ref(false);
-const listError = ref(null);
 const watchInFlight = ref(false);
 const watchActionMessage = ref("");
-let requestSeq = 0;
+
+// C5: 筛选驱动的列表（requestSeq 竞态 + loading/fetching/error + watch mode）
+const { loading: queryLoadingState, fetching: queryFetchingState, error: listError, refresh: refreshOpportunities } = useFilteredList({
+  filters: mode,
+  beforeRefresh: () => { selectedIndex.value = 0; },
+  fetcher: async (isCurrent) => {
+    if (mode.value === "ai-t-plus-1") {
+      const payload = await fetchJson("/api/ai/picks?run_type=production");
+      if (!isCurrent()) return;  // P2-5 竞态保护
+      items.value = (payload.items || []).map(normalizeAiPick);
+    } else {
+      const payload = await fetchJson(`/api/opportunities?mode=${encodeURIComponent(mode.value)}&limit=20`);
+      if (!isCurrent()) return;
+      items.value = payload.items || [];
+    }
+  },
+});
 
 async function watchFromOpportunity(item) {
   if (!item?.stock_code) return;
@@ -74,30 +88,6 @@ function applyBootstrap(payload) {
   queryLoadingState.value = false;
 }
 
-async function refreshOpportunities() {
-  const seq = ++requestSeq;
-  queryFetchingState.value = true;
-  listError.value = null;
-  try {
-    if (mode.value === "ai-t-plus-1") {
-      const payload = await fetchJson("/api/ai/picks?run_type=production");
-      if (seq !== requestSeq) return;  // P2-5 竞态保护
-      items.value = (payload.items || []).map(normalizeAiPick);
-    } else {
-      const payload = await fetchJson(`/api/opportunities?mode=${encodeURIComponent(mode.value)}&limit=20`);
-      if (seq !== requestSeq) return;
-      items.value = payload.items || [];
-    }
-  } catch (error) {
-    if (seq === requestSeq) listError.value = error.message || String(error);
-  } finally {
-    if (seq === requestSeq) {
-      queryLoadingState.value = false;
-      queryFetchingState.value = false;
-    }
-  }
-}
-
 watch(
   () => bootstrapQuery.data.value?.payload,
   (payload) => {
@@ -106,10 +96,7 @@ watch(
   { immediate: true },
 );
 
-watch(mode, async () => {
-  selectedIndex.value = 0;
-  await refreshOpportunities();
-});
+// C5: mode 的 watch + refresh 已由 useFilteredList 接管
 
 // On mobile, scroll to detail panel when selection changes
 watch(selectedIndex, async () => {

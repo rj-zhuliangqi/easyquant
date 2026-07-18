@@ -1,0 +1,1 @@
+import{J as u}from"./vue-vendor-CPKiUvMY.js";function s(){const e=[];function r(t,n){const o=setTimeout(t,n);return e.push(o),o}function i(t){clearTimeout(t);const n=e.indexOf(t);n>=0&&e.splice(n,1)}return u(()=>{e.forEach(t=>clearTimeout(t)),e.length=0}),{later:r,clear:i,_timers:e}}export{s as u};

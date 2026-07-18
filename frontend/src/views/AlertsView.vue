@@ -8,6 +8,7 @@ import EmptyState from "../components/ui/EmptyState.vue";
 import { fetchJson, pageQueryKey } from "../lib/api";
 import { formatDateTime } from "../lib/formatters";
 import { useResponsive } from "../composables/useResponsive";
+import { useFilteredList } from "../composables/useFilteredList";
 
 defineOptions({ name: "alerts" });
 
@@ -19,11 +20,25 @@ const timeWindow = ref("today");
 const selectedIndex = ref(0);
 const summary = ref({});
 const feed = ref({ items: [], updated_at: null });
-const listLoading = ref(true);
-const listFetching = ref(false);
-const listError = ref(null);
-let requestSeq = 0;
 const detailPanel = ref(null);
+
+// C5: 筛选驱动的列表（requestSeq 竞态 + loading/fetching/error + watch 筛选）
+const { loading: listLoading, fetching: listFetching, error: listError, refresh: refreshAlerts } = useFilteredList({
+  filters: [signalType, strength, timeWindow],
+  beforeRefresh: () => { selectedIndex.value = 0; },
+  fetcher: async (isCurrent) => {
+    const [nextSummary, nextFeed] = await Promise.all([
+      fetchJson("/api/alerts/summary"),
+      fetchJson(
+        `/api/alerts/feed?signal_type=${encodeURIComponent(signalType.value)}&strength=${encodeURIComponent(strength.value)}&time_window=${encodeURIComponent(timeWindow.value)}&limit=20`,
+      ),
+    ]);
+    // P2-5: 快速切筛选时旧响应可能晚到，序号不匹配则丢弃
+    if (!isCurrent()) return;
+    summary.value = nextSummary;
+    feed.value = nextFeed;
+  },
+});
 
 const bootstrapQuery = useQuery({
   queryKey: pageQueryKey("alerts"),
@@ -100,31 +115,6 @@ async function watchSectorFromAlert(alert) {
   }
 }
 
-async function refreshAlerts() {
-  const seq = ++requestSeq;
-  listFetching.value = true;
-  listError.value = null;
-  try {
-    const [nextSummary, nextFeed] = await Promise.all([
-      fetchJson("/api/alerts/summary"),
-      fetchJson(
-        `/api/alerts/feed?signal_type=${encodeURIComponent(signalType.value)}&strength=${encodeURIComponent(strength.value)}&time_window=${encodeURIComponent(timeWindow.value)}&limit=20`,
-      ),
-    ]);
-    // P2-5: 快速切筛选时旧响应可能晚到，序号不匹配则丢弃
-    if (seq !== requestSeq) return;
-    summary.value = nextSummary;
-    feed.value = nextFeed;
-  } catch (error) {
-    if (seq === requestSeq) listError.value = error.message || String(error);
-  } finally {
-    if (seq === requestSeq) {
-      listLoading.value = false;
-      listFetching.value = false;
-    }
-  }
-}
-
 watch(
   () => bootstrapQuery.data.value?.payload,
   (payload) => {
@@ -133,10 +123,7 @@ watch(
   { immediate: true },
 );
 
-watch([signalType, strength, timeWindow], async () => {
-  selectedIndex.value = 0;
-  await refreshAlerts();
-});
+// C5: signalType/strength/timeWindow 的 watch + refresh 已由 useFilteredList 接管
 
 // On mobile, scroll to detail panel when selection changes
 watch(selectedIndex, async () => {

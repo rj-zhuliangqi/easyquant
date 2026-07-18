@@ -5,6 +5,7 @@ import { useRoute, useRouter } from "vue-router";
 import QueryState from "../components/QueryState.vue";
 import DataPanel from "../components/ui/DataPanel.vue";
 import EmptyState from "../components/ui/EmptyState.vue";
+import StatusBadge from "../components/ui/StatusBadge.vue";
 import { fetchJson } from "../lib/api";
 import { formatDateTime, todayIso } from "../lib/formatters";
 
@@ -274,9 +275,9 @@ function openRun(run) {
           <span class="run-name">{{ run.job_name || run.skill_name || '复盘任务' }}</span>
           <span class="run-type">{{ run.job_type }}</span>
           <span class="run-date">{{ formatDateTime(run.finished_at || run.started_at) }}</span>
-          <span class="status-badge" :class="run.status === 'success' ? 'status-success' : run.status === 'failed' ? 'status-danger' : 'status-neutral'">
+          <StatusBadge :status="run.status === 'success' ? 'success' : run.status === 'failed' ? 'danger' : 'neutral'">
             {{ run.status }}
-          </span>
+          </StatusBadge>
         </button>
       </div>
       <EmptyState v-else-if="!runsLoading" title="暂无运行记录" description="当天没有复盘类 AI 任务运行记录。" />
@@ -620,10 +621,6 @@ function openRun(run) {
   color: var(--text-muted);
 }
 
-.status-badge { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 20px; }
-.status-success { color: var(--success, #10b981); background: var(--success-soft, rgba(16,185,129,0.1)); }
-.status-danger { color: #f87171; background: rgba(248,113,113,0.1); }
-.status-neutral { color: #94a3b8; background: rgba(148,163,184,0.08); }
 .mt-lg { margin-top: var(--space-4); }
 
 @media (max-width: 640px) {

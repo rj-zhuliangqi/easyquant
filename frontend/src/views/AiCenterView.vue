@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 import { useQuery, useQueryClient } from "@tanstack/vue-query";
 import { useRoute, useRouter } from "vue-router";
 import QueryState from "../components/QueryState.vue";
+import StatusBadge from "../components/ui/StatusBadge.vue";
 import { fetchJson, fetchStream, pageQueryKey } from "../lib/api";
 import { marked } from "marked";
 import { sanitizeHtml } from "../lib/sanitize";
@@ -123,9 +124,10 @@ function pickLevelLabel(level) {
 }
 
 function statusClass(status) {
-  if (status === "success") return "status-success";
-  if (status === "failed") return "status-danger";
-  return "status-neutral";
+  // 返回 StatusBadge 的 status prop 值
+  if (status === "success") return "success";
+  if (status === "failed") return "danger";
+  return "neutral";
 }
 
 // ── Engine config state ──
@@ -473,7 +475,7 @@ function applySkillDraft() {
             <strong>{{ resultDetail.job_name || resultDetail.skill_name || '任务结果' }}</strong>
             <span class="run-type">{{ resultDetail.job_type || resultDetail.result_type }}</span>
             <span class="run-date">{{ resultDetail.trading_date }}</span>
-            <span class="status-badge" :class="statusClass(resultDetail.status)">{{ resultDetail.status }}</span>
+            <StatusBadge :status="statusClass(resultDetail.status)">{{ resultDetail.status }}</StatusBadge>
           </div>
 
           <div v-if="structuredPicks.length" class="result-pick-grid">
@@ -635,9 +637,9 @@ function applySkillDraft() {
           <div v-for="eng in engines" :key="eng.type" class="engine-card" :class="{ disabled: !eng.available }">
             <div class="engine-main">
               <span class="engine-name">{{ eng.name }}</span>
-              <span class="status-badge" :class="eng.available ? 'status-success' : 'status-danger'">
+              <StatusBadge :status="eng.available ? 'success' : 'danger'">
                 {{ eng.available ? '可用' : '不可用' }}
-              </span>
+              </StatusBadge>
             </div>
             <p class="engine-desc">{{ eng.description }}</p>
             <div v-if="eng.config_fields?.length" class="engine-fields">
@@ -660,21 +662,6 @@ function applySkillDraft() {
 </template>
 
 <style scoped>
-/* P2-8a: status-badge 此前无样式渲染为裸文本，补最小样式（P3-2 推全 StatusBadge 组件后统一） */
-.status-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 1.4;
-  white-space: nowrap;
-}
-.status-success { color: var(--success, #10b981); background: var(--success-soft, rgba(16, 185, 129, 0.12)); }
-.status-danger { color: var(--danger, #ef4444); background: var(--danger-soft, rgba(239, 68, 68, 0.12)); }
-
 /* ── Tab Navigation ── */
 .tab-nav {
   display: flex;

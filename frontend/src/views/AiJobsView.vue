@@ -1,13 +1,15 @@
 <script setup>
-import { computed, ref, onBeforeUnmount } from "vue";
+import { computed, ref } from "vue";
 import { useQuery, useQueryClient } from "@tanstack/vue-query";
 import { useRouter } from "vue-router";
 import QueryState from "../components/QueryState.vue";
 import MetricCard from "../components/ui/MetricCard.vue";
 import DataPanel from "../components/ui/DataPanel.vue";
 import EmptyState from "../components/ui/EmptyState.vue";
+import StatusBadge from "../components/ui/StatusBadge.vue";
 import { fetchJson } from "../lib/api";
 import { formatDateTime, todayIso } from "../lib/formatters";
+import { useTimerCleanup } from "../composables/useTimerCleanup";
 
 defineOptions({ name: "ai-jobs" });
 
@@ -17,10 +19,8 @@ const queryClient = useQueryClient();
 const selectedJobId = ref(null);
 const executingIds = ref(new Set());
 const actionError = ref("");
-// P2-8j: setTimeout 集中管理，卸载时清理避免泄漏
-const _timers = [];
-function later(fn, ms) { const id = setTimeout(fn, ms); _timers.push(id); return id; }
-onBeforeUnmount(() => { _timers.forEach(clearTimeout); });
+// P2-8j/C3: setTimeout 集中管理，卸载时清理避免泄漏
+const { later } = useTimerCleanup();
 
 const aiJobsQuery = useQuery({
   queryKey: ["ai-jobs"],
@@ -152,10 +152,11 @@ const summaryCards = computed(() => {
 const selectedHistory = computed(() => historyQuery.data.value?.runs || []);
 
 function statusClass(status) {
-  if (status === "success") return "status-success";
-  if (status === "failed") return "status-danger";
-  if (["running", "pending", "dispatched"].includes(status)) return "status-running";
-  return "status-neutral";
+  // 返回 StatusBadge 的 status prop 值
+  if (status === "success") return "success";
+  if (status === "failed") return "danger";
+  if (["running", "pending", "dispatched"].includes(status)) return "warning";
+  return "neutral";
 }
 
 function selectJob(job) {
@@ -341,7 +342,7 @@ function goDetail(job, run = null) {
             <div v-if="historyLoading" class="history-hint">加载运行历史...</div>
             <button v-for="run in selectedHistory.slice(0, 8)" :key="run.id" class="run-row" @click="goDetail(selectedJob, run)">
               <span class="run-name">{{ run.trading_date }}</span>
-              <span class="status-badge" :class="statusClass(run.status)">{{ run.status }}</span>
+              <StatusBadge :status="statusClass(run.status)">{{ run.status }}</StatusBadge>
               <span class="run-duration">{{ run.duration_ms ? `${(run.duration_ms / 1000).toFixed(1)}s` : '--' }}</span>
               <span>{{ formatDateTime(run.finished_at || run.started_at) }}</span>
             </button>
@@ -563,11 +564,6 @@ function goDetail(job, run = null) {
 
 .run-row:hover { border-color: var(--accent); color: var(--text); }
 .run-name { font-weight: 700; color: var(--text); }
-.status-badge { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 20px; }
-.status-success { color: var(--success, #10b981); background: var(--success-soft, rgba(16,185,129,0.1)); }
-.status-danger { color: #f87171; background: rgba(248,113,113,0.1); }
-.status-running { color: #06b6d4; background: rgba(6,182,212,0.1); }
-.status-neutral { color: #94a3b8; background: rgba(148,163,184,0.08); }
 .history-hint { color: var(--text-muted); font-size: 13px; padding: 8px 0; }
 
 @media (max-width: 1100px) {

@@ -1,10 +1,11 @@
 <script setup>
-import { ref, onMounted, computed, onBeforeUnmount } from "vue";
+import { ref, onMounted, computed } from "vue";
 import { fetchJson } from "../lib/api";
 import { isAdmin } from "../lib/auth";
 import DataPanel from "../components/ui/DataPanel.vue";
 import EmptyState from "../components/ui/EmptyState.vue";
 import StatusBadge from "../components/ui/StatusBadge.vue";
+import { useTimerCleanup } from "../composables/useTimerCleanup";
 
 const isAdminUser = computed(() => isAdmin());
 
@@ -30,8 +31,8 @@ const oldPassword = ref("");
 const changeNewPassword = ref("");
 const changeError = ref("");
 const changeSuccess = ref("");
-const _timers = [];
-onBeforeUnmount(() => { _timers.forEach(clearTimeout); });
+// C3: setTimeout 集中管理
+const { later } = useTimerCleanup();
 
 // Active tab
 const activeTab = ref(isAdminUser.value ? "users" : "password");
@@ -132,7 +133,7 @@ async function changeOwnPassword() {
     changeSuccess.value = "密码修改成功";
     oldPassword.value = "";
     changeNewPassword.value = "";
-    _timers.push(setTimeout(() => { changeSuccess.value = ""; }, 3000));
+    later(() => { changeSuccess.value = ""; }, 3000);
   } catch (e) {
     changeError.value = e.message.replace("Request failed 400: ", "");
   }
