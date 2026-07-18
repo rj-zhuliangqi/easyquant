@@ -7,6 +7,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
 from app.models import WatchedStock, WorkspaceNote
+from app.services._common import merge_upsert_by_key
 
 
 class WorkspaceService:
@@ -66,22 +67,15 @@ class WorkspaceService:
                 }
             )
 
-        # P5-1f: 改 merge upsert（按 stock_code 更新/新增/删除），不再全表 delete+insert，
-        # 保留行 id、减少并发丢数据窗口（P4-1 增删交互的前置）
-        incoming_codes = {item["stock_code"] for item in normalized}
-        existing = {row.stock_code: row for row in session.scalars(select(WatchedStock))}
-        for item in normalized:
-            row = existing.get(item["stock_code"])
-            if row is not None:
-                row.stock_name = item["stock_name"]
-                row.sector_name = item["sector_name"]
-                row.watch_reason = item["watch_reason"]
-                row.enabled = item["enabled"]
-            else:
-                session.add(WatchedStock(**item))
-        for code, row in existing.items():
-            if code not in incoming_codes:
-                session.delete(row)
+        # P5-1f/C2: merge upsert 抽到 _common.merge_upsert_by_key（按 stock_code
+        # 更新/新增/删除），保留行 id、减少并发丢数据窗口
+        merge_upsert_by_key(
+            session,
+            WatchedStock,
+            normalized,
+            key_fields=("stock_code",),
+            update_fields=("stock_name", "sector_name", "watch_reason", "enabled"),
+        )
         session.commit()
         return normalized
 

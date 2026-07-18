@@ -106,3 +106,74 @@ def test_sync_watched_sectors_merge_updates_and_deletes(db_session):
     assert rows == {("industry", "Alpha"), ("industry", "Gamma")}
     alpha = session.query(WatchedSector).filter_by(sector_type="industry", sector_name="Alpha").one()
     assert alpha.id == initial[("industry", "Alpha")], "Alpha 行 id 应保留"
+
+# ── C1: _migrate_all 通用 schema 迁移 ───────────────────────────────────────
+def test_migrate_all_adds_missing_column_for_any_table(tmp_path):
+    """C1: 临时 Base 含一张新表 + 一列，DB 里只有空表壳，_migrate_all 应补列。"""
+    from datetime import datetime
+    from sqlalchemy import Column, DateTime, Integer, MetaData, String, Table
+
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'c1.db'}")
+    # 建一个只有 id 列的空表壳（模拟老库缺新列）
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE _test_migrate (id INTEGER PRIMARY KEY)"))
+
+    md = MetaData()
+    Table(
+        "_test_migrate", md,
+        Column("id", Integer, primary_key=True),
+        Column("note", String(100), nullable=True),  # 可空新列
+        Column("created_at", DateTime, nullable=True),
+    )
+    from app.main import _migrate_all
+    added = _migrate_all(engine, md)
+    assert added == 2, f"应补 2 列，实际 {added}"
+    cols = {row[1] for row in engine.connect().execute(text("PRAGMA table_info(_test_migrate)")).fetchall()}
+    assert "note" in cols and "created_at" in cols
+
+
+def test_migrate_all_skips_not_null_no_default(tmp_path):
+    """C1: NOT NULL 且无 server_default 的列应被跳过（ADD 会失败）。"""
+    from sqlalchemy import Column, Integer, MetaData, String, Table
+
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'c1b.db'}")
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE _test_nn (id INTEGER PRIMARY KEY)"))
+        conn.execute(text("INSERT INTO _test_nn (id) VALUES (1)"))  # 非空表
+
+    md = MetaData()
+    Table(
+        "_test_nn", md,
+        Column("id", Integer, primary_key=True),
+        Column("required", String(50), nullable=False),  # NOT NULL 无 default
+    )
+    from app.main import _migrate_all
+    added = _migrate_all(engine, md)
+    assert added == 0, f"NOT NULL 无 default 应跳过，实际加了 {added}"
+    cols = {row[1] for row in engine.connect().execute(text("PRAGMA table_info(_test_nn)")).fetchall()}
+    assert "required" not in cols
+
+
+def test_migrate_all_idempotent(tmp_path):
+    """C1: 列已存在时不应重复 ADD。"""
+    from sqlalchemy import Column, Integer, MetaData, String, Table
+
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'c1c.db'}")
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE _test_idem (id INTEGER PRIMARY KEY, note VARCHAR(50))"))
+
+    md = MetaData()
+    Table("_test_idem", md, Column("id", Integer, primary_key=True), Column("note", String(50), nullable=True))
+    from app.main import _migrate_all
+    assert _migrate_all(engine, md) == 0  # note 已存在
+    assert _migrate_all(engine, md) == 0  # 再跑仍 0
+
+
+def test_migrate_all_covers_all_production_tables(tmp_path):
+    """C1 验收：对生产 Base.metadata 跑 _migrate_all 不应抛异常（覆盖 14+ 表）。"""
+    from app.main import _migrate_all
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'c1d.db'}")
+    Base.metadata.create_all(engine)  # 全表建成最新 schema
+    # 再跑 _migrate_all：列都存在，应返回 0 且不报错
+    added = _migrate_all(engine, Base.metadata)
+    assert added == 0

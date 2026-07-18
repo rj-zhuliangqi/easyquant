@@ -230,6 +230,60 @@ def _add_missing_columns(engine: Engine, table: str, columns: dict[str, str]) ->
                 len(missing), table, ", ".join(col for col, _ in missing))
 
 
+def _migrate_all(engine: Engine, metadata: Any) -> int:
+    """C1: 通用 schema 漂移助手 - 扫描 ``metadata`` 所有 ORM 表，缺列则 ADD COLUMN。
+
+    覆盖评审 F5：原 ``_add_missing_columns`` 只硬编码服务 4 张表，剩余 14+ 张表
+    的列漂移无兜底。本函数补齐覆盖面。
+
+    安全约束（避免 ADD COLUMN 失败或破坏数据）：
+    - 跳过有外键的列（SQLite ADD COLUMN 不支持 FK 约束）。
+    - 跳过 NOT NULL 且无 ``server_default`` 的列（对非空表 ADD 会失败）。
+    - ``server_default`` 渲染进 DDL；模型用 Python 侧 ``default=`` 的列按可空
+      ADD（旧行得 NULL），这类列的 server_default backfill 仍由
+      ``ensure_ai_center_schema`` 硬编码块负责（先于本函数执行）。
+    - 列已存在则跳过（幂等）。返回新增列数。
+    """
+    from sqlalchemy.schema import CreateColumn
+
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    added = 0
+    for table_name, table_obj in metadata.tables.items():
+        if table_name not in existing_tables:
+            continue  # 新表交给 create_all
+        try:
+            with engine.connect() as conn:
+                existing_cols = {
+                    row[1]
+                    for row in conn.execute(text(f"PRAGMA table_info('{table_name}')")).fetchall()
+                }
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("schema migration: cannot inspect %s: %s", table_name, exc)
+            continue
+        for column in table_obj.columns:
+            if column.name in existing_cols:
+                continue
+            if column.foreign_keys:
+                logger.info("schema migration: skip FK column %s.%s", table_name, column.name)
+                continue
+            if not column.nullable and column.server_default is None:
+                logger.warning(
+                    "schema migration: skip NOT NULL no-default column %s.%s (ADD would fail on non-empty table)",
+                    table_name, column.name,
+                )
+                continue
+            try:
+                col_ddl = str(CreateColumn(column).compile(engine))
+                with engine.begin() as conn:
+                    conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {col_ddl}"))
+                added += 1
+                logger.info("schema migration: auto-added %s.%s", table_name, column.name)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("schema migration: failed to add %s.%s: %s", table_name, column.name, exc)
+    return added
+
+
 def ensure_ai_center_schema(engine: Engine) -> None:
     """P5-3: 仅做缺列补齐；新表由 ``Base.metadata.create_all`` 创建。
 
@@ -277,6 +331,13 @@ def ensure_ai_center_schema(engine: Engine) -> None:
     if row == 0:
         with engine.begin() as conn:
             conn.execute(text("UPDATE users SET is_admin = 1 WHERE id = (SELECT MIN(id) FROM users)"))
+
+    # C1: 通用兜底 -- 扫所有 ORM 表补齐其余缺列（硬编码块已先处理 4 张表的
+    # server_default backfill，此处只补其他表的可空列）
+    try:
+        _migrate_all(engine, Base.metadata)
+    except Exception:  # noqa: BLE001 - 迁移失败不应阻断启动
+        logger.exception("schema migration: _migrate_all failed (non-fatal)")
 
 
 def _check_cli_available(name: str) -> bool:

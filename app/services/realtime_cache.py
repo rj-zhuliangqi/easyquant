@@ -8,6 +8,7 @@ from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import IndividualStockSnapshot, SectorStockSnapshot, WatchedSector
+from app.services._common import merge_upsert_by_key
 
 
 class RealtimeCacheService:
@@ -380,18 +381,14 @@ class RealtimeCacheService:
             seen.add(key)
             normalized_items.append({"sector_type": sector_type, "sector_name": canonical_name, "enabled": True})
 
-        # P5-1f: merge upsert，不再全表 delete+insert
-        incoming_keys = {(item["sector_type"], item["sector_name"]) for item in normalized_items}
-        existing = {(row.sector_type, row.sector_name): row for row in session.scalars(select(WatchedSector))}
-        for item in normalized_items:
-            row = existing.get((item["sector_type"], item["sector_name"]))
-            if row is not None:
-                row.enabled = item["enabled"]
-            else:
-                session.add(WatchedSector(**item))
-        for key, row in existing.items():
-            if key not in incoming_keys:
-                session.delete(row)
+        # P5-1f/C2: merge upsert 抽到 _common.merge_upsert_by_key
+        merge_upsert_by_key(
+            session,
+            WatchedSector,
+            normalized_items,
+            key_fields=("sector_type", "sector_name"),
+            update_fields=("enabled",),
+        )
         session.commit()
         return normalized_items
 
