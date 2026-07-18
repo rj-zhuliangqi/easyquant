@@ -8,6 +8,21 @@
 > - 改动文件提示
 >
 > **总览**：已交付 7 分支 / 133 测试 / 线上验证全部 200；剩下 14 条待办按 4 个 sprint 排期。
+>
+> ---
+>
+> **2026-07-19 执行进度**（Sprint A–D 本轮会话）：
+> - ✅ Sprint A（A1–A4）、Sprint B（B1–B6）、Sprint C（C1–C6）全部完成并部署上线。
+> - ✅ Sprint D2（models_auth 并入 models）完成。
+> - ✅ Sprint D1 **部分**：`app/skill_chat.py` 抽取完成（main.py 2387→2151 行）。
+> - ⏸️ Sprint D1 **剩余**：路由拆 `routers/` + `scheduler.py`。路由当前用闭包捕获
+>    `create_app` 内 service 实例，外移需改 `Depends`/`app.state` 注入架构，高风险，
+>    建议专项会话单独做（不在本轮）。
+> - ⚠️ **2026-07-19 事故**：本轮 Sprint A 部署后跑全量 pytest，因 `app.main` 模块顶层
+>    `app = create_app()` 在测试 import 时对生产库跑 recovery，导致生产 DB 一度被砸成 4K 空库
+>    （已从 00:50 备份恢复，加 `_is_test_context()` 守卫修复根因，详见
+>    `memory/incident-2026-07-19-prod-db-truncated.md`）。
+> - 测试：133 → 166 passed；6 个新分支待 SSH 密钥加载后推送远程。
 
 ---
 
