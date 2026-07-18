@@ -6,6 +6,8 @@ from urllib.parse import quote_plus
 
 from sqlalchemy.orm import Session
 
+from app.time_utils import now_cn
+
 
 class MarketSignalService:
     def __init__(
@@ -210,18 +212,27 @@ class MarketSignalService:
         )
         leaders = sector_overview.get("leaders", [])
         strongest = leaders[0]["sector_name"] if leaders else None
+        updated_at = now_cn().replace(microsecond=0).isoformat()
         if temperature.get("temperature_band") in {"偏热", "过热"}:
             return {
                 "primary_workspace": "limit-up-ladder",
                 "title": "先看情绪与高标承接",
                 "reason": temperature.get("summary_text"),
                 "href": "/limit-up-ladder",
+                # P4-4 补全：前端 HomeView.vue 模板绑了 source/updated_at/link
+                "source": "市场温度",
+                "updated_at": updated_at,
+                "link": "/limit-up-ladder",
             }
         return {
             "primary_workspace": "sector-monitor",
             "title": f"先看 {strongest or '板块资金'} 的承接",
             "reason": "市场未进入高标主导阶段，优先确认主线板块和成分股共振。",
             "href": "/sector-monitor",
+            # P4-4 补全
+            "source": "板块强弱",
+            "updated_at": updated_at,
+            "link": "/sector-monitor",
         }
 
     def build_home_alert_summary(self, session: Session, trading_date: date | None = None) -> dict[str, Any]:

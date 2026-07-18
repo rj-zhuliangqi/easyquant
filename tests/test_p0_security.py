@@ -205,3 +205,56 @@ def test_skill_chat_emits_heartbeat_during_silence(monkeypatch) -> None:
         release.set()  # 解除 readline 阻塞，让生成器收尾
 
     assert any(b": ping" in e for e in events), "静默期应发心跳帧"
+
+
+# ── P0-6 补强 ────────────────────────────────────────────────────────────
+def test_sanitize_config_forbids_style_attribute_and_style_tag() -> None:
+    """sanitize.js 必须把 `style` 同时从属性与标签层禁掉，并禁用所有事件属性。
+
+    读取源码字符串字面量断言：
+    - FORBID_TAGS 含 style / form / input / iframe
+    - FORBID_ATTR 含 style / onerror / onclick / onload
+    - ALLOWED_TAGS 显式白名单（无通配）
+    """
+    import pathlib
+
+    src_path = pathlib.Path(__file__).resolve().parents[1] / "frontend" / "src" / "lib" / "sanitize.js"
+    src = src_path.read_text(encoding="utf-8")
+
+    for required in [
+        '"style"',          # FORBID_ATTR 内
+        '"onerror"', '"onclick"', '"onload"', '"onmouseover"',
+        '"iframe"', '"object"', '"embed"',
+    ]:
+        assert required in src, f"sanitize.js 缺少防御关键字 {required}"
+
+    # 确认 ALLOWED_TAGS 走了白名单（不能用 ["*"] 之类通配）
+    assert "ALLOWED_TAGS" in src, "sanitize.js 必须显式白名单 ALLOWED_TAGS"
+    assert "[" in src and "]" in src, "ALLOWED_TAGS 应为数组字面量"
+    # 不允许 ["*"] 的存在
+    assert '"*"' not in src, "ALLOWED_TAGS 不应包含通配符 *"
+
+
+def test_markdown_render_strips_inline_style_color() -> None:
+    """A 股惯例染色（+/-, 涨停/跌停）已从内联 style 改走 class，配合 sanitize。
+
+    直接读 AiCenterView.vue 源码断言已无内联 color: var(--up)。
+    """
+    import pathlib
+    import re
+
+    src_path = (
+        pathlib.Path(__file__).resolve().parents[1]
+        / "frontend" / "src" / "views" / "AiCenterView.vue"
+    )
+    src = src_path.read_text(encoding="utf-8")
+
+    # 不允许出现 span style=...color:var(--up/down)...
+    pattern = re.compile(r'<span\s+style=["\'][^"\']*color\s*:\s*var\(--up', re.IGNORECASE)
+    assert not pattern.search(src), (
+        "AiCenterView.vue 仍含 <span style=\"color:var(--up...)\"> 内联染色，"
+        "应改为 class=\"up\"/\"down\"/\"limit-up\"/\"limit-down\""
+    )
+    # 确认染色的改写分支存在
+    assert 'class="up"' in src or '"up"' in src
+    assert 'class="down"' in src or 'cls =' in src

@@ -171,6 +171,24 @@ async function addNote() {
     actionInFlight.value = false;
   }
 }
+
+async function removeNote(note) {
+  // P4-1 补强：行内删除按钮。同一 (subject_type, subject_key) 多条时按 id 精删。
+  const id = note?.id;
+  actionError.value = "";
+  actionInFlight.value = true;
+  try {
+    const url = id
+      ? `/api/notes/${encodeURIComponent(note.subject_type)}/${encodeURIComponent(note.subject_key)}?note_id=${encodeURIComponent(id)}`
+      : `/api/notes/${encodeURIComponent(note.subject_type)}/${encodeURIComponent(note.subject_key)}`;
+    await fetchJson(url, { method: "DELETE" });
+    await refreshWorkspace();
+  } catch (error) {
+    actionError.value = `删除备注失败：${error.message || error}`;
+  } finally {
+    actionInFlight.value = false;
+  }
+}
 </script>
 
 <template>
@@ -271,9 +289,10 @@ async function addNote() {
           <button class="btn-add" :disabled="actionInFlight" @click="addNote">＋ 添加</button>
         </div>
         <div class="list-stack">
-          <div v-for="item in payload.notes || []" :key="`${item.subject_type}-${item.subject_key}`" class="row-card">
+          <div v-for="item in payload.notes || []" :key="`${item.subject_type}-${item.subject_key}-${item.id ?? ''}`" class="row-card">
             <strong>{{ item.subject_key }}</strong>
             <small class="row-card-content">{{ item.content }}</small>
+            <button class="btn-remove" :disabled="actionInFlight" @click="removeNote(item)" title="删除">✕</button>
           </div>
           <EmptyState
             v-if="!(payload.notes?.length) && !queryLoading"

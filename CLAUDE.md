@@ -50,10 +50,7 @@ docs/                   # 数据源调研 / 部署文档
 ## 常用命令
 
 ```bash
-# 启动（开发）
-bash start.sh                                    # 跑 uvicorn 在 8010 端口
-
-# 启动（生产）— 使用 launchd 而不是 start.sh（避免 PID 管理冲突）
+# 启动（生产）— launchd 是唯一支持的启动方式（双进程撞锁曾导致 DB 连环损坏）
 launchctl unload ~/Library/LaunchAgents/com.easyquant.server.plist
 launchctl load   ~/Library/LaunchAgents/com.easyquant.server.plist
 sleep 25  # akshare 启动慢
@@ -94,8 +91,9 @@ uv run pytest tests/test_ai_center.py -q         # 单个文件
 
 - 写代码时**匹配现有风格**（看周围代码再改）
 - 改前端必须 `npm run build:spa` 后再重启服务
-- 每次重大改动开独立分支 `feature/<name>`，commit message 用中文
-  `feat/fix/chore(scope): ...`
+- 每次重大改动开独立分支，前缀白名单：`fix/<name>` 修 bug；`feat/<name>` /
+  `feature/<name>` 同义做新功能；`chore/<name>` 仓库维护；`refactor/<name>` 重构
+  不改行为。Commit message 中文 `feat/fix/chore/refactor(scope): ...`
 - SQLite schema 修改前备份 `data/sector_fund_monitor.db`
 - 一次性实验脚本放 `scripts/experiments/`，不要丢在仓库根
 - **启动方式只保留 launchd 一种**：不要用 `start.sh` 与 launchd 并存

@@ -1407,3 +1407,55 @@ def test_sector_monitor_page_aggregate_endpoint_returns_bootstrap_payload() -> N
     assert payload["payload"]["overview"]["leaders"][0]["sector_name"] == "Alpha"
     assert payload["payload"]["watchlist"]["items"] == []
     assert payload["payload"]["sector_catalog"]["industry"][0] == "Alpha"
+
+
+def test_workspace_note_crud_roundtrip() -> None:
+    """P4-1 补强：notes POST + DELETE 闭环（不依赖 page cache 是否失效）。"""
+    client = build_client()
+
+    post_resp = client.post(
+        "/api/notes",
+        json={
+            "subject_type": "sector",
+            "subject_key": "CRUD_KEY",
+            "content": "醒目观察",
+        },
+    )
+    assert post_resp.status_code == 200, post_resp.text
+    created = post_resp.json()
+    assert created["subject_type"] == "sector"
+    assert created["subject_key"] == "CRUD_KEY"
+    assert created["content"] == "醒目观察"
+    note_id = created["id"]
+
+    del_resp = client.delete(
+        "/api/notes/sector/CRUD_KEY",
+        params={"note_id": note_id},
+    )
+    assert del_resp.status_code == 200, del_resp.text
+    body = del_resp.json()
+    assert body["deleted"] == 1, f"应删 1 行，实际 {body}"
+    assert body["subject_type"] == "sector"
+    assert body["subject_key"] == "CRUD_KEY"
+
+
+def test_workspace_note_soft_delete_when_no_note_id() -> None:
+    """不传 note_id 时按 (subject_type, subject_key) 软删为 archived。"""
+    client = build_client()
+
+    client.post(
+        "/api/notes",
+        json={"subject_type": "sector", "subject_key": "AB", "content": "x"},
+    )
+    client.post(
+        "/api/notes",
+        json={"subject_type": "sector", "subject_key": "AB", "content": "y"},
+    )
+
+    del_resp = client.delete("/api/notes/sector/AB")
+    assert del_resp.status_code == 200
+    body = del_resp.json()
+    assert body["deleted"] >= 1
+    # 当前列表仍可见 archived 过滤（即默认 status=active 不应再见）
+    page = client.get("/api/page/workspace").json()["payload"]["notes"]
+    assert not any(n["subject_key"] == "AB" for n in page)

@@ -105,6 +105,38 @@ class WorkspaceService:
         session.refresh(note)
         return self._note_to_dict(note)
 
+    def delete_note(
+        self,
+        session: Session,
+        subject_type: str,
+        subject_key: str,
+        note_id: int | None = None,
+    ) -> int:
+        """删除 WorkspaceNote。
+
+        - 默认按 (subject_type, subject_key) 软删（status='archived'），避免历史回放丢数据
+        - 若传 note_id 则精删该 id
+        - 返回被影响的行数
+        """
+        from sqlalchemy import update
+
+        stmt = select(WorkspaceNote).where(
+            WorkspaceNote.subject_type == subject_type,
+            WorkspaceNote.subject_key == subject_key,
+        )
+        rows = list(session.scalars(stmt))
+        if note_id is not None:
+            rows = [r for r in rows if r.id == note_id]
+        if not rows:
+            return 0
+        for row in rows:
+            if note_id is not None:
+                session.delete(row)
+            else:
+                row.status = "archived"
+        session.commit()
+        return len(rows)
+
     @staticmethod
     def _stock_to_dict(row: WatchedStock) -> dict[str, Any]:
         return {

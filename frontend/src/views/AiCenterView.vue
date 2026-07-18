@@ -210,14 +210,16 @@ const renderedMarkdown = computed(() => {
   raw = raw.replace(/^={3,}\s*$/gm, "---");
   raw = raw.replace(/^[→›]\s*/gm, "- ");
   const html = marked(raw);
+  // 染色走 class（styles.css 中 .markdown-body .up/.down/.limit-up/.limit-down），
+  // 不再内联 style 属性以配合 sanitize.js FORBID_ATTR="style" 防 CSS exfil。
   return sanitizeHtml(html
-    .replace(/([+-]\d+\.?\d*%)/g, (m) => {
-      // A 股惯例：涨（+）= 红，跌（-）= 绿
-      const color = m.startsWith("+") ? "var(--up, #f43f5e)" : "var(--down, #10b981)";
-      return `<span style="color:${color};font-weight:600">${m}</span>`;
+    .replace(/([+]?\d+\.?\d*%)/g, (m) => {
+      const isUp = m.startsWith("+") || (!m.startsWith("-") && m !== "0%");
+      const cls = m.startsWith("-") ? "down" : (isUp && m !== "0%" ? "up" : "");
+      return cls ? `<span class="${cls}">${m}</span>` : m;
     })
-    .replace(/(涨停|一字板|地天板)/g, '<span style="color:var(--up, #f43f5e);font-weight:600">$1</span>')
-    .replace(/(跌停|一字跌停)/g, '<span style="color:var(--down, #10b981);font-weight:600">$1</span>'));
+    .replace(/(涨停|一字板|地天板)/g, '<span class="limit-up">$1</span>')
+    .replace(/(跌停|一字跌停)/g, '<span class="limit-down">$1</span>'));
 });
 
 // ── Skill Chat state ──

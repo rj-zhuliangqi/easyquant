@@ -1465,6 +1465,16 @@ def create_app(
     def create_workspace_note(payload: dict = Body(default={}), db: Session = Depends(get_db)) -> dict:
         return workspace.add_note(db, payload)
 
+    @app.delete("/api/notes/{subject_type}/{subject_key}")
+    def delete_workspace_note(
+        subject_type: str,
+        subject_key: str,
+        note_id: int | None = Query(default=None, ge=1),
+        db: Session = Depends(get_db),
+    ) -> dict:
+        affected = workspace.delete_note(db, subject_type, subject_key, note_id=note_id)
+        return {"deleted": affected, "subject_type": subject_type, "subject_key": subject_key}
+
     @app.get("/api/limit-up/dates")
     def limit_up_dates() -> dict:
         return limit_up.get_available_dates()
