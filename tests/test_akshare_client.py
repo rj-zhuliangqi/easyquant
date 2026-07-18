@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 
 from app.akshare_client import AkshareGateway, INDIVIDUAL_COLUMNS
+from app.time_utils import now_cn
 
 
 def test_fetch_individual_realtime_uses_last_cache_when_fetch_failed() -> None:
@@ -26,7 +27,7 @@ def test_fetch_individual_realtime_uses_last_cache_when_fetch_failed() -> None:
             },
         ]
     )
-    gateway._last_individual_fetch_at = datetime.now() - timedelta(minutes=1)
+    gateway._last_individual_fetch_at = now_cn() - timedelta(minutes=1)
 
     result = gateway.fetch_individual_realtime()
 
@@ -150,7 +151,7 @@ def test_fetch_market_breadth_falls_back_to_cached_snapshot_when_partial(monkeyp
             {"item": "updated_at", "value": "2026-05-19 14:00:00"},
         ]
     )
-    gateway._last_market_breadth_fetch_at = datetime.now()
+    gateway._last_market_breadth_fetch_at = now_cn()
 
     class Response:
         def __init__(self, payload):

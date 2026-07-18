@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from datetime import datetime, timedelta
+from app.time_utils import now_cn
 from difflib import SequenceMatcher
 from io import StringIO
 from typing import Callable
@@ -52,7 +53,7 @@ class AkshareGateway:
         return self._run(lambda: ak.stock_fund_flow_concept(symbol="即时"))
 
     def fetch_individual_realtime(self) -> pd.DataFrame:
-        now = datetime.now()
+        now = now_cn()
         if (
             self._last_individual_fetch_at is not None
             and now - self._last_individual_fetch_at < timedelta(seconds=30)
@@ -155,7 +156,7 @@ class AkshareGateway:
                 f"stock_daily_history:{symbol}",
                 source_label="akshare",
                 fallback_used=False,
-                updated_at=datetime.now().isoformat(),
+                updated_at=now_cn().isoformat(),
             )
             return frame
         frame = self._fetch_stock_daily_history_eastmoney(symbol=symbol, start_date=start_date, end_date=end_date)
@@ -163,7 +164,7 @@ class AkshareGateway:
             f"stock_daily_history:{symbol}",
             source_label="eastmoney" if not frame.empty else "akshare",
             fallback_used=not frame.empty,
-            updated_at=datetime.now().isoformat(),
+            updated_at=now_cn().isoformat(),
             degraded_fields=[] if not frame.empty else ["daily_history"],
         )
         return frame
@@ -178,7 +179,7 @@ class AkshareGateway:
                 "market_index_spot",
                 source_label="tencent",
                 fallback_used=False,
-                updated_at=datetime.now().isoformat(),
+                updated_at=now_cn().isoformat(),
             )
             return frame
         frame = self._standardize_columns(self._run(ak.stock_zh_index_spot_sina))
@@ -186,7 +187,7 @@ class AkshareGateway:
             "market_index_spot",
             source_label="akshare" if not frame.empty else "tencent",
             fallback_used=not frame.empty,
-            updated_at=datetime.now().isoformat(),
+            updated_at=now_cn().isoformat(),
             degraded_fields=[] if not frame.empty else ["spot"],
         )
         return frame
@@ -198,7 +199,7 @@ class AkshareGateway:
                 f"market_index_history:{symbol}",
                 source_label="tencent",
                 fallback_used=False,
-                updated_at=datetime.now().isoformat(),
+                updated_at=now_cn().isoformat(),
             )
             return frame
         frame = self._standardize_columns(self._run(lambda: ak.stock_zh_index_daily(symbol=symbol)))
@@ -208,7 +209,7 @@ class AkshareGateway:
             f"market_index_history:{symbol}",
             source_label="akshare" if not frame.empty else "tencent",
             fallback_used=not frame.empty,
-            updated_at=datetime.now().isoformat(),
+            updated_at=now_cn().isoformat(),
             degraded_fields=[] if not frame.empty else ["history"],
         )
         return frame
@@ -217,12 +218,12 @@ class AkshareGateway:
         frame = self._fetch_market_breadth_eastmoney()
         if self._market_breadth_looks_valid(frame):
             self._last_market_breadth = frame.copy()
-            self._last_market_breadth_fetch_at = datetime.now()
+            self._last_market_breadth_fetch_at = now_cn()
             self._set_source_snapshot(
                 "market_breadth",
                 source_label="eastmoney",
                 fallback_used=False,
-                updated_at=datetime.now().isoformat(),
+                updated_at=now_cn().isoformat(),
             )
             return frame
 
@@ -230,12 +231,12 @@ class AkshareGateway:
         frame = self._build_market_breadth_from_spot(spot_frame)
         if self._market_breadth_looks_valid(frame, minimum_total=100):
             self._last_market_breadth = frame.copy()
-            self._last_market_breadth_fetch_at = datetime.now()
+            self._last_market_breadth_fetch_at = now_cn()
             self._set_source_snapshot(
                 "market_breadth",
                 source_label="akshare",
                 fallback_used=True,
-                updated_at=datetime.now().isoformat(),
+                updated_at=now_cn().isoformat(),
             )
             return frame
 
@@ -244,7 +245,7 @@ class AkshareGateway:
                 "market_breadth",
                 source_label="cache",
                 fallback_used=True,
-                updated_at=self._last_market_breadth_fetch_at.isoformat() if self._last_market_breadth_fetch_at else datetime.now().isoformat(),
+                updated_at=self._last_market_breadth_fetch_at.isoformat() if self._last_market_breadth_fetch_at else now_cn().isoformat(),
                 degraded_fields=["market_breadth"],
             )
             return self._last_market_breadth.copy()
@@ -254,7 +255,7 @@ class AkshareGateway:
             "market_breadth",
             source_label="akshare" if not frame.empty else "eastmoney",
             fallback_used=not frame.empty,
-            updated_at=datetime.now().isoformat(),
+            updated_at=now_cn().isoformat(),
             degraded_fields=[] if not frame.empty else ["up_count", "down_count", "flat_count", "limit_up_count", "limit_down_count"],
         )
         return frame
@@ -508,7 +509,7 @@ class AkshareGateway:
 
         total = up_count + down_count + flat_count
         market_activity = f"{(up_count / total) * 100:.2f}%" if total else None
-        timestamp = datetime.now().replace(second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = now_cn().replace(second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
         return pd.DataFrame(
             [
                 {"item": "up_count", "value": float(up_count)},
@@ -553,7 +554,7 @@ class AkshareGateway:
 
         total = up_count + down_count + flat_count
         market_activity = f"{(up_count / total) * 100:.2f}%" if total else None
-        timestamp = datetime.now().replace(second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = now_cn().replace(second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
         return pd.DataFrame(
             [
                 {"item": "up_count", "value": float(up_count)},
@@ -600,7 +601,7 @@ class AkshareGateway:
 
         total = up_count + down_count + flat_count
         market_activity = f"{(up_count / total) * 100:.2f}%" if total else None
-        timestamp = datetime.now().replace(second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = now_cn().replace(second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
         return pd.DataFrame(
             [
                 {"item": "up_count", "value": float(up_count)},

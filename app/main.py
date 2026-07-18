@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.akshare_client import AkshareGateway
 from app.config import AI_CENTER_INBOX_DIR
 from app.config import AI_CENTER_PROCESSED_DIR
+from app.time_utils import now_cn
 from app.config import DEFAULT_DATABASE_URL
 from app.database import Base
 from app.dependencies import AuthMiddleware
@@ -979,7 +980,7 @@ def create_app(
                         scheduler.add_job(
                             lambda jid=catchup_job_id: _execute_ai_skill_job(jid, session_factory, ai_center, now_provider),
                             "date",
-                            run_date=datetime.now() + timedelta(seconds=5),
+                            run_date=now_cn().replace(tzinfo=None) + timedelta(seconds=5),
                             id=f"ai-skill-catchup-{catchup_job.id}",
                             max_instances=1,
                             misfire_grace_time=3600,

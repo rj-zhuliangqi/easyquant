@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 import jwt
 from sqlalchemy.orm import Session
 
+from app.time_utils import now_cn
 from app.config import JWT_EXPIRE_HOURS, JWT_SECRET
 from app.models_auth import User
 
@@ -99,7 +100,7 @@ class AuthService:
         if self.is_legacy_hash(user.hashed_password):
             user.hashed_password = self.hash_password(password)
             session.commit()
-        user.last_login_at = datetime.now()
+        user.last_login_at = now_cn().replace(tzinfo=None)
         session.commit()
         return user
 
