@@ -19,7 +19,18 @@ from app.models import AiJob
 from app.models import AiRun
 from app.models import AiSkill
 from app.models import AiSkillRevision
+from app.models_auth import User
 from app.services.ai_center import AiCenterService
+
+
+def _reset_admin_password(app, session_factory) -> None:
+    """ensure_default_admin 现用随机密码；测试重置为 admin123 以便登录拿 token。"""
+    auth_service = app.state.auth_service
+    with session_factory() as session:
+        admin = session.query(User).filter(User.username == "admin").first()
+        if admin:
+            admin.hashed_password = auth_service.hash_password("admin123")
+            session.commit()
 
 
 class AiGateway:
@@ -83,6 +94,8 @@ def build_ai_client() -> tuple[TestClient, sessionmaker]:
         now_provider=lambda: datetime(2026, 5, 8, 15, 0, 0),
     )
     client = TestClient(app)
+    # ensure_default_admin 现用随机密码，测试重置为已知密码再登录
+    _reset_admin_password(app, session_factory)
     # Login to get auth token
     login_resp = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
     if login_resp.status_code == 200:
@@ -331,6 +344,7 @@ def test_create_session_factory_upgrades_legacy_ai_center_schema(tmp_path) -> No
         now_provider=lambda: datetime(2026, 5, 8, 15, 0, 0),
     )
     client = TestClient(app)
+    _reset_admin_password(app, session_factory)
     login_resp = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
     assert login_resp.status_code == 200
     client.headers["Authorization"] = f"Bearer {login_resp.json()['access_token']}"
@@ -953,10 +967,13 @@ def test_catchup_mechanism_on_scheduler_startup() -> None:
     # Use a fixed time far enough in the future that APScheduler won't skip catch-up jobs
     real_now = datetime.now()
     # Use a time that is close to real time so APScheduler doesn't skip it
+    from datetime import timedelta
     test_time = real_now.replace(hour=22, minute=4, second=0, microsecond=0)
     # If test_time is in the past today, add a day
     if test_time < real_now:
-        from datetime import timedelta
+        test_time = test_time + timedelta(days=1)
+    # cron 任务为周一至周五，确保测试时间落在 weekday（否则当天无 missed 任务）
+    while test_time.weekday() >= 5:
         test_time = test_time + timedelta(days=1)
     app = create_app(
         session_factory=session_factory,

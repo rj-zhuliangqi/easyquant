@@ -5,6 +5,7 @@ import { RouterLink, useRouter } from "vue-router";
 import { routes } from "../router";
 import { fetchJson, pageQueryKey } from "../lib/api";
 import { getUsername, isAdmin, clearToken } from "../lib/auth";
+import { sanitizeHtml } from "../lib/sanitize";
 
 const props = defineProps({
   isOpen: {
@@ -161,7 +162,7 @@ const navIcons = {
           @focus="prefetch(item.name)"
           @click="onNavClick"
         >
-          <span class="nav-icon" v-html="navIcons[item.name] || ''"></span>
+          <span class="nav-icon" v-html="sanitizeHtml(navIcons[item.name] || '')"></span>
           <span class="nav-label">{{ item.label }}</span>
         </RouterLink>
       </template>

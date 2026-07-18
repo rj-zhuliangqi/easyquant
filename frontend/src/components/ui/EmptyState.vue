@@ -1,4 +1,6 @@
 <script setup>
+import { sanitizeHtml } from "../../lib/sanitize";
+
 const props = defineProps({
   title: { type: String, default: "暂无数据" },
   description: { type: String, default: "当前条件下没有匹配的数据" },
@@ -10,7 +12,7 @@ const defaultIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" 
 
 <template>
   <div class="empty-state">
-    <div class="empty-icon" v-html="icon || defaultIcon"></div>
+    <div class="empty-icon" v-html="sanitizeHtml(icon || defaultIcon)"></div>
     <h4 class="empty-title">{{ title }}</h4>
     <p class="empty-desc">{{ description }}</p>
     <slot />

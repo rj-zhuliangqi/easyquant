@@ -8,6 +8,7 @@ import EmptyState from "../components/ui/EmptyState.vue";
 import RealtimeFeed from "../components/news/RealtimeFeed.vue";
 import { fetchJson } from "../lib/api";
 import { formatDateTime } from "../lib/formatters";
+import { sanitizeHtml } from "../lib/sanitize";
 
 defineOptions({ name: "news" });
 
@@ -86,7 +87,10 @@ const watchThemes = computed(() => resultPayload.value?.watch_themes || []);
 // 而非按新闻头条），同时仍保留 structured_summary 三段定调 + raw_output_text
 // 完整 HTML 报告。前端把这些都渲染出来，而不是显示空态。
 const structuredPicks = computed(() => resultPayload.value?.structured_picks || []);
-const rawOutputHtml = computed(() => activeRun.value?.raw_output_text || activeRun.value?.raw_output || "");
+const rawOutputHtml = computed(() => {
+  const raw = activeRun.value?.raw_output_text || activeRun.value?.raw_output || "";
+  return sanitizeHtml(raw);
+});
 
 const hasAnyContent = computed(
   () =>

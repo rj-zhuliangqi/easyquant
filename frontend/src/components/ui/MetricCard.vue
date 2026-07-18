@@ -1,4 +1,6 @@
 <script setup>
+import { sanitizeHtml } from "../../lib/sanitize";
+
 const props = defineProps({
   label: { type: String, default: "" },
   value: { type: [String, Number], default: "" },
@@ -27,7 +29,7 @@ const trendColors = {
     <div class="metric-header">
       <span class="metric-label">{{ label }}</span>
       <span v-if="trend" class="metric-trend" :style="{ color: trendColors[trend] || trendColors.neutral }">
-        <span class="trend-icon" v-html="trendIcons[trend]"></span>
+        <span class="trend-icon" v-html="sanitizeHtml(trendIcons[trend])"></span>
       </span>
     </div>
     <strong class="metric-value" :style="accent ? { color: accent } : {}">

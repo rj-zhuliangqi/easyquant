@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
+import fcntl
 import json
 import logging
 import os
 from pathlib import Path
+import queue
 import re
 import subprocess
 import threading
@@ -52,7 +54,7 @@ from app.services.workspace import WorkspaceService
 
 logger = logging.getLogger(__name__)
 STATIC_ASSET_VERSION = "20260602-navrestore"
-SPA_SHELL_CACHE_CONTROL = "no-cache, max-age=0"
+SPA_SHELL_CACHE_CONTROL = "public, max-age=300, stale-while-revalidate=60"
 SPA_SHELL_FILENAME = "spa/frontend/index.html"
 SPA_NAVIGATION_PATHS = (
     "/",
@@ -96,7 +98,17 @@ def _configure_sqlite_engine(engine: Engine) -> None:
 
 
 def _recover_sqlite_if_corrupted(engine: Engine) -> None:
-    """Check SQLite integrity and dump/rebuild if corrupted."""
+    """检查 SQLite 完整性，仅在**确认损坏**时重建。
+
+    关键修正：``OperationalError``（如 "database is locked"）≠ 损坏。
+    撞锁时只重试（最多 3 次、间隔 2s），重试仍失败则**放弃启动并报错**，
+    绝不 rename/删除 WAL -- 这正是过去连环损坏的根因（B 进程撞锁被误判
+    损坏 -> 删掉 A 进程正在写的 WAL -> 真损坏）。
+
+    只有 ``integrity_check`` 成功执行并返回非 "ok" 才判定损坏，且恢复前：
+    1. 用 fcntl.flock 加排他锁（LOCK_EX|LOCK_NB）确认无其他进程在恢复；
+    2. WAL/SHM 一并 rename 备份（而非 unlink 删除），保留未 checkpoint 数据。
+    """
     db_url = str(engine.url)
     if not db_url.startswith("sqlite"):
         return
@@ -104,32 +116,64 @@ def _recover_sqlite_if_corrupted(engine: Engine) -> None:
     if not db_path or not Path(db_path).exists():
         return
 
-    try:
-        with engine.connect() as conn:
-            result = conn.execute(text("PRAGMA integrity_check")).scalar()
-        if result == "ok":
-            return
-        logger.warning("SQLite integrity check failed: %s — attempting recovery", str(result)[:200])
-    except Exception as exc:
-        logger.warning("SQLite integrity check raised: %s — attempting recovery", exc)
+    # 阶段 1：重试执行 integrity_check -- 撞锁只重试，不当损坏
+    integrity_result: str | None = None
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        try:
+            with engine.connect() as conn:
+                integrity_result = conn.execute(text("PRAGMA integrity_check")).scalar()
+            break
+        except OperationalError as exc:
+            last_exc = exc
+            logger.warning("SQLite integrity_check 撞锁/异常，重试 %d/3: %s", attempt + 1, exc)
+            time.sleep(2)
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            logger.warning("SQLite integrity_check 异常，重试 %d/3: %s", attempt + 1, exc)
+            time.sleep(2)
+    else:
+        # 3 次重试均失败：放弃启动，绝不删除/重命名，保护数据
+        raise RuntimeError(
+            "SQLite integrity_check 连续失败（可能被其他进程占用），拒绝启动以保护数据；"
+            f"请确认没有其他 easyquant 实例在运行。最后错误: {last_exc}"
+        ) from last_exc
 
+    if integrity_result == "ok":
+        return
+    logger.warning("SQLite integrity check failed: %s - attempting recovery", str(integrity_result)[:200])
+
+    # 阶段 2：确认损坏 -> 加排他锁后恢复
+    engine.dispose()
+    db_file = Path(db_path)
+    try:
+        with open(db_file, "rb") as lock_fh:
+            try:
+                fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                raise RuntimeError(
+                    f"数据库确认损坏但被其他进程占用，无法加排他锁执行恢复: {exc}"
+                ) from exc
+            _rebuild_sqlite_db(db_path)
+    except FileNotFoundError:
+        # dispose 后文件已不存在（被其他流程移走），直接重建
+        _rebuild_sqlite_db(db_path)
+    finally:
+        Base.metadata.create_all(engine)
+
+
+def _rebuild_sqlite_db(db_path: str) -> None:
+    """dump -> 重建损坏的 SQLite 库。WAL/SHM rename 备份而非删除。"""
     backup_path = db_path + ".corrupted." + time.strftime("%Y%m%d%H%M%S")
     logger.warning("Renaming corrupted DB to %s", backup_path)
 
-    # Close existing connections and remove WAL/SHM files
-    engine.dispose()
+    # WAL/SHM 一并 rename 备份（保留未 checkpoint 数据，便于事后排查）
     for suffix in ("-shm", "-wal"):
-        wal_path = Path(db_path + suffix)
-        if wal_path.exists():
-            wal_path.unlink()
+        side = Path(db_path + suffix)
+        if side.exists():
+            side.rename(Path(backup_path + suffix))
 
     Path(db_path).rename(backup_path)
-
-    # Also remove WAL/SHM for the backup
-    for suffix in ("-shm", "-wal"):
-        wal_path = Path(backup_path + suffix)
-        if wal_path.exists():
-            wal_path.unlink()
 
     dump_proc = subprocess.run(
         ["sqlite3", backup_path, ".dump"],
@@ -151,8 +195,6 @@ def _recover_sqlite_if_corrupted(engine: Engine) -> None:
             logger.info("SQLite database recovered successfully from dump")
     else:
         logger.error("SQLite dump failed, starting with fresh DB: %s", dump_proc.stderr[:500])
-
-    Base.metadata.create_all(engine)
 
 
 def ensure_indexes(engine: Engine) -> None:
@@ -447,17 +489,31 @@ def _skill_chat_stream_generator(claude_path: str, cli_prompt: str):
         )
         watcher.start()
 
-        last_heartbeat = time.time()
+        # 用独立线程阻塞读 stdout，主循环靠 queue.get(timeout) 驱动心跳，
+        # 避免 readline 阻塞期间零心跳（cloudflared 100s 空闲 -> 524）。
+        line_queue: "queue.Queue[str | None]" = queue.Queue()
+
+        def _stdout_reader() -> None:
+            try:
+                for line in iter(proc.stdout.readline, ""):
+                    line_queue.put(line)
+            except Exception:
+                logger.exception("skill-chat: stdout reader thread failed")
+            finally:
+                line_queue.put(None)  # EOF / 异常哨兵
+
+        reader_thread = threading.Thread(target=_stdout_reader, daemon=True)
+        reader_thread.start()
+
         try:
             while True:
-                line = proc.stdout.readline()
-                now = time.time()
-                # 心跳：每 _SKILL_CHAT_HEARTBEAT_SECONDS 秒发一次 SSE 注释行
-                if now - last_heartbeat >= _SKILL_CHAT_HEARTBEAT_SECONDS:
+                try:
+                    line = line_queue.get(timeout=_SKILL_CHAT_HEARTBEAT_SECONDS)
+                except queue.Empty:
+                    # 阻塞读期间无输出 -> 主动发心跳，重置 cloudflared 空闲计时
                     yield b": ping\n\n"
-                    last_heartbeat = now
-                if not line:
-                    # EOF
+                    continue
+                if line is None:
                     break
                 full_output_chunks.append(line)
                 yield _skill_chat_event({"type": "delta", "text": line})
@@ -465,8 +521,9 @@ def _skill_chat_stream_generator(claude_path: str, cli_prompt: str):
             logger.info("skill-chat: client disconnected, killing proc")
             _kill_proc(proc)
             return
+        finally:
+            stop_event.set()
 
-        stop_event.set()
         if watcher and watcher.is_alive():
             watcher.join(timeout=1.0)
 

@@ -71,7 +71,7 @@ def test_fetch_individual_realtime_paginates_eastmoney_results(monkeypatch) -> N
     def fake_request(url, **kwargs):
         params = kwargs.get("params") or {}
         pn = int(params.get("pn", 1))
-        pz = min(int(params.get("pz", 100)), 100)
+        pz = int(params.get("pz", 100))
         total = 230
         start = (pn - 1) * pz
         end = min(start + pz, total)
@@ -108,7 +108,7 @@ def test_fetch_market_breadth_uses_eastmoney_as_primary_source(monkeypatch) -> N
     def fake_request(url, **kwargs):
         params = kwargs.get("params") or {}
         pn = int(params.get("pn", 1))
-        pz = min(int(params.get("pz", 100)), 100)
+        pz = int(params.get("pz", 100))
         total = 2400
         start = (pn - 1) * pz
         end = min(start + pz, total)

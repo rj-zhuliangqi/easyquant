@@ -5,6 +5,7 @@ import { useRoute, useRouter } from "vue-router";
 import QueryState from "../components/QueryState.vue";
 import { fetchJson, fetchStream, pageQueryKey } from "../lib/api";
 import { marked } from "marked";
+import { sanitizeHtml } from "../lib/sanitize";
 
 defineOptions({ name: "ai-center" });
 
@@ -204,20 +205,20 @@ const renderedMarkdown = computed(() => {
 
   // Auto-detect: if raw_output contains HTML tags, render directly
   const isHtml = /<[a-z][\s\S]*>/i.test(raw);
-  if (isHtml) return raw;
+  if (isHtml) return sanitizeHtml(raw);
 
   // Legacy markdown output — convert to HTML via marked + post-process
   raw = raw.replace(/^【([^】]+)】\s*$/gm, "## $1");
   raw = raw.replace(/^={3,}\s*$/gm, "---");
   raw = raw.replace(/^[→›]\s*/gm, "- ");
   const html = marked(raw);
-  return html
+  return sanitizeHtml(html
     .replace(/([+-]\d+\.?\d*%)/g, (m) => {
       const color = m.startsWith("+") ? "#4ade80" : "#f87171";
       return `<span style="color:${color};font-weight:600">${m}</span>`;
     })
     .replace(/(涨停|一字板|地天板)/g, '<span style="color:#f87171;font-weight:600">$1</span>')
-    .replace(/(跌停|一字跌停)/g, '<span style="color:#93c5fd;font-weight:600">$1</span>');
+    .replace(/(跌停|一字跌停)/g, '<span style="color:#93c5fd;font-weight:600">$1</span>'));
 });
 
 // ── Skill Chat state ──

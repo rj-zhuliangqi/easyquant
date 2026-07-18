@@ -11,6 +11,27 @@ from sqlalchemy.pool import StaticPool
 from app.database import Base
 from app.main import _collect_once, _run_scheduled_job, create_app, create_session_factory
 from app.models import FundFlowDailyHistory, FundFlowSnapshot
+from app.models_auth import User
+
+
+def _attach_admin_auth(client: TestClient, app) -> None:
+    """P0-8: AuthMiddleware 保护所有 /api/* ，测试 client 需注入 Bearer token。
+
+    create_app 会通过 ensure_default_admin 创建随机密码的 admin；此处把密码重置
+    为已知值 admin123 再走 /api/auth/login 拿 token，挂到 client.headers 上。
+    """
+    auth_service = app.state.auth_service
+    session_factory = app.state.session_factory
+    with session_factory() as session:
+        admin = session.query(User).filter(User.username == "admin").first()
+        if admin is None:
+            auth_service.create_user(session, "admin", "admin123", is_admin=True)
+        else:
+            admin.hashed_password = auth_service.hash_password("admin123")
+            session.commit()
+    resp = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
+    assert resp.status_code == 200, resp.text
+    client.headers["Authorization"] = f"Bearer {resp.json()['access_token']}"
 
 
 class FakeGateway:
@@ -507,7 +528,9 @@ def build_client_and_gateway() -> tuple[TestClient, FakeGateway]:
         enable_scheduler=False,
         now_provider=lambda: datetime(2026, 5, 7, 16, 0, 0),
     )
-    return TestClient(app), gateway
+    client = TestClient(app)
+    _attach_admin_auth(client, app)
+    return client, gateway
 
 
 def build_client() -> TestClient:
@@ -605,7 +628,7 @@ def test_comparison_endpoint_returns_multi_sector_series() -> None:
 
     response = client.get(
         "/api/comparison",
-        params={"sector_type": "industry", "metric": "net_strength", "granularity": "minute", "lookback_days": 2, "limit": 2},
+        params={"sector_type": "industry", "metric": "net_strength", "granularity": "minute", "lookback_days": 2, "limit": 2, "trading_date": "2026-05-07"},
     )
 
     assert response.status_code == 200
@@ -626,6 +649,7 @@ def test_comparison_endpoint_supports_laggards_rank_view() -> None:
             "lookback_days": 2,
             "limit": 2,
             "rank_view": "laggards",
+            "trading_date": "2026-05-07",
         },
     )
 
@@ -792,6 +816,7 @@ def test_individual_force_refresh_falls_back_to_cached_snapshot_when_live_refres
         now_provider=lambda: datetime(2026, 5, 7, 10, 30, 0),
     )
     client = TestClient(app)
+    _attach_admin_auth(client, app)
 
     first = client.get("/api/individual-rankings", params={"page": 1, "page_size": 5, "limit": 0})
     gateway.fail_individual = True
@@ -814,6 +839,9 @@ def test_scheduler_registers_individual_rankings_startup_job(monkeypatch, tmp_pa
 
         def add_job(self, func, trigger, **kwargs) -> None:
             scheduled_ids.append(kwargs["id"])
+
+        def get_jobs(self) -> list:
+            return []
 
         def start(self) -> None:
             self.running = True
@@ -1074,6 +1102,7 @@ def test_home_system_summary_bootstraps_sector_snapshot_when_cache_is_empty() ->
         now_provider=lambda: datetime(2026, 5, 7, 10, 30, 0),
     )
     client = TestClient(app)
+    _attach_admin_auth(client, app)
 
     response = client.get("/api/home/system-summary")
 

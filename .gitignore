@@ -13,6 +13,7 @@ data/*.err.log
 data/*.out.log
 data/*.db
 data/*.db-*
+data/.jwt_secret
 data/uvicorn.pid
 data/playwright-nav-check/
 data/playwright-*.png

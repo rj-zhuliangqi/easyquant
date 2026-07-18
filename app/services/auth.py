@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import logging
+import secrets
 from datetime import datetime, timedelta, timezone
 
 import jwt
@@ -12,30 +14,52 @@ from app.models_auth import User
 
 logger = logging.getLogger(__name__)
 
+# PBKDF2 迭代次数（OWASP 2023 推荐 sha256 下 600k 次）
+_PBKDF2_ITERATIONS = 600_000
+
 
 class AuthService:
     def __init__(self, *, jwt_secret: str = JWT_SECRET, jwt_expire_hours: int = JWT_EXPIRE_HOURS) -> None:
         self.jwt_secret = jwt_secret
         self.jwt_expire_hours = jwt_expire_hours
 
-    # -- password hashing (lightweight, no external deps) --
+    # -- password hashing (PBKDF2-HMAC-SHA256, stdlib only) --
 
     @staticmethod
     def hash_password(password: str) -> str:
-        """Hash a password with a random salt using SHA-256."""
-        import secrets
-        salt = secrets.token_hex(16)
-        digest = hashlib.sha256(f"{salt}{password}".encode()).hexdigest()
-        return f"{salt}${digest}"
+        """用 PBKDF2-HMAC-SHA256 + 随机 salt 哈希密码。
+
+        存储格式: ``pbkdf2$<iterations>$<salt_hex>$<hash_hex>``
+        """
+        salt = secrets.token_bytes(16)
+        digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, _PBKDF2_ITERATIONS)
+        return f"pbkdf2${_PBKDF2_ITERATIONS}${salt.hex()}${digest.hex()}"
+
+    @staticmethod
+    def is_legacy_hash(hashed: str) -> bool:
+        """旧 SHA-256 格式（``salt$digest``）需迁移到 PBKDF2。"""
+        return not hashed.startswith("pbkdf2$")
 
     @staticmethod
     def verify_password(password: str, hashed: str) -> bool:
-        """Verify a password against its hash."""
+        """校验密码（恒定时间比较），兼容旧 SHA-256 格式。"""
+        if hashed.startswith("pbkdf2$"):
+            try:
+                _, iter_str, salt_hex, hash_hex = hashed.split("$")
+                iterations = int(iter_str)
+                salt = bytes.fromhex(salt_hex)
+                expected = bytes.fromhex(hash_hex)
+            except (ValueError, IndexError):
+                return False
+            actual = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+            return hmac.compare_digest(actual, expected)
+        # legacy SHA-256: salt$digest
         try:
             salt, digest = hashed.split("$", 1)
         except ValueError:
             return False
-        return hashlib.sha256(f"{salt}{password}".encode()).hexdigest() == digest
+        actual = hashlib.sha256(f"{salt}{password}".encode("utf-8")).hexdigest()
+        return hmac.compare_digest(actual, digest)
 
     # -- JWT --
 
@@ -71,6 +95,10 @@ class AuthService:
             return None
         if not self.verify_password(password, user.hashed_password):
             return None
+        # 旧 SHA-256 哈希无感迁移到 PBKDF2
+        if self.is_legacy_hash(user.hashed_password):
+            user.hashed_password = self.hash_password(password)
+            session.commit()
         user.last_login_at = datetime.now()
         session.commit()
         return user
@@ -115,8 +143,12 @@ class AuthService:
         return session.query(User).order_by(User.id).all()
 
     def ensure_default_admin(self, session: Session) -> None:
-        """Create a default admin user if no users exist."""
+        """无用户时创建默认管理员，使用随机初始密码并打印到启动日志。"""
         user_count = session.query(User).count()
         if user_count == 0:
-            self.create_user(session, "admin", "admin123", is_admin=True)
-            logger.warning("created default admin user (admin/admin123) — please change the password!")
+            password = secrets.token_urlsafe(12)
+            self.create_user(session, "admin", password, is_admin=True)
+            logger.warning("=" * 64)
+            logger.warning("已创建默认管理员 admin，初始密码：%s", password)
+            logger.warning("请立即登录并在「用户管理」页修改密码。")
+            logger.warning("=" * 64)

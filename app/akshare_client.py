@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from datetime import datetime, timedelta
 from difflib import SequenceMatcher
@@ -9,6 +10,9 @@ from typing import Callable
 import akshare as ak
 import pandas as pd
 import requests
+
+
+logger = logging.getLogger(__name__)
 
 
 SECTOR_STOCK_COLUMNS = ["代码", "名称", "最新价", "今日涨跌幅", "今日主力净流入-净额"]
@@ -618,7 +622,7 @@ class AkshareGateway:
         pz: int,
         pn: int = 1,
     ) -> list[dict]:
-        page_size = max(1, min(int(pz), 100))
+        page_size = max(1, min(int(pz), 200))
         requested_total = max(int(pz), 1)
         current_page = max(int(pn), 1)
         collected: list[dict] = []
@@ -676,7 +680,7 @@ class AkshareGateway:
         params: dict[str, object] | None = None,
         headers: dict[str, str] | None = None,
         session: requests.Session | None = None,
-        timeout: int = 20,
+        timeout: tuple[float, float] = (5, 20),
     ):
         merged_headers = {"User-Agent": "Mozilla/5.0"}
         if headers:
@@ -692,6 +696,7 @@ class AkshareGateway:
                 response.raise_for_status()
                 return response
         except Exception:
+            logger.warning("akshare _request_get 失败: url=%s", url, exc_info=True)
             return None
 
     @staticmethod
@@ -913,7 +918,7 @@ class AkshareGateway:
 
         url = f"http://q.10jqka.com.cn/gn/detail/code/{code}/"
         try:
-            response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+            response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=(5, 20))
             response.raise_for_status()
             tables = pd.read_html(StringIO(response.text))
         except Exception:
@@ -948,15 +953,26 @@ class AkshareGateway:
         return f"1.{code}" if code.startswith(("5", "6", "9")) or code.startswith("688") else f"0.{code}"
 
     def _run(self, fetcher: Callable[[], pd.DataFrame], timeout_seconds: int = 25) -> pd.DataFrame:
+        """在独立 executor 中执行 fetcher，超时后不等待卡死线程。
+
+        关键点：``shutdown(wait=False)`` -- 旧实现用 ``with ThreadPoolExecutor`` 会在
+        退出时 ``shutdown(wait=True)``，阻塞到底层 requests 真正跑完；akshare 内部
+        requests 多数无 timeout，一旦挂起 25s 超时实际变无限等待，会耗死 scheduler 线程。
+        """
+        executor = ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(fetcher)
         try:
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(fetcher)
-                result = future.result(timeout=timeout_seconds)
-                return result if isinstance(result, pd.DataFrame) else pd.DataFrame()
+            result = future.result(timeout=timeout_seconds)
+            return result if isinstance(result, pd.DataFrame) else pd.DataFrame()
         except TimeoutError:
+            future.cancel()
+            logger.warning("akshare fetcher timeout after %ss", timeout_seconds)
             return pd.DataFrame()
         except Exception:
+            logger.exception("akshare fetcher failed")
             return pd.DataFrame()
+        finally:
+            executor.shutdown(wait=False)
 
     @staticmethod
     def _to_float(value: object) -> float | None:
