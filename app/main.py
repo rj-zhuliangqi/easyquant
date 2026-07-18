@@ -208,93 +208,74 @@ def ensure_indexes(engine: Engine) -> None:
                     raise
 
 
-def ensure_ai_center_schema(engine: Engine) -> None:
+def _add_missing_columns(engine: Engine, table: str, columns: dict[str, str]) -> None:
+    """P5-3: 极简 schema 漂移助手 — 仅做"缺则 ADD COLUMN"差分。
+
+    表结构本身以 ``app/models.py`` 为唯一真相（``Base.metadata.create_all``
+    负责建表），本函数只补历史库缺的新列。``columns`` 形如
+    ``{"col_name": "ALTER TABLE x ADD COLUMN col_name TYPE DEFAULT ..."}``。
+    """
     inspector = inspect(engine)
-
-    # Ensure auth schema (is_admin column on users table)
-    if "users" in inspector.get_table_names():
-        with engine.connect() as conn:
-            existing_user_cols = {row[1] for row in conn.execute(text("PRAGMA table_info(users)")).fetchall()}
-        if "is_admin" not in existing_user_cols:
-            with engine.begin() as conn:
-                conn.execute(text("ALTER TABLE users ADD COLUMN is_admin BOOLEAN DEFAULT 0"))
-            # Set first user as admin if is_admin not present
-            with engine.begin() as conn:
-                conn.execute(text("UPDATE users SET is_admin = 1 WHERE id = (SELECT MIN(id) FROM users)"))
-
-    if "ai_jobs" not in inspector.get_table_names() or "ai_runs" not in inspector.get_table_names():
+    if table not in inspector.get_table_names():
+        return  # 表本身不存在时交给 create_all 处理
+    existing = {row[1] for row in engine.connect().execute(text(f"PRAGMA table_info({table})")).fetchall()}
+    missing = [(col, ddl) for col, ddl in columns.items() if col not in existing]
+    if not missing:
         return
-
-    required_columns = {
-        "ai_jobs": {
-            "job_type": "ALTER TABLE ai_jobs ADD COLUMN job_type VARCHAR(40) DEFAULT 'stock_pick'",
-            "result_schema_version": "ALTER TABLE ai_jobs ADD COLUMN result_schema_version VARCHAR(20) DEFAULT '1.0'",
-            "active_rulepack_id": "ALTER TABLE ai_jobs ADD COLUMN active_rulepack_id INTEGER",
-            "display_group": "ALTER TABLE ai_jobs ADD COLUMN display_group VARCHAR(20) DEFAULT '盘中'",
-            "engine_type": "ALTER TABLE ai_jobs ADD COLUMN engine_type VARCHAR(20) DEFAULT 'claude-code'",
-            "engine_config_json": "ALTER TABLE ai_jobs ADD COLUMN engine_config_json TEXT DEFAULT '{}'",
-            "auto_schedule": "ALTER TABLE ai_jobs ADD COLUMN auto_schedule BOOLEAN DEFAULT 1",
-            "last_executed_at": "ALTER TABLE ai_jobs ADD COLUMN last_executed_at DATETIME",
-        },
-        "ai_runs": {
-            "result_type": "ALTER TABLE ai_runs ADD COLUMN result_type VARCHAR(40)",
-            "result_payload_json": "ALTER TABLE ai_runs ADD COLUMN result_payload_json TEXT",
-            "push_payload_json": "ALTER TABLE ai_runs ADD COLUMN push_payload_json TEXT",
-            "error_stage": "ALTER TABLE ai_runs ADD COLUMN error_stage VARCHAR(40)",
-            "duration_ms": "ALTER TABLE ai_runs ADD COLUMN duration_ms INTEGER",
-            "engine_type": "ALTER TABLE ai_runs ADD COLUMN engine_type VARCHAR(20)",
-            "engine_config_json": "ALTER TABLE ai_runs ADD COLUMN engine_config_json TEXT",
-            "token_usage_json": "ALTER TABLE ai_runs ADD COLUMN token_usage_json TEXT",
-        },
-        "ai_picks": {
-            "pick_level": "ALTER TABLE ai_picks ADD COLUMN pick_level VARCHAR(40)",
-            "reason_detail": "ALTER TABLE ai_picks ADD COLUMN reason_detail TEXT",
-            "capital_profile_json": "ALTER TABLE ai_picks ADD COLUMN capital_profile_json TEXT",
-            "signal_context": "ALTER TABLE ai_picks ADD COLUMN signal_context VARCHAR(500)",
-            "risk_flags_json": "ALTER TABLE ai_picks ADD COLUMN risk_flags_json TEXT",
-            "entry_hint": "ALTER TABLE ai_picks ADD COLUMN entry_hint VARCHAR(500)",
-            "theme_tags_json": "ALTER TABLE ai_picks ADD COLUMN theme_tags_json TEXT",
-        },
-    }
-
     with engine.begin() as conn:
-        for table_name, statements in required_columns.items():
-            existing = {row[1] for row in conn.execute(text(f"PRAGMA table_info({table_name})")).fetchall()}
-            for column_name, ddl in statements.items():
-                if column_name not in existing:
-                    conn.execute(text(ddl))
+        for _, ddl in missing:
+            conn.execute(text(ddl))
+    logger.info("schema migration: added %d column(s) to %s (%s)",
+                len(missing), table, ", ".join(col for col, _ in missing))
 
-        # Create new tables if they don't exist
-        existing_tables = set(inspector.get_table_names())
 
-        if "ai_run_artifacts" not in existing_tables:
-            conn.execute(text("""
-                CREATE TABLE ai_run_artifacts (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    run_id INTEGER NOT NULL REFERENCES ai_runs(id),
-                    artifact_type VARCHAR(40) NOT NULL,
-                    name VARCHAR(200) NOT NULL,
-                    content_json TEXT,
-                    file_path VARCHAR(500),
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            """))
-            conn.execute(text("CREATE INDEX ix_ai_run_artifacts_run_type ON ai_run_artifacts (run_id, artifact_type)"))
+def ensure_ai_center_schema(engine: Engine) -> None:
+    """P5-3: 仅做缺列补齐；新表由 ``Base.metadata.create_all`` 创建。
 
-        if "ai_skill_templates" not in existing_tables:
-            conn.execute(text("""
-                CREATE TABLE ai_skill_templates (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    skill_id INTEGER NOT NULL REFERENCES ai_skills(id),
-                    template_type VARCHAR(40) NOT NULL,
-                    prompt_template TEXT NOT NULL,
-                    config_json TEXT,
-                    version INTEGER DEFAULT 1,
-                    is_active BOOLEAN DEFAULT 1,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            """))
-            conn.execute(text("CREATE INDEX ix_ai_skill_templates_skill_active ON ai_skill_templates (skill_id, is_active)"))
+    历史上 ``ensure_ai_center_schema`` 同时承担建表+列漂移维护，逻辑分散在
+    ``main.py`` 与 ``models.py`` 两份真相里（容易漂移）。现在表结构以
+    ``models.py`` 为准，本函数只补老库可能缺的新列。
+    """
+    # users.is_admin（2026-06 引入）
+    _add_missing_columns(engine, "users", {
+        "is_admin": "ALTER TABLE users ADD COLUMN is_admin BOOLEAN DEFAULT 0",
+    })
+    # ai_jobs / ai_runs / ai_picks 增量列（按需扩展，新表走 create_all）
+    _add_missing_columns(engine, "ai_jobs", {
+        "job_type": "ALTER TABLE ai_jobs ADD COLUMN job_type VARCHAR(40) DEFAULT 'stock_pick'",
+        "result_schema_version": "ALTER TABLE ai_jobs ADD COLUMN result_schema_version VARCHAR(20) DEFAULT '1.0'",
+        "active_rulepack_id": "ALTER TABLE ai_jobs ADD COLUMN active_rulepack_id INTEGER",
+        "display_group": "ALTER TABLE ai_jobs ADD COLUMN display_group VARCHAR(20) DEFAULT '盘中'",
+        "engine_type": "ALTER TABLE ai_jobs ADD COLUMN engine_type VARCHAR(20) DEFAULT 'claude-code'",
+        "engine_config_json": "ALTER TABLE ai_jobs ADD COLUMN engine_config_json TEXT DEFAULT '{}'",
+        "auto_schedule": "ALTER TABLE ai_jobs ADD COLUMN auto_schedule BOOLEAN DEFAULT 1",
+        "last_executed_at": "ALTER TABLE ai_jobs ADD COLUMN last_executed_at DATETIME",
+    })
+    _add_missing_columns(engine, "ai_runs", {
+        "result_type": "ALTER TABLE ai_runs ADD COLUMN result_type VARCHAR(40)",
+        "result_payload_json": "ALTER TABLE ai_runs ADD COLUMN result_payload_json TEXT",
+        "push_payload_json": "ALTER TABLE ai_runs ADD COLUMN push_payload_json TEXT",
+        "error_stage": "ALTER TABLE ai_runs ADD COLUMN error_stage VARCHAR(40)",
+        "duration_ms": "ALTER TABLE ai_runs ADD COLUMN duration_ms INTEGER",
+        "engine_type": "ALTER TABLE ai_runs ADD COLUMN engine_type VARCHAR(20)",
+        "engine_config_json": "ALTER TABLE ai_runs ADD COLUMN engine_config_json TEXT",
+        "token_usage_json": "ALTER TABLE ai_runs ADD COLUMN token_usage_json TEXT",
+    })
+    _add_missing_columns(engine, "ai_picks", {
+        "pick_level": "ALTER TABLE ai_picks ADD COLUMN pick_level VARCHAR(40)",
+        "reason_detail": "ALTER TABLE ai_picks ADD COLUMN reason_detail TEXT",
+        "capital_profile_json": "ALTER TABLE ai_picks ADD COLUMN capital_profile_json TEXT",
+        "signal_context": "ALTER TABLE ai_picks ADD COLUMN signal_context VARCHAR(500)",
+        "risk_flags_json": "ALTER TABLE ai_picks ADD COLUMN risk_flags_json TEXT",
+        "entry_hint": "ALTER TABLE ai_picks ADD COLUMN entry_hint VARCHAR(500)",
+        "theme_tags_json": "ALTER TABLE ai_picks ADD COLUMN theme_tags_json TEXT",
+    })
+    # users 表加 is_admin 后：把最早一个用户升为管理员（首次部署兜底）
+    with engine.connect() as conn:
+        row = conn.execute(text("SELECT COUNT(*) FROM users WHERE is_admin = 1")).scalar()
+    if row == 0:
+        with engine.begin() as conn:
+            conn.execute(text("UPDATE users SET is_admin = 1 WHERE id = (SELECT MIN(id) FROM users)"))
 
 
 def _check_cli_available(name: str) -> bool:
