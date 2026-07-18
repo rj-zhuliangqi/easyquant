@@ -1,0 +1,111 @@
+{
+  "overview": {
+    "error": "HTTP Error 422: Unprocessable Entity"
+  },
+  "st_concept": {
+    "error": "'ascii' codec can't encode characters in position 58-59: ordinal not in range(128)"
+  },
+  "st_concept2": {
+    "sector_type": "concept",
+    "requested_sector_type": "concept",
+    "resolved_sector_type": "concept",
+    "sector_name": "ST",
+    "requested_sector_name": "ST",
+    "trading_date": "2026-06-24",
+    "requested_trading_date": "2026-06-24",
+    "resolved_trading_date": "2026-06-24",
+    "fallback_reason": null,
+    "updated_at": "2026-06-24T20:38:00",
+    "source_status": "fetched",
+    "sort_by": "net_amount",
+    "sort_order": "desc",
+    "page": 1,
+    "page_size": 10,
+    "total": 10,
+    "change_percent_meta": {
+      "total": 10,
+      "original_missing_count": 0,
+      "filled_from_individual_cache": 0,
+      "missing_count": 0
+    },
+    "refresh_recommended": false,
+    "stocks": [
+      {
+        "代码": "300301",
+        "名称": "ST长方",
+        "最新价": 3.63,
+        "今日涨跌幅": 17.48,
+        "今日主力净流入-净额": 44197900.0
+      },
+      {
+        "代码": "300716",
+        "名称": "*ST泉为",
+        "最新价": 24.0,
+        "今日涨跌幅": 7.96,
+        "今日主力净流入-净额": 23547399.999999996
+      },
+      {
+        "代码": "002713",
+        "名称": "*ST东易",
+        "最新价": 11.53,
+        "今日涨跌幅": 5.01,
+        "今日主力净流入-净额": 12349400.0
+      },
+      {
+        "代码": "600289",
+        "名称": "ST信通",
+        "最新价": 5.45,
+        "今日涨跌幅": 5.01,
+        "今日主力净流入-净额": 5739500.0
+      },
+      {
+        "代码": "000838",
+        "名称": "*ST发展",
+        "最新价": 1.58,
+        "今日涨跌幅": 5.33,
+        "今日主力净流入-净额": 890100.0
+      },
+      {
+        "代码": "002822",
+        "名称": "ST中装",
+        "最新价": 2.63,
+        "今日涨跌幅": 5.2,
+        "今日主力净流入-净额": -2900800.0
+      },
+      {
+        "代码": "300831",
+        "名称": "ST派瑞",
+        "最新价": 22.4,
+        "今日涨跌幅": 5.86,
+        "今日主力净流入-净额": -2958100.0
+      },
+      {
+        "代码": "603021",
+        "名称": "*ST华鹏",
+        "最新价": 6.64,
+        "今日涨跌幅": 5.06,
+        "今日主力净流入-净额": -6363000.0
+      },
+      {
+        "代码": "605336",
+        "名称": "*ST帅电",
+        "最新价": 15.51,
+        "今日涨跌幅": 5.01,
+        "今日主力净流入-净额": -10739500.0
+      },
+      {
+        "代码": "603595",
+        "名称": "ST东尼",
+        "最新价": 33.54,
+        "今日涨跌幅": 5.01,
+        "今日主力净流入-净额": -53602299.99999999
+      }
+    ]
+  },
+  "sectors_top": {
+    "error": "HTTP Error 404: Not Found"
+  },
+  "trade_date": {
+    "error": "HTTP Error 404: Not Found"
+  }
+}

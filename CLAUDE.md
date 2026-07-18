@@ -1,7 +1,7 @@
 # EasyQuant
 
 A 股 AI 工作台 — 围绕 A 股交易日「盘前 → 盘中 → 盘后 → 夜间 → 周报」全时段，由
-13 个 AI Skill（Claude Code CLI 驱动）+ AKShare 实时资金面 + 人工观察台共同构成
+12 个 AI Skill（Claude Code CLI 驱动）+ AKShare 实时资金面 + 人工观察台共同构成
 的本地决策面板。
 
 ## 技术栈
@@ -36,7 +36,7 @@ frontend/               # Vue3 SPA 源码
     lib/                # api / auth / formatters
 .claude/skills/         # AI Skill 提示词集（每个一份 SKILL.md）
 data/
-  sector_fund_monitor.db       # 主 SQLite（启动 integrity check + 自动恢复）
+  sector_fund_monitor.db       # 主 SQLite（启动 integrity check；仅确认损坏才恢复，撞锁只重试不删 WAL）
   ai_center/inbox/             # AI 任务产物落点（待入库）
   ai_center/processed/         # 已入库归档
   ai_center/inbox/_failed/     # 入库失败的产物（含原始 JSON 便于排错）
@@ -82,9 +82,13 @@ uv run pytest tests/test_ai_center.py -q         # 单个文件
 
 ## 鉴权
 
-- JWT bearer token（`EQ_JWT_SECRET`，默认 7 天）
-- 启动时自动创建默认管理员：**admin / admin123**（首次登录后请改密码）
-- 除 `/api/auth/*` 之外的 `/api/*` 都受 AuthMiddleware 保护
+- JWT bearer token（密钥自动生成并持久化到 `data/.jwt_secret`，或用 `EQ_JWT_SECRET`
+  环境变量覆盖；默认 7 天有效）
+- 密码哈希用 PBKDF2-HMAC-SHA256；旧 SHA-256 哈希在登录时无感迁移
+- 首次启动无用户时创建默认管理员 `admin`，**初始密码随机生成并打印到启动日志**
+  （仅首次；登录后请立即改密）
+- 除 `/api/auth/*`、`/api/status` 外所有 `/api/*`（含 `/api/page/*`）均受
+  AuthMiddleware 保护；token 校验在线程池查库，不阻塞事件循环
 
 ## 协作约定
 
@@ -94,3 +98,9 @@ uv run pytest tests/test_ai_center.py -q         # 单个文件
   `feat/fix/chore(scope): ...`
 - SQLite schema 修改前备份 `data/sector_fund_monitor.db`
 - 一次性实验脚本放 `scripts/experiments/`，不要丢在仓库根
+- **启动方式只保留 launchd 一种**：不要用 `start.sh` 与 launchd 并存
+  （双进程撞锁曾导致 DB 连环损坏；P0-2 已修但仍应避免锁竞争）
+- 脚本访问主库一律用只读连接
+  `sqlite3.connect("file:data/sector_fund_monitor.db?mode=ro", uri=True)`；
+  写库走 app 服务层，不要裸连
+- 不要在仓库根留 `.tmp_*` / 一次性脚本（`.gitignore` 已忽略，仍请主动清理）
