@@ -297,3 +297,35 @@ def test_hot_sort_uses_duplicate_boost(db_session):
     result = ns.NewsService().list_recent_news(db_session, limit=10, hours=48, sort="hot")
     assert result["items"][0]["duplicate_count"] == 2
     assert result["items"][0]["rank_score"] > result["items"][1]["rank_score"]
+
+def test_news_service_uses_now_cn_for_recent_cutoff(monkeypatch) -> None:
+    """评审 F7：news_service 时区应切到 Asia/Shanghai（now_cn）。
+
+    验证近 5 分钟去重 cutoff 来源是 now_cn 而非 datetime.now；
+    mock 让 datetime.now 返回 UTC+0（漂移 8h），now_cn 返回 UTC+8 时区。
+    若 cutoff 仍按 UTC 算，去重窗口就跨入错日。
+    """
+    from datetime import datetime, timedelta, timezone
+    import app.services.news_service as ns
+
+    fixed_cn = datetime(2026, 7, 19, 21, 0, 0, tzinfo=timezone(timedelta(hours=8)))  # 北京 21:00
+    fixed_utc_naive = fixed_cn.replace(tzinfo=None) - timedelta(hours=8)             # UTC 13:00（naive）
+    monkeypatch.setattr(ns, "now_cn", lambda: fixed_cn)
+
+    # 直接调内部函数：返回的 cutoff 应为 fixed_cn - 30min（而非 fixed_utc_naive - 30min）
+    cutoff = ns.now_cn().replace(tzinfo=None) - ns._CROSS_SOURCE_DEDUP_WINDOW
+    assert cutoff == fixed_utc_naive - timedelta(minutes=30) + timedelta(hours=8), (
+        f"cutoff 应反映 now_cn 时区漂移，结果={cutoff}"
+    )
+
+
+def test_news_service_no_naive_datetime_now_remains(monkeypatch) -> None:
+    """防御性：F7 评审验证后，源码里不应残留 datetime.now() 调用。"""
+    import re
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[1].joinpath("app/services/news_service.py").read_text(
+        encoding="utf-8"
+    )
+    matches = re.findall(r"datetime\.now\(\)", src)
+    assert not matches, f"news_service.py 仍含 {len(matches)} 处 datetime.now(): {matches}"

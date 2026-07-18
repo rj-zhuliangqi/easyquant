@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 
 from app import news_client
 from app.models import NewsItem
+from app.time_utils import now_cn
 from app.news_keywords import match_keywords
 
 
@@ -191,7 +192,7 @@ def _choose_representative(items: list[NewsItem]) -> NewsItem:
 
 
 def _rank_score(item: NewsItem, cluster_size: int = 1) -> float:
-    now = datetime.now()
+    now = now_cn().replace(tzinfo=None)
     age_minutes = max(0.0, (now - (item.published_at or item.fetched_at)).total_seconds() / 60)
     freshness_score = 100 * math.exp(-age_minutes / 180)
     importance_score = {0: 20, 1: 65, 2: 100}.get(item.importance_level or 0, 20)
@@ -294,7 +295,7 @@ class NewsService:
                 existing_keys.update((r.source, r.source_id) for r in rows)
 
         # 跨源去重窗：30 分钟内已见过的 title_hash 也跳过
-        recent_cutoff = datetime.now() - _CROSS_SOURCE_DEDUP_WINDOW
+        recent_cutoff = now_cn().replace(tzinfo=None) - _CROSS_SOURCE_DEDUP_WINDOW
         recent_hashes: set[str] = set(
             session.execute(
                 select(NewsItem.title_hash).where(NewsItem.published_at >= recent_cutoff)
@@ -328,7 +329,7 @@ class NewsService:
                     "summary": (item.get("summary") or "")[:800] or None,
                     "url": item.get("url") or None,
                     "published_at": item["published_at"],
-                    "fetched_at": datetime.now(),
+                    "fetched_at": now_cn().replace(tzinfo=None),
                     "importance_level": level,
                     "matched_action": json.dumps(action_hits, ensure_ascii=False) if action_hits else None,
                     "matched_industry": json.dumps(industry_hits, ensure_ascii=False) if industry_hits else None,
@@ -378,7 +379,7 @@ class NewsService:
         from sqlalchemy import case, func, or_
 
         # ── 1. 构建公共 WHERE（counts / items 共用）──
-        cutoff = datetime.now() - timedelta(hours=hours) if hours is not None else None
+        cutoff = now_cn().replace(tzinfo=None) - timedelta(hours=hours) if hours is not None else None
 
         def _apply_window_filters(s):
             """窗口 + source/industry/action 过滤；不应用 importance_min 和 since_id。"""
@@ -464,7 +465,7 @@ class NewsService:
         return {
             "items": out_items,
             "next_cursor": out_items[-1]["id"] if out_items else None,
-            "fetched_at": datetime.now().isoformat(timespec="seconds"),
+            "fetched_at": now_cn().replace(tzinfo=None).isoformat(timespec="seconds"),
             "last_fetched_at": last_fetched_iso,
             "counts": counts,
             "display_counts": {"raw_total": window_total, "deduped_total": len(cluster_payloads)},
