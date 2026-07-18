@@ -1249,3 +1249,89 @@ def test_skill_chat_body_stream_false_overrides_default(patched_skill_chat):
     assert response.headers["content-type"].startswith("application/json")
     data = response.json()
     assert "你好" in data["response"]
+
+
+# ── B6: watermark 增量扫描 + processed/ 7 天清理 ─────────────────────────────
+def _write_run_payload(path, revision_id: int) -> None:
+    path.write_text(
+        """
+        {
+          "job_name": "09:26 auction-scan",
+          "skill_name": "auction-scan",
+          "revision_id": %d,
+          "job_type": "stock_pick",
+          "trading_date": "2026-05-07",
+          "run_type": "production",
+          "raw_output": "scan import",
+          "summary": {"headline": "scan import"},
+          "push": {"status": "sent"},
+          "result_payload": {"structured_picks": []},
+          "structured_picks": []
+        }
+        """ % revision_id,
+        encoding="utf-8",
+    )
+
+
+def test_scan_import_directory_watermark_skips_old_files(tmp_path) -> None:
+    """B6: watermark 之后 mtime 的文件被 skip，不重复读盘。"""
+    import os
+    import time
+
+    _, session_factory = build_ai_client()
+    skill_id, revision_id, _ = seed_skill(session_factory)
+    inbox = tmp_path / "inbox"
+    processed = tmp_path / "processed"
+    inbox.mkdir()
+    processed.mkdir()
+    service = AiCenterService(gateway=AiGateway(), now_provider=lambda: datetime(2026, 5, 8, 15, 0, 0))
+
+    # 首次扫描：写一个有效 payload
+    f1 = inbox / "run1.json"
+    _write_run_payload(f1, revision_id)
+    t1 = time.time()
+    os.utime(f1, (t1, t1))
+    with session_factory() as session:
+        s1 = service.scan_import_directory(session, inbox_dir=inbox, processed_dir=processed)
+    assert s1["imported"] == 1
+    assert (processed / "run1.json").exists()
+
+    # 第二次：放一个 mtime 倒拨到 watermark 之前的文件，应被 skip
+    f2 = inbox / "run2.json"
+    _write_run_payload(f2, revision_id)
+    old_t = t1 - 100  # 比 watermark 旧
+    os.utime(f2, (old_t, old_t))
+    with session_factory() as session:
+        s2 = service.scan_import_directory(session, inbox_dir=inbox, processed_dir=processed)
+    assert s2["imported"] == 0, f"旧 mtime 文件不应导入，实际 {s2}"
+    assert s2["skipped"] == 1, f"应 skip 1 个，实际 {s2}"
+    assert f2.exists(), "被 skip 的文件应留在 inbox"
+
+
+def test_cleanup_processed_dir_removes_old_files(tmp_path) -> None:
+    """B6: processed/ 内 >7 天的文件被删，近期文件保留。"""
+    import os
+    import time
+
+    processed = tmp_path / "processed"
+    processed.mkdir()
+    now = time.time()
+
+    old_file = processed / "old.json"
+    old_file.write_text("{}", encoding="utf-8")
+    os.utime(old_file, (now - 8 * 86400, now - 8 * 86400))  # 8 天前
+
+    new_file = processed / "new.json"
+    new_file.write_text("{}", encoding="utf-8")
+    os.utime(new_file, (now, now))
+
+    removed = AiCenterService.cleanup_processed_dir(processed, max_age_days=7)
+    assert removed == 1
+    assert not old_file.exists()
+    assert new_file.exists()
+
+
+def test_cleanup_processed_dir_missing_dir_is_safe(tmp_path) -> None:
+    """B6: processed/ 不存在时 cleanup 不报错。"""
+    removed = AiCenterService.cleanup_processed_dir(tmp_path / "nope", max_age_days=7)
+    assert removed == 0

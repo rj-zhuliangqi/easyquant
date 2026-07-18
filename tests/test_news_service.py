@@ -329,3 +329,52 @@ def test_news_service_no_naive_datetime_now_remains(monkeypatch) -> None:
     )
     matches = re.findall(r"datetime\.now\(\)", src)
     assert not matches, f"news_service.py 仍含 {len(matches)} 处 datetime.now(): {matches}"
+
+
+def test_title_bucket_key_stable_for_normalized_equivalent() -> None:
+    """B3: 归一化相同的标题（仅标点/空白差异）应映射到同一桶 key。"""
+    from app.services.news_service import _title_bucket_key
+
+    k1 = _title_bucket_key("沪指收涨1.2%！")   # ！被归一化掉
+    k2 = _title_bucket_key("  沪指收涨1.2% ")  # 首尾空白被 strip
+    assert k1 == k2, f"归一化相同的标题应同桶：{k1} vs {k2}"
+    assert len(k1) <= 8  # 短标题取整串，<=8
+
+
+def test_cluster_buckets_isolate_different_titles() -> None:
+    """B3: 不同前缀标题分到不同桶，不会误合并；同前缀同标题合并。"""
+    from app.services.news_service import NewsItem, NewsService
+
+    base = datetime(2026, 7, 19, 10, 0, 0)
+    items = [
+        NewsItem(id=1, source="a", source_id="1", title_hash="h1", title="贵州茅台发布年报超预期",
+                 summary="", published_at=base, fetched_at=base, importance_level=0, is_pinned=False),
+        NewsItem(id=2, source="b", source_id="2", title_hash="h2", title="宁德时代发布年报符合预期",
+                 summary="", published_at=base, fetched_at=base, importance_level=0, is_pinned=False),
+        NewsItem(id=3, source="c", source_id="3", title_hash="h3", title="贵州茅台发布年报超预期",
+                 summary="", published_at=base, fetched_at=base, importance_level=0, is_pinned=False),
+    ]
+    clusters = NewsService._cluster_news_items(items)
+    assert len(clusters) == 2, f"茅台两条应合并、宁德单列，实际 {len(clusters)} 个聚类"
+    sizes = sorted(len(c) for c in clusters)
+    assert sizes == [1, 2]
+
+
+def test_cluster_1k_items_under_half_second() -> None:
+    """B3 验收：1k 条聚类 < 0.5s。"""
+    import time as _time
+    from app.services.news_service import NewsItem, NewsService
+
+    base = datetime(2026, 7, 19, 10, 0, 0)
+    items = [
+        NewsItem(id=i, source="a", source_id=str(i), title_hash=f"h{i}",
+                 title=f"新闻标题编号{i}的报道",
+                 summary="", published_at=base, fetched_at=base,
+                 importance_level=0, is_pinned=False)
+        for i in range(1000)
+    ]
+    t0 = _time.perf_counter()
+    clusters = NewsService._cluster_news_items(items)
+    elapsed = _time.perf_counter() - t0
+    assert elapsed < 0.5, f"1k 条聚类应 <0.5s，实际 {elapsed:.3f}s"
+    assert len(clusters) == 1000  # 全不同标题 -> 1000 聚类

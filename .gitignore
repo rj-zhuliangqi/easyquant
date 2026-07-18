@@ -60,3 +60,8 @@ server-*.log
 /.tx_quote.txt
 /inspect_data.py
 /inspect2.py
+
+# 事故现场 + 全量备份（仅本地保留，不入库）
+data/sector_fund_monitor.db.broken-*
+data/.backup-pre-*
+data/.import-watermark

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from datetime import date, datetime, timedelta
 from typing import Any, Callable
 
@@ -10,6 +11,20 @@ class LimitUpService:
     def __init__(self, gateway: Any, now_provider: Callable[[], datetime] | None = None) -> None:
         self.gateway = gateway
         self.now_provider = now_provider or datetime.now
+        # B5: 涨停池加载层 45s TTL 缓存，避免重复请求打 gateway。
+        # 盘中页面 summary/ladder/broken/strong 频繁刷新，pool 数据分钟级变化足够。
+        self._pool_cache: dict[str, tuple[pd.DataFrame, float]] = {}
+        self._pool_cache_ttl = 45.0
+
+    def _cached_pool(self, key: str, loader: Callable[[], pd.DataFrame]) -> pd.DataFrame:
+        """B5: pool 级 TTL 缓存。调用方均只读（sort/groupby/tolist），缓存引用安全。"""
+        entry = self._pool_cache.get(key)
+        now_ts = time.time()
+        if entry is not None and entry[1] > now_ts:
+            return entry[0]
+        frame = loader()
+        self._pool_cache[key] = (frame, now_ts + self._pool_cache_ttl)
+        return frame
 
     def get_available_dates(self, count: int = 10) -> dict:
         current = self.now_provider().date()
@@ -148,20 +163,28 @@ class LimitUpService:
         return {"trading_date": trading_date.isoformat(), "keyword": keyword, "items": items}
 
     def _load_limit_up_pool(self, trading_date: date, market_scope: str) -> pd.DataFrame:
-        frame = self._normalize_limit_up_frame(self.gateway.fetch_limit_up_pool(trading_date.strftime("%Y%m%d")), source_view="ladder")
-        return self._filter_market_scope(frame, market_scope)
+        def _load() -> pd.DataFrame:
+            frame = self._normalize_limit_up_frame(self.gateway.fetch_limit_up_pool(trading_date.strftime("%Y%m%d")), source_view="ladder")
+            return self._filter_market_scope(frame, market_scope)
+        return self._cached_pool(f"limit_up|{trading_date}|{market_scope}", _load)
 
     def _load_previous_pool(self, trading_date: date, market_scope: str) -> pd.DataFrame:
-        frame = self._normalize_previous_pool(self.gateway.fetch_previous_limit_up_pool(trading_date.strftime("%Y%m%d")))
-        return self._filter_market_scope(frame, market_scope)
+        def _load() -> pd.DataFrame:
+            frame = self._normalize_previous_pool(self.gateway.fetch_previous_limit_up_pool(trading_date.strftime("%Y%m%d")))
+            return self._filter_market_scope(frame, market_scope)
+        return self._cached_pool(f"previous|{trading_date}|{market_scope}", _load)
 
     def _load_broken_pool(self, trading_date: date, market_scope: str) -> pd.DataFrame:
-        frame = self._normalize_broken_pool(self.gateway.fetch_broken_limit_up_pool(trading_date.strftime("%Y%m%d")))
-        return self._filter_market_scope(frame, market_scope)
+        def _load() -> pd.DataFrame:
+            frame = self._normalize_broken_pool(self.gateway.fetch_broken_limit_up_pool(trading_date.strftime("%Y%m%d")))
+            return self._filter_market_scope(frame, market_scope)
+        return self._cached_pool(f"broken|{trading_date}|{market_scope}", _load)
 
     def _load_strong_pool(self, trading_date: date, market_scope: str) -> pd.DataFrame:
-        frame = self._normalize_strong_pool(self.gateway.fetch_strong_limit_up_pool(trading_date.strftime("%Y%m%d")))
-        return self._filter_market_scope(frame, market_scope)
+        def _load() -> pd.DataFrame:
+            frame = self._normalize_strong_pool(self.gateway.fetch_strong_limit_up_pool(trading_date.strftime("%Y%m%d")))
+            return self._filter_market_scope(frame, market_scope)
+        return self._cached_pool(f"strong|{trading_date}|{market_scope}", _load)
 
     @staticmethod
     def _normalize_limit_up_frame(frame: pd.DataFrame, source_view: str) -> pd.DataFrame:

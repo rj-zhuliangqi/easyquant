@@ -173,6 +173,9 @@ class ClaudeCodeExecutor:
     ) -> ExecuteResult:
         prompt = _build_prompt(skill_name, trading_date, data_file, output_dir, "claude-code", skill_prompt)
         timeout = config.get("timeout_s", 1800)
+        # B1: 约定文件名前缀，_find_new_output_files 只认本 skill 产物，避免并发抢文件
+        safe_name = skill_name.replace(":", "").replace(" ", "_")
+        expected_prefix = f"{safe_name}_{trading_date}_"
 
         claude_path = _find_cli("claude")
         if not claude_path:
@@ -206,7 +209,7 @@ class ClaudeCodeExecutor:
             if proc.returncode != 0:
                 logger.error("claude-code exited with code %d: stderr=%s stdout=%s",
                              proc.returncode, stderr[:500], stdout[:500])
-                output_files = _find_new_output_files(output_dir, start)
+                output_files = _find_new_output_files(output_dir, start, name_prefix=expected_prefix)
                 return ExecuteResult(
                     success=len(output_files) > 0,
                     skill_name=skill_name,
@@ -218,7 +221,7 @@ class ClaudeCodeExecutor:
                 )
 
             # Check for new output files
-            output_files = _find_new_output_files(output_dir, start)
+            output_files = _find_new_output_files(output_dir, start, name_prefix=expected_prefix)
             if not output_files:
                 logger.warning("claude-code returned 0 but produced no output files; stdout=%s",
                                stdout[:500])
@@ -244,7 +247,7 @@ class ClaudeCodeExecutor:
                 stdout, stderr = (proc.stdout and proc.stdout.read()) or "", (proc.stderr and proc.stderr.read()) or ""
             duration_ms = int((time.time() - start) * 1000)
             # Check for partial output files even on timeout
-            output_files = _find_new_output_files(output_dir, start)
+            output_files = _find_new_output_files(output_dir, start, name_prefix=expected_prefix)
             logger.error("claude-code timed out after %dms, output_files=%d, stdout=%s",
                          duration_ms, len(output_files), (stdout or "")[:200])
             if output_files:
@@ -275,6 +278,9 @@ class GooseExecutor:
     ) -> ExecuteResult:
         prompt = _build_prompt(skill_name, trading_date, data_file, output_dir, "goose", skill_prompt)
         timeout = config.get("timeout_s", 1800)
+        # B1: 约定文件名前缀
+        safe_name = skill_name.replace(":", "").replace(" ", "_")
+        expected_prefix = f"{safe_name}_{trading_date}_"
 
         cmd = [
             "goose", "session", "run",
@@ -305,7 +311,7 @@ class GooseExecutor:
                     error=proc.stderr[:1000],
                 )
 
-            output_files = _find_new_output_files(output_dir, start)
+            output_files = _find_new_output_files(output_dir, start, name_prefix=expected_prefix)
             logger.info("goose completed in %dms, produced %d file(s)", duration_ms, len(output_files))
 
             return ExecuteResult(
@@ -407,8 +413,18 @@ class CustomExecutor:
             )
 
 
-def _find_new_output_files(output_dir: str, since_epoch: float) -> list[str]:
-    """查找在 since_epoch 之后创建的 JSON 文件"""
+def _find_new_output_files(
+    output_dir: str,
+    since_epoch: float,
+    name_prefix: str | None = None,
+) -> list[str]:
+    """查找在 since_epoch 之后创建的 JSON 文件。
+
+    B1 修复：若传入 ``name_prefix``（约定文件名前缀
+    ``{safe_name}_{trading_date}_``），只匹配此前缀开头的文件，避免并发执行
+    多个 skill 时按 mtime 抢占彼此产物（mtime-first-claim 错配）。
+    不传则保留旧行为（匹配所有 *.json），向后兼容。
+    """
     output_path = Path(output_dir)
     if not output_path.exists():
         return []
@@ -416,10 +432,13 @@ def _find_new_output_files(output_dir: str, since_epoch: float) -> list[str]:
     files = []
     for f in output_path.glob("*.json"):
         try:
-            if f.stat().st_mtime >= since_epoch:
-                files.append(str(f))
+            if f.stat().st_mtime < since_epoch:
+                continue
         except OSError:
             continue
+        if name_prefix and not f.name.startswith(name_prefix):
+            continue
+        files.append(str(f))
     return sorted(files)
 
 

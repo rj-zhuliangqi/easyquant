@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from datetime import date, datetime
 from typing import Any
 
@@ -15,6 +16,10 @@ class RealtimeCacheService:
         self.now_provider = now_provider or datetime.now
         self.individual_ttl_seconds = 90
         self.sector_stock_ttl_seconds = 90
+        # B2: 实时行情内存缓存（code -> (quote, expires_at)），8s TTL，
+        # 避免每次页面渲染都打 gateway.fetch_stock_quote_batch。
+        self._live_quote_cache: dict[str, tuple[dict[str, Any], float]] = {}
+        self._live_quote_ttl_seconds = 8
 
     def get_sector_stocks(
         self,
@@ -577,13 +582,38 @@ class RealtimeCacheService:
         return {row.stock_code: row for row in self._individual_rows(session, trading_date, latest_time)}
 
     def _live_quotes_by_code(self, stock_codes: list[str]) -> dict[str, dict[str, Any]]:
+        """B2: 8s TTL 内存缓存。
+
+        同一批 code 在 TTL 内直接用缓存，未命中的才打 gateway。盘中页面频繁刷新时
+        显著降低对行情网关的请求频次。过期条目惰性清理。
+        """
+        if not stock_codes:
+            return {}
+        now_ts = time.time()
+        result: dict[str, dict[str, Any]] = {}
+        missing: list[str] = []
+        for code in stock_codes:
+            entry = self._live_quote_cache.get(code)
+            if entry and entry[1] > now_ts:
+                result[code] = entry[0]
+            else:
+                missing.append(code)
+        if not missing:
+            return result
         fetcher = getattr(self.gateway, "fetch_stock_quote_batch", None)
         if not callable(fetcher):
-            return {}
+            return result
         try:
-            return fetcher(stock_codes) or {}
+            fetched = fetcher(missing) or {}
         except Exception:
-            return {}
+            return result
+        expires = now_ts + self._live_quote_ttl_seconds
+        for code in missing:
+            quote = fetched.get(code)
+            if quote is not None:
+                self._live_quote_cache[code] = (quote, expires)
+                result[code] = quote
+        return result
 
     @staticmethod
     def _sort_sector_stock_rows(

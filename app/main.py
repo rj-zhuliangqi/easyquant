@@ -977,6 +977,13 @@ def create_app(
             scheduler.start()
             ai_skill_job_count = sum(1 for j in scheduler.get_jobs() if j.id.startswith("ai-skill-"))
             logger.info("scheduler started with %d AI skill cron jobs registered", ai_skill_job_count)
+            # B6: 启动时清理 processed/ 内 >7 天的归档文件
+            try:
+                removed = ai_center.cleanup_processed_dir(AI_CENTER_PROCESSED_DIR, max_age_days=7)
+                if removed:
+                    logger.info("startup cleanup removed %d stale ai_center processed files", removed)
+            except Exception:
+                logger.exception("startup ai_center cleanup failed")
         yield
         if scheduler.running:
             scheduler.shutdown(wait=False)

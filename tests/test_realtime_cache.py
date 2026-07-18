@@ -525,3 +525,54 @@ def test_rotate_sector_batch_picks_a_deterministic_slice(db_session) -> None:
 
     assert len(rotated) == 2
     assert rotated == ["C", "D"]
+
+
+# ── B2: live_quotes 8s TTL 缓存 ────────────────────────────────────────────
+class _CountingQuoteGateway:
+    """记录 fetch_stock_quote_batch 调用次数的 stub。"""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def fetch_stock_quote_batch(self, codes):  # noqa: ANN001
+        self.calls += 1
+        return {c: {"latest_price": 10.0 + i, "change_percent": 1.0} for i, c in enumerate(codes)}
+
+
+def test_live_quotes_cache_hits_within_ttl_window() -> None:
+    """TTL 内二次查询不应再打 gateway。"""
+    svc = RealtimeCacheService(gateway=_CountingQuoteGateway())
+    gw = svc.gateway
+
+    r1 = svc._live_quotes_by_code(["000001", "000002"])
+    assert r1 == {"000001": {"latest_price": 10.0, "change_percent": 1.0},
+                  "000002": {"latest_price": 11.0, "change_percent": 1.0}}
+    assert gw.calls == 1, f"首次应调 1 次，实际 {gw.calls}"
+
+    r2 = svc._live_quotes_by_code(["000001", "000002"])
+    assert r2 == r1
+    assert gw.calls == 1, f"TTL 内应命中缓存不再调，实际 {gw.calls}"
+
+
+def test_live_quotes_cache_expires_after_ttl() -> None:
+    """TTL 过期后应重新打 gateway。"""
+    svc = RealtimeCacheService(gateway=_CountingQuoteGateway())
+    svc._live_quote_ttl_seconds = 0  # 立即过期
+    gw = svc.gateway
+
+    svc._live_quotes_by_code(["000001"])
+    assert gw.calls == 1
+    svc._live_quotes_by_code(["000001"])
+    assert gw.calls == 2, f"TTL=0 第二次应重打，实际 {gw.calls}"
+
+
+def test_live_quotes_cache_partial_miss_fetches_only_missing() -> None:
+    """部分命中时只对未命中的 code 调 gateway。"""
+    svc = RealtimeCacheService(gateway=_CountingQuoteGateway())
+    gw = svc.gateway
+
+    svc._live_quotes_by_code(["000001"])  # 缓存 000001
+    assert gw.calls == 1
+    r = svc._live_quotes_by_code(["000001", "000099"])  # 000001 命中，000099 缺
+    assert gw.calls == 2, f"应只补抓 missing，实际 {gw.calls}"
+    assert set(r.keys()) == {"000001", "000099"}

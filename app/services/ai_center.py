@@ -1014,6 +1014,8 @@ class AiCenterService:
         - On failure the file is moved to ``inbox_dir/_failed/`` so it is not
           retried forever and the operator can inspect it.
         - Errors are logged with the offending filename and exception type.
+        - B6: watermark 增量 -- 只处理 mtime > watermark 的文件，连续扫描第二次
+          几乎不读盘。watermark 存 ``inbox_dir/../.import-watermark``。
         """
 
         inbox = Path(inbox_dir)
@@ -1021,10 +1023,22 @@ class AiCenterService:
         failed_dir = inbox / "_failed"
         processed.mkdir(parents=True, exist_ok=True)
         failed_dir.mkdir(parents=True, exist_ok=True)
+        watermark_path = inbox.parent / ".import-watermark"
+        watermark = self._read_watermark(watermark_path)
         imported = 0
         failed = 0
+        skipped = 0
         failures: list[dict[str, str]] = []
+        max_mtime_seen = watermark
         for file_path in sorted(inbox.glob("*.json")):
+            try:
+                mtime = file_path.stat().st_mtime
+            except OSError:
+                continue
+            if mtime <= watermark:
+                skipped += 1
+                continue
+            max_mtime_seen = max(max_mtime_seen, mtime)
             try:
                 payload = json.loads(file_path.read_text(encoding="utf-8"))
                 self.import_run(session, payload)
@@ -1047,7 +1061,48 @@ class AiCenterService:
                     shutil.move(str(file_path), failed_dir / file_path.name)
                 except Exception:  # noqa: BLE001
                     logger.exception("ai_center.import_run could not move failed file=%s", file_path.name)
-        return {"imported": imported, "failed": failed, "failures": failures}
+        # 推进 watermark：即使本次无新文件也写一次，记录扫描进度
+        self._write_watermark(watermark_path, max_mtime_seen)
+        return {"imported": imported, "failed": failed, "skipped": skipped, "failures": failures}
+
+    @staticmethod
+    def _read_watermark(path: Path) -> float:
+        """读 watermark mtime；不存在或损坏返回 0（首次全量）。"""
+        try:
+            text = path.read_text(encoding="utf-8").strip()
+            return float(text) if text else 0.0
+        except (OSError, ValueError):
+            return 0.0
+
+    @staticmethod
+    def _write_watermark(path: Path, value: float) -> None:
+        try:
+            path.write_text(f"{value:.6f}", encoding="utf-8")
+        except OSError:
+            logger.warning("ai_center could not write watermark path=%s", path)
+
+    @staticmethod
+    def cleanup_processed_dir(processed_dir: Path, max_age_days: int = 7) -> int:
+        """B6: 清理 processed/ 内超过 max_age_days 的旧归档文件。
+
+        processed/ 只是已入库 JSON 的归档（数据已在 DB），直接删旧文件，
+        避免目录无限膨胀。返回删除数。
+        """
+        processed = Path(processed_dir)
+        if not processed.exists():
+            return 0
+        cutoff = datetime.now().timestamp() - max_age_days * 86400
+        removed = 0
+        for file_path in processed.glob("*.json"):
+            try:
+                if file_path.stat().st_mtime < cutoff:
+                    file_path.unlink()
+                    removed += 1
+            except OSError:
+                continue
+        if removed:
+            logger.info("ai_center.cleanup_processed_dir removed %d archived files (>=%dd)", removed, max_age_days)
+        return removed
 
     def compute_pick_outcomes(self, session: Session, pick: AiPick) -> int:
         history = self._stock_history(pick.stock_code)
