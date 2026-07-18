@@ -96,23 +96,22 @@ def test_sector_stock_cache_reports_unavailable_when_gateway_returns_no_rows(db_
     assert payload["source_status"] == "unavailable"
 
 
-def test_sector_stock_cache_can_fast_return_background_refresh_without_blocking_fetch(db_session) -> None:
+def test_sector_stock_cache_background_refresh_falls_back_to_sync_refresh(db_session) -> None:
+    """P5-1d: background_refresh 死分支已删，True 时走正常同步刷新（不再返回 refreshing 空壳）"""
     gateway = FakeGateway()
     service = RealtimeCacheService(gateway=gateway, now_provider=lambda: datetime(2026, 5, 9, 14, 59, 0))
 
     payload = service.get_sector_stocks(
         db_session,
         sector_type="industry",
-        sector_name="鍐涙皯铻嶅悎",
+        sector_name="军民融合",
         background_refresh=True,
     )
 
-    assert gateway.sector_stock_calls == 0
-    assert payload["stocks"] == []
-    assert payload["source_status"] == "refreshing"
-    assert payload["refresh_recommended"] is True
-    assert payload["fallback_reason"] == "background_refresh_pending"
-
+    # 落到同步刷新：gateway 被调用，不再返回 refreshing 空壳
+    assert gateway.sector_stock_calls == 1
+    assert payload["source_status"] != "refreshing"
+    assert payload["fallback_reason"] != "background_refresh_pending"
 
 def test_sector_stock_cache_supports_sorting_and_pagination(db_session) -> None:
     gateway = FakeGateway()

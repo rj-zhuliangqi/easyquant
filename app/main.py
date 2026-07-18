@@ -212,7 +212,8 @@ def ensure_ai_center_schema(engine: Engine) -> None:
 
     # Ensure auth schema (is_admin column on users table)
     if "users" in inspector.get_table_names():
-        existing_user_cols = {row[1] for row in engine.connect().execute(text("PRAGMA table_info(users)")).fetchall()}
+        with engine.connect() as conn:
+            existing_user_cols = {row[1] for row in conn.execute(text("PRAGMA table_info(users)")).fetchall()}
         if "is_admin" not in existing_user_cols:
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE users ADD COLUMN is_admin BOOLEAN DEFAULT 0"))
@@ -951,8 +952,14 @@ def create_app(
                                     allowed_days.add(weekday_map.get(part, -1))
                             if now.weekday() not in allowed_days:
                                 continue
-                        scheduled_hour = int(cron_kwargs.get("hour", "0"))
-                        scheduled_minute = int(cron_kwargs.get("minute", "0"))
+                        try:
+                            scheduled_hour = int(cron_kwargs.get("hour", "0"))
+                            scheduled_minute = int(cron_kwargs.get("minute", "0"))
+                        except ValueError:
+                            # 复杂 cron（*/2、8,12 等）无法取单一时刻，跳过 catch-up（P5-1h：
+                            # 原 int() ValueError 未捕获会杀掉整个 catch-up 循环）
+                            logger.debug("catch-up skip job %s: complex cron %r", catchup_job.name, cron_expr)
+                            continue
                         scheduled_time_today = now.replace(hour=scheduled_hour, minute=scheduled_minute, second=0, microsecond=0)
                         if now <= scheduled_time_today:
                             continue  # Not yet time for this job today

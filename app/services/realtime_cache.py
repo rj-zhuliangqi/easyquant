@@ -40,11 +40,9 @@ class RealtimeCacheService:
         fallback_reason = None
         attempted_current_refresh = False
 
-        if latest_time is None and not force_refresh and target_date == current_time.date() and background_refresh:
-            source_status = "refreshing"
-            fallback_reason = "background_refresh_pending"
-            attempted_current_refresh = True
-        elif latest_time is None and not force_refresh and target_date == current_time.date():
+        # P5-1d: 原 background_refresh 分支只设 "refreshing" 状态但不实际发起刷新（死参数），
+        # 删除后落到下面的实际刷新逻辑；参数保留以兼容 API 但不再有副作用
+        if latest_time is None and not force_refresh and target_date == current_time.date():
             latest_time = self.refresh_sector_stocks(
                 session,
                 sector_type=sector_type,
@@ -377,8 +375,18 @@ class RealtimeCacheService:
             seen.add(key)
             normalized_items.append({"sector_type": sector_type, "sector_name": canonical_name, "enabled": True})
 
-        session.execute(delete(WatchedSector))
-        session.add_all([WatchedSector(**item) for item in normalized_items])
+        # P5-1f: merge upsert，不再全表 delete+insert
+        incoming_keys = {(item["sector_type"], item["sector_name"]) for item in normalized_items}
+        existing = {(row.sector_type, row.sector_name): row for row in session.scalars(select(WatchedSector))}
+        for item in normalized_items:
+            row = existing.get((item["sector_type"], item["sector_name"]))
+            if row is not None:
+                row.enabled = item["enabled"]
+            else:
+                session.add(WatchedSector(**item))
+        for key, row in existing.items():
+            if key not in incoming_keys:
+                session.delete(row)
         session.commit()
         return normalized_items
 

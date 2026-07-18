@@ -56,17 +56,23 @@ class FundFlowCollector:
 
     @staticmethod
     def _to_percent(value: Any) -> float | None:
-        if value is None or value == "":
+        if value is None or value == "" or value == "--":
             return None
-        if isinstance(value, str):
-            return float(value.replace("%", ""))
-        return float(value)
+        try:
+            if isinstance(value, str):
+                return float(value.replace("%", ""))
+            return float(value)
+        except (ValueError, TypeError):
+            return None
 
     @staticmethod
     def _to_float(value: Any) -> float | None:
-        if value is None or value == "":
+        if value is None or value == "" or value == "--":
             return None
-        return float(value)
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            return None
 
     @staticmethod
     def _to_int(value: Any) -> int | None:

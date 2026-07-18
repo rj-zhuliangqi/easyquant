@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from datetime import date
@@ -463,7 +464,7 @@ def prefetch_market_data(trading_date: date, output_file: str | None = None) -> 
         output_file = f"/tmp/easyquant_market_data_{trading_date.isoformat()}.json"
 
     cmd = [
-        "python3",
+        sys.executable,
         str(FETCH_DATA_SCRIPT),
         "--date", trading_date.isoformat(),
         "--output", output_file,
