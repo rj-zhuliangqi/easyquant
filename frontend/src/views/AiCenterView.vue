@@ -211,11 +211,12 @@ const renderedMarkdown = computed(() => {
   const html = marked(raw);
   return sanitizeHtml(html
     .replace(/([+-]\d+\.?\d*%)/g, (m) => {
-      const color = m.startsWith("+") ? "#4ade80" : "#f87171";
+      // A 股惯例：涨（+）= 红，跌（-）= 绿
+      const color = m.startsWith("+") ? "var(--up, #f43f5e)" : "var(--down, #10b981)";
       return `<span style="color:${color};font-weight:600">${m}</span>`;
     })
-    .replace(/(涨停|一字板|地天板)/g, '<span style="color:#f87171;font-weight:600">$1</span>')
-    .replace(/(跌停|一字跌停)/g, '<span style="color:#93c5fd;font-weight:600">$1</span>'));
+    .replace(/(涨停|一字板|地天板)/g, '<span style="color:var(--up, #f43f5e);font-weight:600">$1</span>')
+    .replace(/(跌停|一字跌停)/g, '<span style="color:var(--down, #10b981);font-weight:600">$1</span>'));
 });
 
 // ── Skill Chat state ──
@@ -754,7 +755,7 @@ function applySkillDraft() {
 .chat-draft h4 { font-size: 14px; font-weight: 600; margin-bottom: 10px; color: var(--text, #e2e8f0); }
 .draft-json { padding: 12px; border-radius: 8px; background: rgba(0,0,0,0.2); font-family: monospace; font-size: 12px; line-height: 1.5; color: var(--text-muted, #94a3b8); overflow-x: auto; margin-bottom: 12px; }
 .draft-actions { display: flex; gap: 10px; }
-.btn-apply { padding: 8px 16px; border-radius: 8px; background: rgba(74,222,128,0.1); color: #4ade80; font-size: 13px; font-weight: 600; border: none; cursor: pointer; }
+.btn-apply { padding: 8px 16px; border-radius: 8px; background: var(--success-soft, rgba(16,185,129,0.1)); color: var(--success, #10b981); font-size: 13px; font-weight: 600; border: none; cursor: pointer; }
 .btn-cancel { padding: 8px 16px; border-radius: 8px; background: rgba(248,113,113,0.1); color: #f87171; font-size: 13px; font-weight: 600; border: none; cursor: pointer; }
 .btn-clear { padding: 4px 10px; border-radius: 6px; background: rgba(148,163,184,0.08); color: var(--text-muted, #94a3b8); font-size: 11px; border: none; cursor: pointer; }
 .btn-clear:hover { background: rgba(148,163,184,0.15); }
@@ -815,8 +816,8 @@ function applySkillDraft() {
 .markdown-body hr { border: none; border-top: 2px solid rgba(255,255,255,0.1); margin: 24px 0; }
 
 /* ── A股惯例：涨红跌绿 ── */
-.markdown-body .up { color: #f87171; font-weight: 700; }
-.markdown-body .down { color: #4ade80; font-weight: 700; }
+.markdown-body .up { color: var(--up, #f43f5e); font-weight: 700; }
+.markdown-body .down { color: var(--down, #10b981); font-weight: 700; }
 .markdown-body .limit-up {
   color: #fff; font-weight: 700;
   padding: 2px 8px; border-radius: 4px;
@@ -845,7 +846,7 @@ function applySkillDraft() {
 
 /* ── 资金流向：涨红跌绿 ── */
 .markdown-body .inflow { color: #f87171; font-weight: 700; }
-.markdown-body .outflow { color: #4ade80; font-weight: 700; }
+.markdown-body .outflow { color: var(--down, #10b981); font-weight: 700; }
 
 /* ── 利好/利空：卡片式 ── */
 .markdown-body .alert-good {
@@ -856,10 +857,10 @@ function applySkillDraft() {
 .markdown-body .alert-good b { color: #f87171; }
 .markdown-body .alert-bad {
   padding: 14px 18px; border-radius: 10px;
-  background: rgba(74,222,128,0.08); border-left: 3px solid #4ade80;
+  background: var(--down-soft, rgba(16,185,129,0.08)); border-left: 3px solid var(--down, #10b981);
   margin: 16px 0; line-height: 1.7;
 }
-.markdown-body .alert-bad b { color: #4ade80; }
+.markdown-body .alert-bad b { color: var(--down, #10b981); }
 
 /* ── 风险提示 ── */
 .markdown-body .risk-box {

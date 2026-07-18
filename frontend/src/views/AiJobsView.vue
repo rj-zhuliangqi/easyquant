@@ -534,7 +534,7 @@ function goDetail(job, run = null) {
 .toggle-slider { position: relative; width: 36px; height: 20px; border-radius: 20px; background: rgba(148,163,184,0.2); transition: background 0.2s ease; flex-shrink: 0; }
 .toggle-slider::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #94a3b8; transition: all 0.2s ease; }
 .toggle-switch input:checked + .toggle-slider { background: rgba(74,222,128,0.3); }
-.toggle-switch input:checked + .toggle-slider::after { transform: translateX(16px); background: #4ade80; }
+.toggle-switch input:checked + .toggle-slider::after { transform: translateX(16px); background: var(--success, #10b981); }
 .toggle-switch input:disabled + .toggle-slider { opacity: 0.4; cursor: not-allowed; }
 .toggle-label { font-size: 12px; color: var(--text-muted); min-width: 28px; }
 
@@ -564,7 +564,7 @@ function goDetail(job, run = null) {
 .run-row:hover { border-color: var(--accent); color: var(--text); }
 .run-name { font-weight: 700; color: var(--text); }
 .status-badge { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 20px; }
-.status-success { color: #4ade80; background: rgba(74,222,128,0.1); }
+.status-success { color: var(--success, #10b981); background: var(--success-soft, rgba(16,185,129,0.1)); }
 .status-danger { color: #f87171; background: rgba(248,113,113,0.1); }
 .status-running { color: #06b6d4; background: rgba(6,182,212,0.1); }
 .status-neutral { color: #94a3b8; background: rgba(148,163,184,0.08); }

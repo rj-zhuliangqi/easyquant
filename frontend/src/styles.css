@@ -42,6 +42,13 @@
   --info: #3b82f6;
   --info-soft: rgba(59, 130, 246, 0.1);
 
+  /* 涨跌色（A 股惯例：涨=红，跌=绿；与状态色 success/danger 语义区分，
+     成功/失败仍用 success/danger，涨跌用 up/down） */
+  --up: #f43f5e;
+  --up-soft: rgba(244, 63, 94, 0.12);
+  --down: #10b981;
+  --down-soft: rgba(16, 185, 129, 0.12);
+
   /* Chart colors */
   --chart-1: #06b6d4;
   --chart-2: #8b5cf6;
@@ -92,9 +99,11 @@
   /* Z-index scale */
   --z-dropdown: 100;
   --z-sticky: 200;
-  --z-modal: 300;
-  --z-toast: 400;
-  --z-tooltip: 500;
+  --z-topbar: 290;
+  --z-sidebar: 300;
+  --z-modal: 400;
+  --z-toast: 500;
+  --z-tooltip: 600;
 
   /* Safe area (for notched phones) */
   --safe-top: env(safe-area-inset-top, 0px);
@@ -916,6 +925,9 @@ select:focus-visible {
 .text-success { color: var(--success); }
 .text-warning { color: var(--warning); }
 .text-danger { color: var(--danger); }
+/* 涨跌色（A 股：涨红跌绿），与状态色 success/danger 区分 */
+.text-up { color: var(--up); }
+.text-down { color: var(--down); }
 .text-muted { color: var(--text-muted); }
 
 .bg-accent-soft { background: var(--accent-soft); }

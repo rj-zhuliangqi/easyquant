@@ -32,7 +32,7 @@ const isEmpty = computed(() =>
       <div>
         <p class="eyebrow">观察与备注</p>
         <h2>个人观察台</h2>
-        <p class="hero-copy">将观察池与备注作为一个稳定页面实例保留下来。</p>
+        <p class="hero-copy">管理自选股、观察池与笔记，沉淀跨日跟踪的个人标的。</p>
       </div>
       <QueryState :is-loading="queryLoading" :is-fetching="queryFetching" :updated-at="queryUpdatedAt" />
     </header>

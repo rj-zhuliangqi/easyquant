@@ -97,7 +97,7 @@ const queryError = computed(() => bootstrapQuery.isError.value || !!listError.va
       <div>
         <p class="eyebrow">盘中信号</p>
         <h2>预警中心</h2>
-        <p class="hero-copy">筛选切换时保留列表与详情，只做局部刷新。</p>
+        <p class="hero-copy">实时监控市场、板块、个股异动信号，按强度与时间窗筛选。</p>
       </div>
       <QueryState :is-loading="queryLoading" :is-fetching="queryFetching" :is-error="queryError" :updated-at="queryUpdatedAt" @retry="refreshAlerts" />
     </header>

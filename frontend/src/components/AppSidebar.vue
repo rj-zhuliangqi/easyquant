@@ -213,7 +213,7 @@ const navIcons = {
   overflow-y: auto;
   overflow-x: hidden;
   transition: transform var(--transition-slow), opacity var(--transition-slow);
-  z-index: 300;
+  z-index: var(--z-sidebar);
 }
 
 .sidebar::-webkit-scrollbar {

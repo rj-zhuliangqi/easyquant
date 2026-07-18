@@ -458,7 +458,7 @@ function openRun(run) {
 }
 
 .pick-pct.down {
-  color: #4ade80;
+  color: var(--success, #10b981);
 }
 
 /* ── Action Badge ── */
@@ -486,8 +486,8 @@ function openRun(run) {
 }
 
 .action-badge.sell {
-  color: #4ade80;
-  background: rgba(74,222,128,0.1);
+  color: var(--success, #10b981);
+  background: var(--success-soft, rgba(16,185,129,0.1));
 }
 
 .action-badge.watch {
@@ -621,7 +621,7 @@ function openRun(run) {
 }
 
 .status-badge { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 20px; }
-.status-success { color: #4ade80; background: rgba(74,222,128,0.1); }
+.status-success { color: var(--success, #10b981); background: var(--success-soft, rgba(16,185,129,0.1)); }
 .status-danger { color: #f87171; background: rgba(248,113,113,0.1); }
 .status-neutral { color: #94a3b8; background: rgba(148,163,184,0.08); }
 .mt-lg { margin-top: var(--space-4); }

@@ -71,7 +71,7 @@ function closeSidebar() {
   background: rgba(0, 0, 0, 0.5);
   backdrop-filter: blur(4px);
   -webkit-backdrop-filter: blur(4px);
-  z-index: 299;
+  z-index: var(--z-topbar);
 }
 
 .overlay-fade-enter-active,

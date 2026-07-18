@@ -67,7 +67,7 @@ const chartOption = computed(() => ({
       <div>
         <p class="eyebrow">今日 AI 工作台</p>
         <h2>盘中脉搏</h2>
-        <p class="hero-copy">聚合市场状态、板块强弱与行动优先级；AI 定时任务已移至独立任务页。</p>
+        <p class="hero-copy">一屏掌握市场温度、板块强弱与今日 AI 产出的行动优先级。</p>
       </div>
       <QueryState :is-loading="queryLoading" :is-fetching="queryFetching" :updated-at="queryUpdatedAt" />
     </header>
@@ -127,7 +127,7 @@ const chartOption = computed(() => ({
           <div v-for="item in marketOverview.indices || []" :key="item.symbol" class="row-card">
             <strong>{{ item.name }}</strong>
             <span>{{ formatNumber(item.price) }}</span>
-            <small :class="{ 'text-success': (item.change_percent || 0) > 0, 'text-danger': (item.change_percent || 0) < 0 }">
+            <small :class="{ 'text-up': (item.change_percent || 0) > 0, 'text-down': (item.change_percent || 0) < 0 }">
               {{ formatPercent(item.change_percent) }}
             </small>
           </div>

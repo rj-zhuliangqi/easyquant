@@ -68,7 +68,7 @@ const comparisonOption = computed(() => ({
       <div>
         <p class="eyebrow">板块跟踪</p>
         <h2>板块资金监控</h2>
-        <p class="hero-copy">首屏由聚合接口一次下发，切换板块时只刷新受影响面板。</p>
+        <p class="hero-copy">实时追踪行业与概念板块资金流，对比龙头表现与强度。</p>
       </div>
       <QueryState :is-loading="queryLoading" :is-fetching="queryFetching" :updated-at="queryUpdatedAt" />
     </header>
@@ -89,7 +89,7 @@ const comparisonOption = computed(() => ({
           >
             <strong>{{ item.sector_name }}</strong>
             <span>{{ formatAmount(item.net_amount) }}</span>
-            <small class="text-success">{{ formatPercent(item.net_strength * 100) }}</small>
+            <small :class="{ 'text-up': (item.net_strength || 0) > 0, 'text-down': (item.net_strength || 0) < 0 }">{{ formatPercent(item.net_strength * 100) }}</small>
           </button>
           <EmptyState
             v-if="!(payload.overview?.leaders?.length) && !queryLoading"

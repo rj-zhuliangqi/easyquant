@@ -1,18 +1,20 @@
 import { createRouter, createWebHistory } from "vue-router";
 import { isAuthenticated } from "./lib/auth";
 
-import HomeView from "./views/HomeView.vue";
-import AlertsView from "./views/AlertsView.vue";
-import NewsView from "./views/NewsView.vue";
-import SectorMonitorView from "./views/SectorMonitorView.vue";
-import LimitUpView from "./views/LimitUpView.vue";
-import OpportunityPoolView from "./views/OpportunityPoolView.vue";
-import WorkspaceView from "./views/WorkspaceView.vue";
-import AiCenterView from "./views/AiCenterView.vue";
-import AiJobsView from "./views/AiJobsView.vue";
-import ReviewView from "./views/ReviewView.vue";
+// LoginView 保持静态（登出后首屏，体积小）；其余路由懒加载，减小首屏 chunk（P3-5）
 import LoginView from "./views/LoginView.vue";
-import UserMgmtView from "./views/UserMgmtView.vue";
+
+const HomeView = () => import("./views/HomeView.vue");
+const AlertsView = () => import("./views/AlertsView.vue");
+const NewsView = () => import("./views/NewsView.vue");
+const SectorMonitorView = () => import("./views/SectorMonitorView.vue");
+const LimitUpView = () => import("./views/LimitUpView.vue");
+const OpportunityPoolView = () => import("./views/OpportunityPoolView.vue");
+const WorkspaceView = () => import("./views/WorkspaceView.vue");
+const AiCenterView = () => import("./views/AiCenterView.vue");
+const AiJobsView = () => import("./views/AiJobsView.vue");
+const ReviewView = () => import("./views/ReviewView.vue");
+const UserMgmtView = () => import("./views/UserMgmtView.vue");
 
 export const routes = [
   { path: "/login", name: "login", component: LoginView, meta: { title: "登录" } },

@@ -54,7 +54,7 @@ const chartOption = computed(() => ({
       <div>
         <p class="eyebrow">情绪与空间</p>
         <h2>A股连板梯队</h2>
-        <p class="hero-copy">保留梯队和温度视图，切页往返不再重建整个页面。</p>
+        <p class="hero-copy">追踪连板梯队、炸板池与市场打板温度，把握情绪节奏。</p>
       </div>
       <QueryState :is-loading="queryLoading" :is-fetching="queryFetching" :updated-at="queryUpdatedAt" />
     </header>

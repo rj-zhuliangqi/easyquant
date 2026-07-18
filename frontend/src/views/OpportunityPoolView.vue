@@ -102,7 +102,7 @@ const queryError = computed(() => bootstrapQuery.isError.value || !!listError.va
       <div>
         <p class="eyebrow">候选池</p>
         <h2>机会池</h2>
-        <p class="hero-copy">支持切模式时保留旧列表，后台补新结果。</p>
+        <p class="hero-copy">按板块强度、龙头承接与 AI T+1 候选筛选当日机会。</p>
       </div>
       <QueryState :is-loading="queryLoading" :is-fetching="queryFetching" :is-error="queryError" @retry="refreshOpportunities" />
     </header>
