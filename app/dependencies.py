@@ -29,7 +29,7 @@ class _TokenUserCache:
         if entry is None:
             return None
         user, expires_at = entry
-        if time.time() > expires_at:
+        if time.time() >= expires_at:
             self._store.pop(token, None)
             return None
         self._store.move_to_end(token)  # LRU 近期访问置尾

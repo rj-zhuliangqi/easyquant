@@ -466,3 +466,17 @@ class NewsItem(Base):
     is_pinned: Mapped[bool] = mapped_column(Boolean, default=False)
     # 原始单条响应，便于排错；可后续归档
     raw_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class User(Base):
+    """D2: 用户表（原独立单文件已并入）。"""
+
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String(80), unique=True, nullable=False, index=True)
+    hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

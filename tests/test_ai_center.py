@@ -19,7 +19,7 @@ from app.models import AiJob
 from app.models import AiRun
 from app.models import AiSkill
 from app.models import AiSkillRevision
-from app.models_auth import User
+from app.models import User
 from app.services.ai_center import AiCenterService
 
 

@@ -20,7 +20,7 @@ from sqlalchemy import create_engine
 
 from app.akshare_client import AkshareGateway
 from app.main import _recover_sqlite_if_corrupted, _skill_chat_stream_generator
-from app.models_auth import User
+from app.models import User
 from app.services.auth import AuthService
 
 # 复用 test_api 的带认证 client 装配
@@ -160,10 +160,10 @@ def test_expired_token_rejected() -> None:
 
 def test_skill_chat_emits_heartbeat_during_silence(monkeypatch) -> None:
     """Claude 静默期，SSE 生成器应主动发心跳帧（线程+队列驱动，不靠 readline 返回）。"""
-    import app.main as main_mod
+    import app.skill_chat as skill_chat_mod
 
-    monkeypatch.setattr(main_mod, "_SKILL_CHAT_HEARTBEAT_SECONDS", 1)
-    monkeypatch.setattr(main_mod, "_SKILL_CHAT_TIMEOUT_SECONDS", 30)
+    monkeypatch.setattr(skill_chat_mod, "_SKILL_CHAT_HEARTBEAT_SECONDS", 1)
+    monkeypatch.setattr(skill_chat_mod, "_SKILL_CHAT_TIMEOUT_SECONDS", 30)
 
     release = threading.Event()
 
@@ -191,10 +191,10 @@ def test_skill_chat_emits_heartbeat_during_silence(monkeypatch) -> None:
         def kill(self):
             release.set()
 
-    monkeypatch.setattr(main_mod.subprocess, "Popen", lambda *a, **k: FakeProc())
+    monkeypatch.setattr(skill_chat_mod.subprocess, "Popen", lambda *a, **k: FakeProc())
 
     events: list[bytes] = []
-    gen = _skill_chat_stream_generator("/fake/claude", "prompt")
+    gen = skill_chat_mod._skill_chat_stream_generator("/fake/claude", "prompt")
     try:
         for ev in gen:
             if isinstance(ev, (bytes, bytearray)):

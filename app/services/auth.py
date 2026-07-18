@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.time_utils import now_cn
 from app.config import JWT_EXPIRE_HOURS, JWT_SECRET
-from app.models_auth import User
+from app.models import User
 
 logger = logging.getLogger(__name__)
 

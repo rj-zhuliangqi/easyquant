@@ -11,7 +11,7 @@ from sqlalchemy.pool import StaticPool
 from app.database import Base
 from app.main import _collect_once, _run_scheduled_job, create_app, create_session_factory
 from app.models import FundFlowDailyHistory, FundFlowSnapshot
-from app.models_auth import User
+from app.models import User
 
 
 def _attach_admin_auth(client: TestClient, app) -> None:
