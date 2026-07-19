@@ -416,7 +416,7 @@ def _parse_cron_to_aps_kwargs(cron_expr: str) -> dict[str, str]:
     """Parse standard 5-field cron expression to APScheduler cron kwargs.
 
     Format: minute hour day month day_of_week
-    Example: "20 8 * * 1-5" -> {"minute": "20", "hour": "8", "day": "*", "month": "*", "day_of_week": "1-5"}
+    Example: "20 8 * * 0-4" -> {"minute": "20", "hour": "8", "day": "*", "month": "*", "day_of_week": "0-4"}
     """
     parts = cron_expr.strip().split()
     if len(parts) != 5:
@@ -429,6 +429,27 @@ def _parse_cron_to_aps_kwargs(cron_expr: str) -> dict[str, str]:
         "month": month,
         "day_of_week": day_of_week,
     }
+
+
+def _cron_dow_matches(dow_expr: str, weekday: int) -> bool:
+    """Whether a cron ``day_of_week`` field matches ``weekday``.
+
+    APScheduler numbers days 0=Mon..6=Sun, identical to ``datetime.weekday()``,
+    so no remapping is needed. (Previously this code shifted by one, treating
+    cron ``1`` as Monday when APScheduler reads it as Tuesday -- off-by-one
+    fixed in cron-day-of-week-offset.) Handles ``*``, ``4``, ``0-4``, ``1,3,5``.
+    """
+    if dow_expr == "*":
+        return True
+    allowed: set[int] = set()
+    for part in dow_expr.split(","):
+        part = part.strip()
+        if "-" in part:
+            lo, hi = part.split("-", 1)
+            allowed.update(range(int(lo), int(hi) + 1))
+        else:
+            allowed.add(int(part))
+    return weekday in allowed
 
 
 def _ensure_home_summary_ready(
@@ -745,20 +766,11 @@ def create_app(
                             cron_kwargs = _parse_cron_to_aps_kwargs(cron_expr)
                         except ValueError:
                             continue
-                        # Check day-of-week constraint
+                        # Check day-of-week constraint (APScheduler 0=Mon..6=Sun,
+                        # identical to datetime.weekday() -- no remapping needed)
                         dow = cron_kwargs.get("day_of_week", "*")
-                        if dow != "*":
-                            weekday_map = {"1": 0, "2": 1, "3": 2, "4": 3, "5": 4, "6": 5, "0": 6}
-                            allowed_days: set[int] = set()
-                            for part in dow.split(","):
-                                if "-" in part:
-                                    start, end = part.split("-")
-                                    for d in range(int(start), int(end) + 1):
-                                        allowed_days.add(weekday_map.get(str(d), -1))
-                                else:
-                                    allowed_days.add(weekday_map.get(part, -1))
-                            if now.weekday() not in allowed_days:
-                                continue
+                        if not _cron_dow_matches(dow, now.weekday()):
+                            continue
                         try:
                             scheduled_hour = int(cron_kwargs.get("hour", "0"))
                             scheduled_minute = int(cron_kwargs.get("minute", "0"))
