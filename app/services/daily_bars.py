@@ -78,6 +78,7 @@ class DailyBarsService:
             select(func.count(func.distinct(StockDailyBar.stock_code)))
         ) or 0
         latest_date = session.scalar(select(func.max(StockDailyBar.trading_date)))
+        flow_latest_date = session.scalar(select(func.max(StockFundFlowDaily.trading_date)))
         flow_stock_count = session.scalar(
             select(func.count(func.distinct(StockFundFlowDaily.stock_code)))
         ) or 0
@@ -87,6 +88,7 @@ class DailyBarsService:
             "stock_count": int(stock_count),
             "flow_stock_count": int(flow_stock_count),
             "latest_date": latest_date.isoformat() if latest_date else None,
+            "flow_latest_date": flow_latest_date.isoformat() if flow_latest_date else None,
         }
 
     def latest_trading_date(self, session: Session) -> date | None:
@@ -98,14 +100,18 @@ class DailyBarsService:
         self,
         session: Session,
         min_amount: float = 50_000_000.0,
+        realtime_amounts: dict[str, float] | None = None,
     ) -> pd.DataFrame:
         """从 ``individual_stock_snapshots`` 取最新一日的全市场快照，按规则过滤。
 
         过滤：
         - ST / *ST / 退市 (名称包含 ST、PT、*、退)
         - 北交所 (4/8/920 开头)
-        - 停牌 (amount 为 None 或 0)
-        - amount < min_amount
+        - 停牌（net_amount 为 None 或 ≤0）
+        - 成交额 < min_amount
+
+        成交额优先使用 ``realtime_amounts``（由 ``fetch_individual_realtime()`` 提供，
+        含 ``成交额`` 列），否则 fallback 到 ``net_amount``（保持向后兼容）。
         """
         latest_date = session.scalar(select(func.max(IndividualStockSnapshot.trading_date)))
         if latest_date is None:
@@ -138,20 +144,26 @@ class DailyBarsService:
         df["code"] = df["code"].astype(str).str.zfill(6)
         df["name"] = df["name"].astype(str)
 
+        # 成交额：realtime > snapshot.net_amount 兜底
+        if realtime_amounts:
+            df["amount"] = df["code"].map(realtime_amounts)
+            df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
+        else:
+            df["amount"] = pd.to_numeric(df["net_amount"], errors="coerce")
+
         # ST / *ST / 退市
         st_mask = df["name"].str.contains("ST|\\*ST|PT|退", case=False, regex=True, na=False)
         # 北交所
         bj_mask = df["code"].str.startswith(("4", "8", "920"))
-        # 停牌（amount=0 或 None；IndividualStockSnapshot 没有 amount 字段，fallback 用 net_amount）
+        # 停牌（net_amount 缺失或 ≤0）
         suspended = df["net_amount"].isna() | (df["net_amount"].fillna(0) <= 0)
-        # 流通市值近似：用 net_amount 代替（仅用于过滤，没有 amount 字段时 fallback）
-        # 因未引入市值字段，这里如果 net_amount < min_amount 直接剔除
-        amount_mask = df["net_amount"].fillna(0) >= min_amount
+        # 成交额门槛
+        amount_mask = df["amount"].fillna(0) >= min_amount
 
         kept = df[~st_mask & ~bj_mask & ~suspended & amount_mask].reset_index(drop=True)
         kept["latest_price"] = pd.to_numeric(kept["latest_price"], errors="coerce")
         kept["change_pct"] = pd.to_numeric(kept["change_pct"], errors="coerce")
-        kept["amount"] = pd.to_numeric(kept["net_amount"], errors="coerce")
+        kept["amount"] = pd.to_numeric(kept["amount"], errors="coerce")
         return kept[["code", "name", "latest_price", "change_pct", "amount"]]
 
     # ---------------- backfill -----------------
@@ -189,7 +201,9 @@ class DailyBarsService:
             return {"started": False, "already_running": True, "progress": self._snapshot()}
 
         try:
-            universe = self.get_universe(session, min_amount=min_amount)
+            # 拉一次实时快照（含成交额），用作 universe 过滤的真实依据
+            realtime_amounts = self._safe_fetch_realtime_amounts()
+            universe = self.get_universe(session, min_amount=min_amount, realtime_amounts=realtime_amounts)
             if universe.empty:
                 self.progress.message = "universe 为空，跳过回补"
                 self.progress.stage = "done"
@@ -241,36 +255,33 @@ class DailyBarsService:
         codes = list(codes)
         self.progress.stage = "bars"
         for index, code in enumerate(codes):
-            existing_dates = set(
-                session.scalars(
-                    select(StockDailyBar.trading_date).where(StockDailyBar.stock_code == code)
-                ).all()
-            )
-            try:
-                start = (self.now_provider().date() - timedelta(days=days)).strftime("%Y%m%d")
-                end = self.now_provider().date().strftime("%Y%m%d")
-                frame = self.gateway.fetch_stock_daily_history(
-                    code, start, end, adjust="qfq"
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("fetch_stock_daily_history failed: %s exc=%s", code, exc)
-                self.progress.failed.append({"code": code, "stage": "bars", "error": str(exc)})
-                continue
-
+            start = (self.now_provider().date() - timedelta(days=days)).strftime("%Y%m%d")
+            end = self.now_provider().date().strftime("%Y%m%d")
+            frame = self._safe_fetch_daily(code, start, end)
             if frame is None or frame.empty:
-                self.progress.failed.append({"code": code, "stage": "bars", "error": "empty"})
+                _sleep_jitter()
+                frame = self._safe_fetch_daily(code, start, end)
+            if frame is None or frame.empty:
+                self.progress.failed.append(
+                    {"code": code, "stage": "bars", "error": "empty"}
+                )
             else:
                 rows = _daily_history_to_rows(code, frame)
                 if rows:
                     insert_rows(session, StockDailyBar, rows, key_cols=("stock_code", "trading_date"))
                     session.commit()
-                if progress_cb is not None:
-                    pass
 
             self.progress.done = index + 1
             if progress_cb is not None and (index % 5 == 0 or index == len(codes) - 1):
                 progress_cb(self._snapshot())
             _sleep_jitter()
+
+    def _safe_fetch_daily(self, code: str, start: str, end: str) -> pd.DataFrame:
+        try:
+            return self.gateway.fetch_stock_daily_history(code, start, end, adjust="qfq")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("fetch_stock_daily_history failed: %s exc=%s", code, exc)
+            return pd.DataFrame()
 
     def _backfill_fund_flow(
         self,
@@ -282,15 +293,16 @@ class DailyBarsService:
         codes = list(codes)
         for index, code in enumerate(codes):
             market = _infer_market(code)
-            try:
-                frame = self.gateway.fetch_stock_fund_flow_history(code, market)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("fetch_stock_fund_flow_history failed: %s exc=%s", code, exc)
-                self.progress.failed.append({"code": code, "stage": "fund_flow", "error": str(exc)})
-                continue
-
+            # 第一次拉取（gateway 内部已含 akshare→eastmoney fallback）
+            frame = self._safe_fetch_fund_flow(code, market)
+            # 第二次：瞬时限流重试 1 次（screener 文档约定）
             if frame is None or frame.empty:
-                self.progress.failed.append({"code": code, "stage": "fund_flow", "error": "empty"})
+                _sleep_jitter()
+                frame = self._safe_fetch_fund_flow(code, market)
+            if frame is None or frame.empty:
+                self.progress.failed.append(
+                    {"code": code, "stage": "fund_flow", "error": "empty"}
+                )
             else:
                 rows = _fund_flow_history_to_rows(code, frame)
                 if rows:
@@ -299,9 +311,34 @@ class DailyBarsService:
                     )
                     session.commit()
 
+            self.progress.done = index + 1
             if progress_cb is not None and (index % 5 == 0 or index == len(codes) - 1):
                 progress_cb(self._snapshot())
             _sleep_jitter()
+
+    def _safe_fetch_fund_flow(self, code: str, market: str) -> pd.DataFrame:
+        """拉单只资金流，吞掉异常返回空 DataFrame。"""
+        try:
+            return self.gateway.fetch_stock_fund_flow_history(code, market)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("fetch_stock_fund_flow_history failed: %s exc=%s", code, exc)
+            return pd.DataFrame()
+
+    def _safe_fetch_realtime_amounts(self) -> dict[str, float]:
+        """从 ``fetch_individual_realtime()`` 提取 ``code -> 成交额`` 映射。
+
+        失败时返回空 dict，``get_universe`` 会 fallback 到 snapshot.net_amount。
+        """
+        try:
+            frame = self.gateway.fetch_individual_realtime()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("fetch_individual_realtime failed: %s", exc)
+            return {}
+        if frame is None or frame.empty or "代码" not in frame.columns or "成交额" not in frame.columns:
+            return {}
+        codes = frame["代码"].astype(str).str.zfill(6)
+        amounts = pd.to_numeric(frame["成交额"], errors="coerce")
+        return dict(zip(codes, amounts))
 
     def ensure_recent_bars(
         self,

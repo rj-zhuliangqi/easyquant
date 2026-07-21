@@ -318,3 +318,89 @@ def test_fetch_individual_realtime_extended_columns_missing_handled(monkeypatch)
     assert frame.iloc[0]["换手率"] is None
     assert frame.iloc[0]["市盈率动"] is None
     assert float(frame.iloc[0][INDIVIDUAL_COLUMNS[2]]) == 27.3
+
+
+def test_fetch_stock_fund_flow_history_falls_back_to_eastmoney(monkeypatch) -> None:
+    """akshare 返回空时，自动切东方财富并标记 fallback_used=True。"""
+    gateway = AkshareGateway()
+
+    def fake_run(fetcher, timeout_seconds: int = 25):
+        # 模拟 akshare 接口空（限流 / 维护期）
+        return pd.DataFrame()
+
+    eastmoney_frame = pd.DataFrame(
+        [
+            {
+                "日期": "2026-07-21",
+                "主力净额": 1234567.0,
+                "超大单净额": 800000.0,
+                "大单净额": 434567.0,
+                "中单净额": -200000.0,
+                "小单净额": -100000.0,
+                "主力净占比": 5.2,
+                "大单净占比": 1.8,
+            }
+        ]
+    )
+
+    monkeypatch.setattr(gateway, "_run", fake_run)
+    monkeypatch.setattr(
+        gateway, "_fetch_stock_fund_flow_history_eastmoney", lambda stock, market: eastmoney_frame.copy()
+    )
+
+    frame = gateway.fetch_stock_fund_flow_history("600000", "sh")
+    snap = gateway.get_source_snapshot("stock_fund_flow_history:600000")
+
+    assert not frame.empty
+    assert float(frame.iloc[0]["主力净额"]) == 1234567.0
+    assert snap["source_label"] == "eastmoney"
+    assert snap["fallback_used"] is True
+
+
+def test_fetch_stock_fund_flow_history_akshare_success_skips_fallback(monkeypatch) -> None:
+    """akshare 成功时不调 fallback。"""
+    gateway = AkshareGateway()
+
+    def fake_run(fetcher, timeout_seconds: int = 25):
+        return pd.DataFrame(
+            [{"日期": "2026-07-21", "主力净额": 999.0, "主力净占比": 1.0}]
+        )
+
+    fallback_called = {"count": 0}
+
+    def fake_eastmoney(stock, market):
+        fallback_called["count"] += 1
+        return pd.DataFrame()
+
+    monkeypatch.setattr(gateway, "_run", fake_run)
+    monkeypatch.setattr(gateway, "_fetch_stock_fund_flow_history_eastmoney", fake_eastmoney)
+
+    frame = gateway.fetch_stock_fund_flow_history("002111", "sz")
+    snap = gateway.get_source_snapshot("stock_fund_flow_history:002111")
+
+    assert not frame.empty
+    assert fallback_called["count"] == 0
+    assert snap["source_label"] == "akshare"
+    assert snap["fallback_used"] is False
+
+
+def test_fetch_stock_fund_flow_history_eastmoney_parses_csv_kline(monkeypatch) -> None:
+    """_fetch_stock_fund_flow_history_eastmoney 解析 kline 8 字段 CSV。"""
+    gateway = AkshareGateway()
+    payload = {
+        "data": {
+            "klines": [
+                "2026-07-21,1000000.0,500000.0,300000.0,200000.0,100000.0,5.0,2.0",
+                "2026-07-20,-500000.0,-200000.0,-100000.0,300000.0,200000.0,-2.5,-1.0",
+            ]
+        }
+    }
+    monkeypatch.setattr(
+        gateway, "_request_get", lambda url, **kwargs: type("R", (), {"json": lambda self: payload})()
+    )
+
+    frame = gateway._fetch_stock_fund_flow_history_eastmoney("600000", "sh")
+    assert len(frame) == 2
+    assert float(frame.iloc[0]["主力净额"]) == 1000000.0
+    assert float(frame.iloc[1]["主力净额"]) == -500000.0
+    assert float(frame.iloc[0]["主力净占比"]) == 5.0

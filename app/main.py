@@ -47,7 +47,7 @@ from app.services.home_dashboard import HomeDashboardService
 from app.services.limit_up import LimitUpService
 from app.services.market_signal import MarketSignalService
 from app.services.market_temperature import MarketTemperatureService
-from app.services.market_time import is_trading_time
+from app.services.market_time import is_trading_day, is_trading_time
 from app.services.news_service import NewsService
 from app.services.page_payloads import PagePayloadService
 from app.services.realtime_cache import RealtimeCacheService
@@ -2182,8 +2182,60 @@ def create_app(
 
     @app.get("/api/screener/status")
     def api_screener_status(session: Session = Depends(get_db)):
+        coverage = daily_bars.coverage(session)
+        # universe 当前规模（未缓存交易日的实时快照也参与计算）
+        try:
+            realtime_amounts = daily_bars._safe_fetch_realtime_amounts()  # noqa: SLF001
+            universe_df = daily_bars.get_universe(
+                session, min_amount=50_000_000.0, realtime_amounts=realtime_amounts
+            )
+            universe_size = int(len(universe_df))
+        except Exception:
+            universe_size = 0
+        coverage = {
+            **coverage,
+            "universe_size": universe_size,
+            "coverage_pct": round(
+                min(coverage.get("stock_count", 0), coverage.get("flow_stock_count", 0))
+                / universe_size
+                * 100,
+                1,
+            ) if universe_size else 0.0,
+        }
+        # 缓存新鲜度
+        now = now_cn()
+        bar_max = coverage.get("latest_date")
+        try:
+            bar_max_dt = datetime.fromisoformat(bar_max) if bar_max else None
+        except Exception:
+            bar_max_dt = None
+        cache_age_minutes = (
+            int((now - bar_max_dt).total_seconds() // 60) if bar_max_dt else None
+        )
+        is_stale = (
+            cache_age_minutes is None
+            or cache_age_minutes > 24 * 60
+            or (bar_max_dt and bar_max_dt.date() < now.date() and is_trading_day(now))
+        )
+        cache = {
+            "bar_max_date": bar_max,
+            "flow_max_date": coverage.get("flow_latest_date"),
+            "cache_age_minutes": cache_age_minutes,
+            "is_stale": is_stale,
+            "is_trading_day": is_trading_day(now),
+        }
+        # 数据源标签（来自 akshare_client 最近的 snapshot）
+        try:
+            source = gateway.get_source_snapshot("stock_fund_flow_history")
+        except Exception:
+            source = {"source_label": "akshare"}
         return {
-            "coverage": daily_bars.coverage(session),
+            "coverage": coverage,
+            "cache": cache,
+            "source": {
+                "fund_flow": source.get("source_label"),
+                "fallback_used": bool(source.get("fallback_used")),
+            },
             "progress": daily_bars._snapshot(),  # noqa: SLF001 (内部诊断)
         }
 
