@@ -12,7 +12,8 @@ import re
 import subprocess
 import threading
 import time
-from typing import Callable
+import uuid
+from typing import Any, Callable
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
@@ -651,6 +652,39 @@ def _run_screener_incremental_backfill(
         logger.exception("screener incremental prune failed")
 
 
+# ---------------- 持久化层 cron workers (2026-07-21) ----------------
+
+
+def _run_eod_aggregate(session: Session, gateway: Any, now_provider: Callable[[], datetime]) -> None:
+    """15:50 — 把 intraday snapshot 聚合到 stock_realtime_eod。"""
+    from app.services.daily_eod import DailyEodService
+    today = now_provider().date()
+    DailyEodService(gateway=gateway).aggregate_from_snapshots(session, today)
+
+
+def _run_limit_up_history(session: Session, gateway: Any, now_provider: Callable[[], datetime]) -> None:
+    """16:00 — 4 池涨停入库。force=True 跳过时间门（cron 自己就是收盘后）。"""
+    from app.services.limit_up_history import LimitUpHistoryService
+    today = now_provider().date()
+    LimitUpHistoryService(gateway=gateway, now_provider=now_provider).refresh_for_date(
+        session, today, force=True,
+    )
+
+
+def _run_limit_up_indicators_rebuild(session: Session, now_provider: Callable[[], datetime]) -> None:
+    """16:10 — 涨停指标聚合。"""
+    from app.services.limit_up_indicators import LimitUpIndicatorsService
+    today = now_provider().date()
+    LimitUpIndicatorsService().rebuild_for_date(session, today)
+
+
+def _run_indicators_daily(session: Session, now_provider: Callable[[], datetime]) -> None:
+    """16:30 — bars/fundflow 派生指标快照。"""
+    from app.services.indicators_daily import IndicatorsDailyService
+    today = now_provider().date()
+    IndicatorsDailyService(now_provider=now_provider).compute_for_date(session, today)
+
+
 def _maybe_kickoff_screener_backfill(
     session: Session,
     daily_bars: DailyBarsService,
@@ -880,6 +914,71 @@ def create_app(
                 hour="15",
                 day_of_week="mon-fri",
                 id="screener-incremental-backfill",
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=3600,
+            )
+            # === 持久化层 (2026-07-21) ===
+            # 15:50 — intraday snapshot → stock_realtime_eod
+            scheduler.add_job(
+                lambda: _run_scheduled_job(
+                    "eod-aggregate-realtime-snapshots",
+                    session_factory,
+                    lambda session: _run_eod_aggregate(session, gateway, now_provider),
+                ),
+                "cron",
+                minute="50",
+                hour="15",
+                day_of_week="mon-fri",
+                id="eod-aggregate-realtime-snapshots",
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=3600,
+            )
+            # 16:00 — 4 池涨停入库 → stock_limit_up_history
+            scheduler.add_job(
+                lambda: _run_scheduled_job(
+                    "limit-up-history-refresh",
+                    session_factory,
+                    lambda session: _run_limit_up_history(session, gateway, now_provider),
+                ),
+                "cron",
+                minute="0",
+                hour="16",
+                day_of_week="mon-fri",
+                id="limit-up-history-refresh",
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=3600,
+            )
+            # 16:10 — 涨停指标聚合 → stock_limit_up_indicators
+            scheduler.add_job(
+                lambda: _run_scheduled_job(
+                    "limit-up-indicators-rebuild",
+                    session_factory,
+                    lambda session: _run_limit_up_indicators_rebuild(session, now_provider),
+                ),
+                "cron",
+                minute="10",
+                hour="16",
+                day_of_week="mon-fri",
+                id="limit-up-indicators-rebuild",
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=3600,
+            )
+            # 16:30 — bars/fundflow 派生指标快照 → stock_indicators_daily
+            scheduler.add_job(
+                lambda: _run_scheduled_job(
+                    "indicators-daily-compute",
+                    session_factory,
+                    lambda session: _run_indicators_daily(session, now_provider),
+                ),
+                "cron",
+                minute="30",
+                hour="16",
+                day_of_week="mon-fri",
+                id="indicators-daily-compute",
                 max_instances=1,
                 coalesce=True,
                 misfire_grace_time=3600,
@@ -2299,6 +2398,57 @@ def create_app(
         if result.get("started"):
             screener.invalidate_cache()
         return result
+
+    # ===== 持久化层 (2026-07-21) =====
+    # 手动回补 stock_realtime_eod / stock_indicators_daily / stock_limit_up_history
+    @app.post("/api/screener/data-backfill")
+    def api_screener_data_backfill(payload: dict = Body(...)):
+        """手动触发持久化层回补。
+
+        Body: {"task": "eod"|"indicators"|"limit_up"|"limit_up_indicators",
+               "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD"}
+        """
+        from datetime import date as _date
+        task = (payload.get("task") or "").strip()
+        if task not in {"eod", "indicators", "limit_up", "limit_up_indicators"}:
+            raise HTTPException(
+                status_code=400,
+                detail=f"task 必须为 eod/indicators/limit_up/limit_up_indicators 之一, got {task!r}",
+            )
+        try:
+            start = _date.fromisoformat(payload["start_date"])
+            end = _date.fromisoformat(payload["end_date"])
+        except (KeyError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=f"start_date/end_date 格式错误: {exc}") from exc
+        if start > end:
+            start, end = end, start
+
+        job_id = uuid.uuid4().hex[:12]
+
+        def _worker() -> None:
+            session = session_factory()
+            try:
+                if task == "eod":
+                    from app.services.daily_eod import DailyEodService
+                    DailyEodService().backfill_range(session, start, end)
+                elif task == "indicators":
+                    from app.services.indicators_daily import IndicatorsDailyService
+                    IndicatorsDailyService().backfill_range(session, start, end)
+                elif task == "limit_up":
+                    from app.services.limit_up_history import LimitUpHistoryService
+                    LimitUpHistoryService(gateway=gateway).backfill_range(session, start, end)
+                elif task == "limit_up_indicators":
+                    from app.services.limit_up_indicators import LimitUpIndicatorsService
+                    LimitUpIndicatorsService().backfill_range(session, start, end)
+                screener.invalidate_cache()
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("data-backfill worker failed: task=%s job_id=%s", task, job_id)
+            finally:
+                session.close()
+
+        threading.Thread(target=_worker, name=f"data-backfill-{task}-{job_id}", daemon=True).start()
+        return {"started": True, "job_id": job_id, "task": task,
+                "start_date": start.isoformat(), "end_date": end.isoformat()}
 
     return app
 
