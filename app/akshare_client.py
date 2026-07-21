@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import logging
+import random
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from datetime import datetime, timedelta
 from app.time_utils import now_cn
 from difflib import SequenceMatcher
 from io import StringIO
 from typing import Callable
+from urllib.parse import urlparse
 
 import akshare as ak
 import pandas as pd
@@ -14,6 +18,59 @@ import requests
 
 
 logger = logging.getLogger(__name__)
+
+
+# ==================== 反封禁三件套 (2026-07-21) ====================
+# (1) UA 池轮换 - 避免固定 "Mozilla/5.0" 被识别为爬虫
+# (2) 按域名限速 - 每域名最小间隔，防瞬时并发触发限流
+# (3) 指数退避重试 - 失败后 1s->2s->4s 重试，而非只重试 1 次
+
+UA_POOL = [
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+]
+
+
+def _random_ua() -> str:
+    return random.choice(UA_POOL)
+
+
+def _domain_of(url: str) -> str:
+    try:
+        return urlparse(url).netloc or "unknown"
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+
+class _RateLimiter:
+    """按 key（通常是域名）限速：同一 key 最小间隔 min_interval 秒。线程安全。"""
+
+    def __init__(self, min_interval: float = 0.3) -> None:
+        self._min_interval = min_interval
+        self._last: dict[str, float] = {}
+        self._lock = threading.Lock()
+
+    def wait(self, key: str) -> None:
+        with self._lock:
+            now = time.time()
+            last = self._last.get(key, 0.0)
+            elapsed = now - last
+            if elapsed < self._min_interval:
+                time.sleep(self._min_interval - elapsed)
+            self._last[key] = time.time()
+
+
+# 全局单例：每域名最小间隔 0.3s（~3 QPS），东财/新浪/腾讯都不会触发限流
+_rate_limiter = _RateLimiter(min_interval=0.3)
+
+
+def _backoff_sleep(attempt: int, base: float = 1.0) -> None:
+    """指数退避：attempt=0 -> base*1s, 1 -> base*2s, 2 -> base*4s。"""
+    time.sleep(base * (2 ** attempt))
 
 
 SECTOR_STOCK_COLUMNS = ["代码", "名称", "最新价", "今日涨跌幅", "今日主力净流入-净额"]
@@ -184,6 +241,50 @@ class AkshareGateway:
 
     def fetch_strong_limit_up_pool(self, date: str) -> pd.DataFrame:
         return self._standardize_columns(self._run(lambda: ak.stock_zt_pool_strong_em(date=date)))
+
+    def fetch_limit_up_from_realtime(self) -> pd.DataFrame:
+        """降级涨停池：东财涨停 API 挂时，用实时行情 + 涨幅阈值判定涨停股。
+
+        复用 fetch_individual_realtime() 的东财->新浪->akshare fallback 链，
+        所以即使东财整体封 IP，只要新浪能出数据，仍能给出当日涨停列表。
+
+        缺失字段（vs 东财涨停池）：连板数/封单金额/封板时间/炸板次数/振幅/市值。
+        连板数默认 1（无法判定），其他列留空。
+        """
+        rt = self.fetch_individual_realtime()
+        if rt is None or rt.empty:
+            return pd.DataFrame()
+        if "涨跌幅" not in rt.columns or "股票代码" not in rt.columns:
+            return pd.DataFrame()
+
+        def _is_lu(code_val: object, pct_val: object) -> bool:
+            if pct_val is None:
+                return False
+            try:
+                pct = float(pct_val)
+            except (TypeError, ValueError):
+                return False
+            if pd.isna(pct):
+                return False
+            code_str = str(code_val or "")
+            # 科创/创业 20% 涨停，主板 10%；-0.2 容差（9.6/19.6 起算）
+            threshold = 19.6 if code_str.startswith(("300", "301", "688", "689")) else 9.6
+            return pct >= threshold
+
+        mask = rt.apply(lambda r: _is_lu(r.get("股票代码"), r.get("涨跌幅")), axis=1)
+        lu = rt[mask].copy()
+        if lu.empty:
+            return pd.DataFrame()
+        # 映射成 _normalize_limit_up_frame 期望的中文列名
+        return pd.DataFrame({
+            "代码": lu["股票代码"].astype(str),
+            "名称": lu.get("股票简称", "").astype(str),
+            "连板数": 1,  # 降级：无法判定连板，默认 1 板
+            "最新价": pd.to_numeric(lu.get("最新价"), errors="coerce"),
+            "涨跌幅": pd.to_numeric(lu["涨跌幅"], errors="coerce"),
+            "成交额": pd.to_numeric(lu.get("成交额"), errors="coerce"),
+            "换手率": pd.to_numeric(lu.get("换手率"), errors="coerce"),
+        })
 
     def fetch_stock_daily_history(
         self,
@@ -950,23 +1051,35 @@ class AkshareGateway:
         headers: dict[str, str] | None = None,
         session: requests.Session | None = None,
         timeout: tuple[float, float] = (5, 20),
+        retries: int = 2,
     ):
-        merged_headers = {"User-Agent": "Mozilla/5.0"}
-        if headers:
-            merged_headers.update(headers)
-        try:
-            if session is not None:
-                response = session.get(url, params=params, headers=merged_headers, timeout=timeout)
-                response.raise_for_status()
-                return response
-            with requests.Session() as local_session:
-                local_session.trust_env = False
-                response = local_session.get(url, params=params, headers=merged_headers, timeout=timeout)
-                response.raise_for_status()
-                return response
-        except Exception:
-            logger.warning("akshare _request_get 失败: url=%s", url, exc_info=True)
-            return None
+        """带 UA 轮换 + 按域名限速 + 指数退避重试的 HTTP GET。"""
+        domain = _domain_of(url)
+        for attempt in range(retries + 1):
+            _rate_limiter.wait(domain)
+            # 每次重试换一个 UA（反指纹）
+            merged_headers = {"User-Agent": _random_ua()}
+            if headers:
+                merged_headers.update(headers)
+            try:
+                if session is not None:
+                    response = session.get(url, params=params, headers=merged_headers, timeout=timeout)
+                    response.raise_for_status()
+                    return response
+                with requests.Session() as local_session:
+                    local_session.trust_env = False
+                    response = local_session.get(url, params=params, headers=merged_headers, timeout=timeout)
+                    response.raise_for_status()
+                    return response
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "akshare _request_get 失败 (attempt %d/%d): url=%s err=%s",
+                    attempt + 1, retries + 1, url, exc,
+                )
+                if attempt < retries:
+                    _backoff_sleep(attempt)
+        logger.warning("akshare _request_get %d 次重试全失败: url=%s", retries + 1, url)
+        return None
 
     @staticmethod
     def _market_breadth_looks_valid(frame: pd.DataFrame, minimum_total: int = 2000) -> bool:
@@ -1221,27 +1334,47 @@ class AkshareGateway:
         code = "".join(ch for ch in str(symbol or "") if ch.isdigit())[-6:]
         return f"1.{code}" if code.startswith(("5", "6", "9")) or code.startswith("688") else f"0.{code}"
 
-    def _run(self, fetcher: Callable[[], pd.DataFrame], timeout_seconds: int = 25) -> pd.DataFrame:
+    def _run(
+        self,
+        fetcher: Callable[[], pd.DataFrame],
+        timeout_seconds: int = 25,
+        retries: int = 2,
+        rate_key: str = "akshare-default",
+    ) -> pd.DataFrame:
         """在独立 executor 中执行 fetcher，超时后不等待卡死线程。
+
+        反封禁 (2026-07-21)：
+        - 调用前 ``_rate_limiter.wait(rate_key)`` 限速
+        - 失败/超时后指数退避重试 ``retries`` 次（默认 2 次 = 共 3 次尝试）
 
         关键点：``shutdown(wait=False)`` -- 旧实现用 ``with ThreadPoolExecutor`` 会在
         退出时 ``shutdown(wait=True)``，阻塞到底层 requests 真正跑完；akshare 内部
         requests 多数无 timeout，一旦挂起 25s 超时实际变无限等待，会耗死 scheduler 线程。
         """
-        executor = ThreadPoolExecutor(max_workers=1)
-        future = executor.submit(fetcher)
-        try:
-            result = future.result(timeout=timeout_seconds)
-            return result if isinstance(result, pd.DataFrame) else pd.DataFrame()
-        except TimeoutError:
-            future.cancel()
-            logger.warning("akshare fetcher timeout after %ss", timeout_seconds)
-            return pd.DataFrame()
-        except Exception:
-            logger.exception("akshare fetcher failed")
-            return pd.DataFrame()
-        finally:
-            executor.shutdown(wait=False)
+        for attempt in range(retries + 1):
+            _rate_limiter.wait(rate_key)
+            executor = ThreadPoolExecutor(max_workers=1)
+            future = executor.submit(fetcher)
+            try:
+                result = future.result(timeout=timeout_seconds)
+                return result if isinstance(result, pd.DataFrame) else pd.DataFrame()
+            except TimeoutError:
+                future.cancel()
+                logger.warning(
+                    "akshare fetcher timeout after %ss (attempt %d/%d)",
+                    timeout_seconds, attempt + 1, retries + 1,
+                )
+            except Exception:
+                logger.exception(
+                    "akshare fetcher failed (attempt %d/%d)",
+                    attempt + 1, retries + 1,
+                )
+            finally:
+                executor.shutdown(wait=False)
+            if attempt < retries:
+                _backoff_sleep(attempt)
+        logger.warning("akshare fetcher %d 次重试全失败", retries + 1)
+        return pd.DataFrame()
 
     @staticmethod
     def _to_float(value: object) -> float | None:
