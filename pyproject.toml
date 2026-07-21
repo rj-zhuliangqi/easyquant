@@ -1,7 +1,7 @@
 [project]
-name = "sector-fund-monitor"
-version = "0.1.0"
-description = "Minute-level sector fund flow monitor powered by AKShare"
+name = "easyquant"
+version = "0.2.0"
+description = "A 股 AI 工作台 — FastAPI + Vue3 SPA + APScheduler + Claude/Goose 驱动的盘前/盘中/盘后/夜间全时段决策面板"
 requires-python = ">=3.11"
 dependencies = [
   "akshare>=1.18.40",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from app.time_utils import now_cn
 from datetime import datetime
 from typing import Any
 
@@ -15,7 +16,7 @@ class FundFlowCollector:
         self.gateway = gateway
 
     def collect_snapshot(self, session: Session, captured_at: datetime | None = None) -> dict[str, int]:
-        captured_at = captured_at or datetime.now().replace(second=0, microsecond=0)
+        captured_at = captured_at or now_cn().replace(tzinfo=None).replace(second=0, microsecond=0)
         industry_rows = self._normalize(self.gateway.fetch_industry_realtime(), "industry", captured_at)
         concept_rows = self._normalize(self.gateway.fetch_concept_realtime(), "concept", captured_at)
         session.add_all(industry_rows + concept_rows)
@@ -56,17 +57,23 @@ class FundFlowCollector:
 
     @staticmethod
     def _to_percent(value: Any) -> float | None:
-        if value is None or value == "":
+        if value is None or value == "" or value == "--":
             return None
-        if isinstance(value, str):
-            return float(value.replace("%", ""))
-        return float(value)
+        try:
+            if isinstance(value, str):
+                return float(value.replace("%", ""))
+            return float(value)
+        except (ValueError, TypeError):
+            return None
 
     @staticmethod
     def _to_float(value: Any) -> float | None:
-        if value is None or value == "":
+        if value is None or value == "" or value == "--":
             return None
-        return float(value)
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            return None
 
     @staticmethod
     def _to_int(value: Any) -> int | None:

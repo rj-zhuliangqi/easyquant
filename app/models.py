@@ -230,6 +230,27 @@ class AiJob(Base):
     result_schema_version: Mapped[str] = mapped_column(String(20), default="1.0")
     display_group: Mapped[str] = mapped_column(String(20), default="盘中")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    engine_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    engine_config_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    auto_schedule: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_executed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class AiSkillTemplate(Base):
+    """Skill 执行模板 — 不同引擎（claude-code/goose/custom）的 prompt 模板和配置"""
+    __tablename__ = "ai_skill_templates"
+    __table_args__ = (
+        Index("ix_ai_skill_templates_skill_active", "skill_id", "is_active"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    skill_id: Mapped[int] = mapped_column(ForeignKey("ai_skills.id"), index=True)
+    template_type: Mapped[str] = mapped_column(String(40))
+    prompt_template: Mapped[str] = mapped_column(Text)
+    config_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 
@@ -273,6 +294,25 @@ class AiRun(Base):
     error_stage: Mapped[str | None] = mapped_column(String(40), nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    engine_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    engine_config_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    token_usage_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class AiRunArtifact(Base):
+    """Run 的中间产物存储 — 数据快照、图表、分析日志等"""
+    __tablename__ = "ai_run_artifacts"
+    __table_args__ = (
+        Index("ix_ai_run_artifacts_run_type", "run_id", "artifact_type"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("ai_runs.id"), index=True)
+    artifact_type: Mapped[str] = mapped_column(String(40))
+    name: Mapped[str] = mapped_column(String(200))
+    content_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    file_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 
 class AiTradingDayReview(Base):
@@ -339,8 +379,15 @@ class AiPick(Base):
     stock_name: Mapped[str] = mapped_column(String(120))
     sector_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     pick_type: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    pick_level: Mapped[str | None] = mapped_column(String(40), nullable=True)
     confidence_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     reason_summary: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    reason_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    capital_profile_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    signal_context: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    risk_flags_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    entry_hint: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    theme_tags_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     tags_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     priority_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
@@ -378,3 +425,112 @@ class AiReviewNote(Base):
     failure_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
     improvement_hint: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class NewsItem(Base):
+    """实时资讯条目 — 由 news_service 每 5 分钟从东财/同花顺/新浪轮询入库。
+
+    去重策略两层：
+    1. `(source, source_id)` 联合唯一约束 — 同源硬去重；
+    2. `title_hash` (sha1(normalize(title))[:40]) — 跨源软去重，30 分钟内同
+       title 视为同一新闻，由 NewsService 在入库前判断。
+    """
+
+    __tablename__ = "news_items"
+    __table_args__ = (
+        UniqueConstraint("source", "source_id", name="uq_news_item_source"),
+        Index("ix_news_items_published", "published_at"),
+        Index("ix_news_items_importance_published", "importance_level", "published_at"),
+        Index("ix_news_items_title_hash", "title_hash"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # 数据源标识：eastmoney_724 / ths_live / sina_roll
+    source: Mapped[str] = mapped_column(String(20))
+    # 源侧唯一 ID（东财 code、同花顺 seq、新浪 docurl 的 sha1[:16]）
+    source_id: Mapped[str] = mapped_column(String(80))
+    # 标题归一化后的 sha1[:40]，跨源去重用
+    title_hash: Mapped[str] = mapped_column(String(40))
+    title: Mapped[str] = mapped_column(String(300))
+    summary: Mapped[str | None] = mapped_column(String(800), nullable=True)
+    url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    published_at: Mapped[datetime] = mapped_column(DateTime)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    # 0=普通 1=单命中（行为或行业） 2=双命中（行为+行业，置顶）
+    importance_level: Mapped[int] = mapped_column(Integer, default=0)
+    # 命中关键词，JSON 序列化的字符串数组，前端 hover 展示
+    matched_action: Mapped[str | None] = mapped_column(Text, nullable=True)
+    matched_industry: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 受影响个股 — v1 留口，仅当源给了股票代码时才填
+    affected_stocks: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_pinned: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 原始单条响应，便于排错；可后续归档
+    raw_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class StockDailyBar(Base):
+    """个股日线 OHLCV（选股器本地库）。
+
+    价格为**前复权**口径（amount/volume/turnover_rate 为原始值）。数据时点为本地
+    交易日；``ensure_recent_bars`` 串行从 akshare 拉取并按 (code, date) 唯一 upsert。
+    """
+
+    __tablename__ = "stock_daily_bars"
+    __table_args__ = (
+        UniqueConstraint("stock_code", "trading_date", name="uq_stock_daily_bars_code_date"),
+        Index("ix_stock_daily_bars_code_date", "stock_code", "trading_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    stock_code: Mapped[str] = mapped_column(String(20), index=True)
+    trading_date: Mapped[date] = mapped_column(Date, index=True)
+    open: Mapped[float | None] = mapped_column(Float, nullable=True)
+    close: Mapped[float | None] = mapped_column(Float, nullable=True)
+    high: Mapped[float | None] = mapped_column(Float, nullable=True)
+    low: Mapped[float | None] = mapped_column(Float, nullable=True)
+    volume: Mapped[float | None] = mapped_column(Float, nullable=True)
+    amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    change_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    turnover_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class StockFundFlowDaily(Base):
+    """个股每日主力资金流向（东财口径）。
+
+    与 ``stock_daily_bars`` 通过 ``(stock_code, trading_date)`` 关联；用于筛选器
+    资金类条件。数据完整度可低于日线表，缺失时按 v2 文档降级处理。
+    """
+
+    __tablename__ = "stock_fund_flow_daily"
+    __table_args__ = (
+        UniqueConstraint("stock_code", "trading_date", name="uq_stock_flow_code_date"),
+        Index("ix_stock_flow_code_date", "stock_code", "trading_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    stock_code: Mapped[str] = mapped_column(String(20), index=True)
+    trading_date: Mapped[date] = mapped_column(Date, index=True)
+    main_net_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    main_net_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    super_large_net: Mapped[float | None] = mapped_column(Float, nullable=True)
+    large_net: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class ScreenerPreset(Base):
+    """选股器预设（6 套内置 + 用户自定义）。"""
+
+    __tablename__ = "screener_presets"
+    __table_args__ = (
+        UniqueConstraint("name", name="uq_screener_preset_name"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(120))
+    description: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    conditions_json: Mapped[str] = mapped_column(Text)
+    universe_json: Mapped[str] = mapped_column(Text, default="{}")
+    order_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    order: Mapped[str] = mapped_column(String(10), default="desc")
+    is_builtin: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)

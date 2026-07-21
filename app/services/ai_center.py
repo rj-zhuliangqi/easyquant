@@ -5,9 +5,62 @@ from datetime import date
 from datetime import datetime
 from datetime import timedelta
 import json
+import logging
+import re
 from pathlib import Path
 import shutil
 from typing import Any
+
+
+logger = logging.getLogger(__name__)
+
+# Matches an optional "HH:MM " or "周X HH:MM " prefix used in job names like
+# "08:20 盘前消息面挖掘" / "周五22:00 超短线周度经验汇总". Used to recover the
+# bare skill name when payloads incorrectly include the time prefix.
+_NAME_TIME_PREFIX_RE = re.compile(r"^(?:周[一二三四五六日])?\s*\d{1,2}:\d{2}\s*")
+
+# Matches a trailing version tag like "(v3)" or "（v2）" on job names. Some
+# job names embed a revision tag the skill name itself does not carry — strip
+# it as a last-resort lookup fallback.
+_NAME_VERSION_SUFFIX_RE = re.compile(r"\s*[（(]v\d+[）)]\s*$", re.IGNORECASE)
+
+
+def _strip_time_prefix(name: str | None) -> str | None:
+    """Strip leading schedule prefixes like ``08:20 `` or ``周五22:00 ``."""
+
+    if not name:
+        return name
+    return _NAME_TIME_PREFIX_RE.sub("", str(name)).strip() or None
+
+
+def _strip_version_suffix(name: str | None) -> str | None:
+    """Strip a trailing ``(vN)`` revision tag from a name."""
+
+    if not name:
+        return name
+    return _NAME_VERSION_SUFFIX_RE.sub("", str(name)).strip() or None
+
+
+def _name_candidates(*names: str | None) -> list[str]:
+    """Build an ordered, de-duplicated list of name candidates to try when
+    looking up a skill/job from a payload. Tries each raw name, then the same
+    name with the schedule prefix stripped, then with the ``(vN)`` suffix
+    stripped, then with both stripped."""
+
+    out: list[str] = []
+    for raw in names:
+        if not raw:
+            continue
+        for transform in (
+            lambda x: x,
+            _strip_time_prefix,
+            _strip_version_suffix,
+            lambda x: _strip_version_suffix(_strip_time_prefix(x)),
+        ):
+            value = transform(str(raw).strip()) if raw else None
+            if value and value not in out:
+                out.append(value)
+    return out
 
 from sqlalchemy import desc
 from sqlalchemy import delete
@@ -23,6 +76,7 @@ from app.models import AiExperienceRule
 from app.models import AiExperienceRulepack
 from app.models import AiReviewNote
 from app.models import AiRun
+from app.models import AiRunArtifact
 from app.models import AiSkill
 from app.models import AiSkillRevision
 from app.models import AiTradingDayReview
@@ -39,6 +93,12 @@ PICK_REQUIRED_FIELDS = (
     "signal_context",
     "risk_flags",
     "entry_hint",
+)
+
+# Fields that are strongly recommended but not enforced (missing = warning, not error)
+PICK_RECOMMENDED_FIELDS = (
+    "reason_detail",
+    "confidence_score",
 )
 
 
@@ -100,6 +160,7 @@ class AiCenterService:
                     job_type=item["job_type"],
                     result_schema_version=item["result_schema_version"],
                     display_group=item["display_group"],
+                    engine_type=item.get("engine_type", "claude-code"),
                     enabled=True,
                 )
                 session.add(job)
@@ -116,6 +177,7 @@ class AiCenterService:
                     ("job_type", item["job_type"]),
                     ("result_schema_version", item["result_schema_version"]),
                     ("display_group", item["display_group"]),
+                    ("engine_type", item.get("engine_type", "claude-code")),
                     ("enabled", True),
                 ):
                     if getattr(job, attr) != value:
@@ -282,8 +344,11 @@ class AiCenterService:
                     "job_type": job.job_type,
                     "result_schema_version": job.result_schema_version,
                     "display_group": job.display_group,
+                    "engine_type": job.engine_type,
+                    "auto_schedule": job.auto_schedule,
                     "enabled": job.enabled,
                     "latest_run_summary": latest_run_map.get(job.id),
+                    "last_executed_at": job.last_executed_at.isoformat() if job.last_executed_at else None,
                     "created_at": job.created_at.isoformat() if job.created_at else None,
                 }
                 for job in jobs
@@ -385,7 +450,16 @@ class AiCenterService:
         if not isinstance(result_payload, dict):
             raise ValueError("result_payload must be an object")
 
-        resolved_job_type = str(payload.get("job_type") or (job.job_type if job else "stock_pick"))
+        # Resolve job_type. Payloads sometimes hard-code "stock_pick" in the
+        # skill prompt template even when the underlying job is a review/news
+        # task — trust the DB-registered job.job_type as the source of truth
+        # whenever payload's claim disagrees with the registered job.
+        payload_job_type = str(payload.get("job_type") or "").strip()
+        registered_job_type = (job.job_type if job else "").strip() if job else ""
+        if registered_job_type and (not payload_job_type or payload_job_type != registered_job_type):
+            resolved_job_type = registered_job_type
+        else:
+            resolved_job_type = payload_job_type or registered_job_type or "stock_pick"
         picks_input = self._extract_structured_picks(payload=payload, result_payload=result_payload, job_type=resolved_job_type)
 
         run = AiRun(
@@ -404,6 +478,9 @@ class AiCenterService:
             raw_output_text=payload.get("raw_output"),
             structured_summary_json=json.dumps(summary, ensure_ascii=False),
             duration_ms=int(payload.get("duration_ms") or 0) or None,
+            engine_type=(payload.get("_meta") or {}).get("engine_type"),
+            engine_config_json=json.dumps((payload.get("_meta") or {}).get("engine_config"), ensure_ascii=False) if (payload.get("_meta") or {}).get("engine_config") else None,
+            token_usage_json=json.dumps((payload.get("_meta") or {}).get("token_usage"), ensure_ascii=False) if (payload.get("_meta") or {}).get("token_usage") else None,
         )
         session.add(run)
         session.flush()
@@ -419,8 +496,15 @@ class AiCenterService:
                     stock_name=str(item["stock_name"]).strip(),
                     sector_name=item.get("sector_name"),
                     pick_type=item.get("pick_level") or item.get("pick_type"),
+                    pick_level=item.get("pick_level") or item.get("pick_type"),
                     confidence_score=self._to_float(item.get("confidence_score")),
                     reason_summary=item.get("reason_summary"),
+                    reason_detail=self._coerce_text(item.get("reason_detail")),
+                    capital_profile_json=json.dumps(item.get("capital_profile"), ensure_ascii=False) if item.get("capital_profile") else None,
+                    signal_context=item.get("signal_context"),
+                    risk_flags_json=json.dumps(item.get("risk_flags"), ensure_ascii=False) if item.get("risk_flags") else None,
+                    entry_hint=item.get("entry_hint"),
+                    theme_tags_json=json.dumps(item.get("theme_tags"), ensure_ascii=False) if item.get("theme_tags") else None,
                     tags_json=json.dumps(item.get("theme_tags") or item.get("tags") or [], ensure_ascii=False),
                     priority_rank=int(item.get("priority_rank") or index),
                 )
@@ -430,6 +514,21 @@ class AiCenterService:
                 self.compute_pick_outcomes(session, pick)
         elif resolved_job_type in {"day_review", "position_review", "weekly_review"}:
             self._upsert_trading_day_review(session, trading_date=trading_date, result_payload=result_payload, job_type=resolved_job_type)
+
+        # Import artifacts from payload
+        artifacts_input = payload.get("artifacts") or []
+        if isinstance(artifacts_input, list):
+            for artifact_item in artifacts_input:
+                if not isinstance(artifact_item, dict):
+                    continue
+                artifact = AiRunArtifact(
+                    run_id=run.id,
+                    artifact_type=str(artifact_item.get("type", "analysis")),
+                    name=str(artifact_item.get("name", "unnamed")),
+                    content_json=json.dumps(artifact_item.get("content"), ensure_ascii=False) if artifact_item.get("content") else None,
+                    file_path=artifact_item.get("file_path"),
+                )
+                session.add(artifact)
 
         session.commit()
         return {"run": self.get_run(session, run.id), "picks": [self._pick_dict(session, pick) for pick in created_picks]}
@@ -906,22 +1005,49 @@ class AiCenterService:
         session.commit()
         return {"updated": updated}
 
-    def scan_import_directory(self, session: Session, *, inbox_dir: Path, processed_dir: Path) -> dict[str, int]:
+    def scan_import_directory(self, session: Session, *, inbox_dir: Path, processed_dir: Path) -> dict[str, Any]:
+        """Import every ``*.json`` payload from ``inbox_dir`` into the DB.
+
+        - Each file is imported in isolation: a parsing/import failure on one
+          file does not abort the rest of the batch.
+        - On success the file is moved to ``processed_dir``.
+        - On failure the file is moved to ``inbox_dir/_failed/`` so it is not
+          retried forever and the operator can inspect it.
+        - Errors are logged with the offending filename and exception type.
+        """
+
         inbox = Path(inbox_dir)
         processed = Path(processed_dir)
+        failed_dir = inbox / "_failed"
         processed.mkdir(parents=True, exist_ok=True)
+        failed_dir.mkdir(parents=True, exist_ok=True)
         imported = 0
         failed = 0
+        failures: list[dict[str, str]] = []
         for file_path in sorted(inbox.glob("*.json")):
             try:
                 payload = json.loads(file_path.read_text(encoding="utf-8"))
                 self.import_run(session, payload)
                 shutil.move(str(file_path), processed / file_path.name)
                 imported += 1
-            except Exception:
+                logger.info("ai_center.import_run ok file=%s", file_path.name)
+            except Exception as exc:  # noqa: BLE001 - per-file isolation is intentional
                 session.rollback()
                 failed += 1
-        return {"imported": imported, "failed": failed}
+                err_type = type(exc).__name__
+                err_msg = str(exc)[:300]
+                failures.append({"file": file_path.name, "error_type": err_type, "error": err_msg})
+                logger.warning(
+                    "ai_center.import_run failed file=%s error_type=%s error=%s",
+                    file_path.name,
+                    err_type,
+                    err_msg,
+                )
+                try:
+                    shutil.move(str(file_path), failed_dir / file_path.name)
+                except Exception:  # noqa: BLE001
+                    logger.exception("ai_center.import_run could not move failed file=%s", file_path.name)
+        return {"imported": imported, "failed": failed, "failures": failures}
 
     def compute_pick_outcomes(self, session: Session, pick: AiPick) -> int:
         history = self._stock_history(pick.stock_code)
@@ -1547,6 +1673,14 @@ class AiCenterService:
         revision = session.get(AiSkillRevision, run.revision_id) if run else None
         payload = self._pick_payload_for_run(run, pick.stock_code) if run else {}
         outcomes = list(session.scalars(select(AiPickOutcome).where(AiPickOutcome.pick_id == pick.id).order_by(AiPickOutcome.window.asc())))
+        # Prefer structured columns over payload extraction
+        pick_level = pick.pick_level or payload.get("pick_level") or pick.pick_type
+        signal_context = pick.signal_context or payload.get("signal_context")
+        capital_profile = self._loads_json(pick.capital_profile_json, None) if pick.capital_profile_json else payload.get("capital_profile") or {}
+        risk_flags = self._loads_json(pick.risk_flags_json, None) if pick.risk_flags_json else payload.get("risk_flags") or []
+        entry_hint = pick.entry_hint or payload.get("entry_hint")
+        reason_detail = pick.reason_detail or payload.get("reason_detail")
+        theme_tags = self._loads_json(pick.theme_tags_json, None) if pick.theme_tags_json else payload.get("theme_tags") or []
         return {
             "id": pick.id,
             "run_id": pick.run_id,
@@ -1554,11 +1688,13 @@ class AiCenterService:
             "stock_name": pick.stock_name,
             "sector_name": pick.sector_name,
             "pick_type": pick.pick_type,
-            "pick_level": payload.get("pick_level"),
-            "signal_context": payload.get("signal_context"),
-            "capital_profile": payload.get("capital_profile") or {},
-            "risk_flags": payload.get("risk_flags") or [],
-            "entry_hint": payload.get("entry_hint"),
+            "pick_level": pick_level,
+            "signal_context": signal_context,
+            "capital_profile": capital_profile,
+            "risk_flags": risk_flags,
+            "entry_hint": entry_hint,
+            "reason_detail": reason_detail,
+            "theme_tags": theme_tags,
             "experience_feedback": payload.get("experience_feedback") or {},
             "confidence_score": pick.confidence_score,
             "reason_summary": pick.reason_summary,
@@ -1567,6 +1703,7 @@ class AiCenterService:
             "skill_name": skill.name if skill else None,
             "revision_id": revision.id if revision else None,
             "revision_title": revision.title if revision else None,
+            "engine_type": run.engine_type if run else None,
             "outcomes": [
                 {
                     "window": outcome.window,
@@ -1704,8 +1841,18 @@ class AiCenterService:
     def _find_skill(self, session: Session, payload: dict[str, Any]) -> AiSkill | None:
         if payload.get("skill_id"):
             return session.get(AiSkill, int(payload["skill_id"]))
-        if payload.get("skill_name"):
-            return session.scalar(select(AiSkill).where(AiSkill.name == str(payload["skill_name"])))
+        for name in _name_candidates(payload.get("skill_name"), payload.get("job_name")):
+            skill = session.scalar(select(AiSkill).where(AiSkill.name == name))
+            if skill is not None:
+                return skill
+        # Final fallback: if any job_name candidate matches a registered job,
+        # use that job's skill. Covers cases where payload's skill_name and the
+        # DB skill name diverge (typos, hyphenation, version tags) but the
+        # job_name still lines up.
+        for name in _name_candidates(payload.get("job_name")):
+            job = session.scalar(select(AiJob).where(AiJob.name == name))
+            if job is not None:
+                return session.get(AiSkill, job.skill_id)
         return None
 
     def _find_revision(self, session: Session, *, skill_id: int, payload: dict[str, Any]) -> AiSkillRevision | None:
@@ -1718,19 +1865,38 @@ class AiCenterService:
             return session.scalar(
                 select(AiSkillRevision).where(AiSkillRevision.skill_id == skill_id, AiSkillRevision.revision_no == int(payload["revision_no"]))
             )
-        if payload.get("job_name"):
-            job = session.scalar(select(AiJob).where(AiJob.name == str(payload["job_name"])))
+        for candidate in _name_candidates(payload.get("job_name")):
+            job = session.scalar(select(AiJob).where(AiJob.name == candidate, AiJob.skill_id == skill_id))
             if job and job.active_revision_id:
-                return session.get(AiSkillRevision, job.active_revision_id)
-        return None
+                revision = session.get(AiSkillRevision, job.active_revision_id)
+                if revision is not None:
+                    return revision
+        # Fallback: use the skill's active revision (most recent if multiple).
+        active = session.scalar(
+            select(AiSkillRevision)
+            .where(AiSkillRevision.skill_id == skill_id, AiSkillRevision.status == "active")
+            .order_by(desc(AiSkillRevision.revision_no))
+        )
+        if active is not None:
+            return active
+        # Last-resort: any revision for this skill (latest by revision_no).
+        return session.scalar(
+            select(AiSkillRevision)
+            .where(AiSkillRevision.skill_id == skill_id)
+            .order_by(desc(AiSkillRevision.revision_no))
+        )
 
     def _find_job(self, session: Session, payload: dict[str, Any], skill_id: int) -> AiJob | None:
         if payload.get("job_id"):
             job = session.get(AiJob, int(payload["job_id"]))
             return job if job and job.skill_id == skill_id else None
-        if payload.get("job_name"):
-            return session.scalar(select(AiJob).where(AiJob.name == str(payload["job_name"]), AiJob.skill_id == skill_id))
-        return None
+        for candidate in _name_candidates(payload.get("job_name")):
+            job = session.scalar(select(AiJob).where(AiJob.name == candidate, AiJob.skill_id == skill_id))
+            if job is not None:
+                return job
+        # Fallback: the (typically single) job for this skill — sufficient for
+        # the built-in 1:1 skill/job mapping.
+        return session.scalar(select(AiJob).where(AiJob.skill_id == skill_id).order_by(AiJob.id.asc()))
 
     def _demote_active_revisions(self, session: Session, skill_id: int) -> None:
         revisions = list(session.scalars(select(AiSkillRevision).where(AiSkillRevision.skill_id == skill_id, AiSkillRevision.status == "active")))
@@ -1743,12 +1909,32 @@ class AiCenterService:
         for run in runs:
             if run.job_id is None or run.job_id in latest:
                 continue
+            summary = self._loads_json(run.structured_summary_json, {}) or {}
+            # `headline` was the legacy field name. Fall back to `market_phase`
+            # (used by news_scan + day_review payloads), then to the first
+            # non-empty string the summary carries.
+            headline = summary.get("headline") or summary.get("market_phase")
+            if not headline:
+                for value in summary.values():
+                    if isinstance(value, str) and value.strip():
+                        headline = value.strip()
+                        break
+                    if isinstance(value, list) and value:
+                        first = value[0]
+                        if isinstance(first, str) and first.strip():
+                            headline = first.strip()
+                            break
             latest[run.job_id] = {
                 "run_id": run.id,
                 "status": run.status,
                 "trading_date": run.trading_date.isoformat(),
-                "headline": self._loads_json(run.structured_summary_json, {}).get("headline"),
+                "headline": headline,
                 "push_status": self._loads_json(run.push_payload_json, {}).get("status"),
+                "started_at": run.started_at.isoformat() if run.started_at else None,
+                "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+                "duration_ms": run.duration_ms,
+                "error_stage": run.error_stage,
+                "error_text": run.error_text,
             }
         return latest
 
@@ -1791,6 +1977,23 @@ class AiCenterService:
             return float(str(value).replace("%", "").replace(",", "").strip())
         except ValueError:
             return None
+
+    @staticmethod
+    def _coerce_text(value: Any) -> str | None:
+        """Coerce a payload value into the Text-column-compatible string form.
+
+        Lists/dicts are JSON-encoded so callers that send richer structure
+        (e.g. ``reason_detail`` as a list of bullet strings) don't blow up the
+        ``str``-typed column with ``ProgrammingError: type 'list' is not
+        supported``."""
+
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (list, tuple, dict)):
+            return json.dumps(value, ensure_ascii=False)
+        return str(value)
 
     def _skill_name_map(self, session: Session) -> dict[int, str]:
         return {item.id: item.name for item in session.scalars(select(AiSkill))}

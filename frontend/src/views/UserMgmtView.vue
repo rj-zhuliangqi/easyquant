@@ -1,7 +1,10 @@
 <script setup>
-import { ref, onMounted, computed } from "vue";
+import { ref, onMounted, computed, onBeforeUnmount } from "vue";
 import { fetchJson } from "../lib/api";
 import { isAdmin } from "../lib/auth";
+import DataPanel from "../components/ui/DataPanel.vue";
+import EmptyState from "../components/ui/EmptyState.vue";
+import StatusBadge from "../components/ui/StatusBadge.vue";
 
 const isAdminUser = computed(() => isAdmin());
 
@@ -27,6 +30,8 @@ const oldPassword = ref("");
 const changeNewPassword = ref("");
 const changeError = ref("");
 const changeSuccess = ref("");
+const _timers = [];
+onBeforeUnmount(() => { _timers.forEach(clearTimeout); });
 
 // Active tab
 const activeTab = ref(isAdminUser.value ? "users" : "password");
@@ -127,7 +132,7 @@ async function changeOwnPassword() {
     changeSuccess.value = "密码修改成功";
     oldPassword.value = "";
     changeNewPassword.value = "";
-    setTimeout(() => { changeSuccess.value = ""; }, 3000);
+    _timers.push(setTimeout(() => { changeSuccess.value = ""; }, 3000));
   } catch (e) {
     changeError.value = e.message.replace("Request failed 400: ", "");
   }
@@ -188,10 +193,14 @@ onMounted(() => { if (isAdminUser.value) loadUsers(); });
             <div class="uc-info">
               <div class="uc-name">
                 {{ user.username }}
-                <span class="uc-badge" :class="user.is_admin ? 'badge-admin' : 'badge-user'">{{ user.is_admin ? '管理员' : '用户' }}</span>
+                <StatusBadge :status="user.is_admin ? 'info' : 'neutral'" size="sm">
+                  {{ user.is_admin ? '管理员' : '用户' }}
+                </StatusBadge>
               </div>
               <div class="uc-meta">
-                <span class="uc-status" :class="user.is_active ? 'on' : 'off'">{{ user.is_active ? '启用' : '已禁用' }}</span>
+                <StatusBadge :status="user.is_active ? 'success' : 'danger'" size="sm">
+                  {{ user.is_active ? '启用' : '已禁用' }}
+                </StatusBadge>
                 <span class="uc-dot">·</span>
                 <span>最后登录 {{ user.last_login_at ? new Date(user.last_login_at).toLocaleDateString('zh-CN') : '从未' }}</span>
               </div>
@@ -210,7 +219,11 @@ onMounted(() => { if (isAdminUser.value) loadUsers(); });
             </button>
           </div>
         </div>
-        <div v-if="!users.length" class="empty-state">暂无用户</div>
+        <EmptyState
+          v-if="!users.length"
+          title="暂无用户"
+          description="点击上方按钮添加第一个用户"
+        />
       </div>
     </template>
 
@@ -218,47 +231,55 @@ onMounted(() => { if (isAdminUser.value) loadUsers(); });
 
     <!-- Create user -->
     <Teleport to="body">
-      <div v-if="showCreate" class="overlay" @click.self="showCreate = false">
-        <div class="modal">
-          <h3>添加用户</h3>
-          <label class="field">
-            <span class="field-label">用户名</span>
-            <input v-model="newUsername" type="text" placeholder="为用户设置登录名" />
-          </label>
-          <label class="field">
-            <span class="field-label">密码</span>
-            <input v-model="newPassword" type="password" placeholder="设置初始密码" />
-          </label>
-          <label class="field check-field">
-            <input v-model="newIsAdmin" type="checkbox" />
-            <span>设为管理员</span>
-          </label>
-          <div v-if="createError" class="msg msg-error">{{ createError }}</div>
-          <div class="modal-footer">
-            <button class="btn-ghost" @click="showCreate = false">取消</button>
-            <button class="save-btn" @click="createUser">创建</button>
-          </div>
+      <Transition name="modal-overlay">
+        <div v-if="showCreate" class="overlay" @click.self="showCreate = false">
+          <Transition name="modal-card">
+            <div v-if="showCreate" class="modal">
+              <h3>添加用户</h3>
+              <label class="field">
+                <span class="field-label">用户名</span>
+                <input v-model="newUsername" type="text" placeholder="为用户设置登录名" />
+              </label>
+              <label class="field">
+                <span class="field-label">密码</span>
+                <input v-model="newPassword" type="password" placeholder="设置初始密码" />
+              </label>
+              <label class="field check-field">
+                <input v-model="newIsAdmin" type="checkbox" />
+                <span>设为管理员</span>
+              </label>
+              <div v-if="createError" class="msg msg-error">{{ createError }}</div>
+              <div class="modal-footer">
+                <button class="btn-ghost" @click="showCreate = false">取消</button>
+                <button class="save-btn" @click="createUser">创建</button>
+              </div>
+            </div>
+          </Transition>
         </div>
-      </div>
+      </Transition>
     </Teleport>
 
     <!-- Reset password -->
     <Teleport to="body">
-      <div v-if="resetUserId" class="overlay" @click.self="resetUserId = null">
-        <div class="modal">
-          <h3>重置密码</h3>
-          <p class="modal-desc">为 <strong>{{ resetUsername }}</strong> 设置新密码</p>
-          <label class="field">
-            <span class="field-label">新密码</span>
-            <input v-model="resetPassword" type="password" placeholder="输入新密码" />
-          </label>
-          <div v-if="resetError" class="msg msg-error">{{ resetError }}</div>
-          <div class="modal-footer">
-            <button class="btn-ghost" @click="resetUserId = null">取消</button>
-            <button class="save-btn" @click="doReset">确认重置</button>
-          </div>
+      <Transition name="modal-overlay">
+        <div v-if="resetUserId" class="overlay" @click.self="resetUserId = null">
+          <Transition name="modal-card">
+            <div v-if="resetUserId" class="modal">
+              <h3>重置密码</h3>
+              <p class="modal-desc">为 <strong>{{ resetUsername }}</strong> 设置新密码</p>
+              <label class="field">
+                <span class="field-label">新密码</span>
+                <input v-model="resetPassword" type="password" placeholder="输入新密码" />
+              </label>
+              <div v-if="resetError" class="msg msg-error">{{ resetError }}</div>
+              <div class="modal-footer">
+                <button class="btn-ghost" @click="resetUserId = null">取消</button>
+                <button class="save-btn" @click="doReset">确认重置</button>
+              </div>
+            </div>
+          </Transition>
         </div>
-      </div>
+      </Transition>
     </Teleport>
   </div>
 </template>
@@ -273,23 +294,23 @@ onMounted(() => { if (isAdminUser.value) loadUsers(); });
   display: flex;
   gap: 4px;
   padding: 4px;
-  background: var(--panel);
-  border: 1px solid var(--panel-border);
-  border-radius: 14px;
-  margin-bottom: 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  margin-bottom: var(--space-5);
 }
 
 .tab-btn {
   flex: 1;
   padding: 10px 0;
   border: none;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: transparent;
-  color: var(--muted);
+  color: var(--text-muted);
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all var(--transition-fast);
 }
 
 .tab-btn.active {
@@ -298,19 +319,19 @@ onMounted(() => { if (isAdminUser.value) loadUsers(); });
 }
 
 .tab-btn:hover:not(.active) {
-  background: rgba(0, 0, 0, 0.03);
+  background: rgba(255, 255, 255, 0.03);
 }
 
 /* --- Password form --- */
 .password-panel {
-  padding: 28px;
+  padding: var(--space-6);
 }
 
 .password-form {
   max-width: 360px;
   display: grid;
-  gap: 16px;
-  margin-top: 8px;
+  gap: var(--space-4);
+  margin-top: var(--space-2);
 }
 
 /* --- Fields --- */
@@ -322,33 +343,34 @@ onMounted(() => { if (isAdminUser.value) loadUsers(); });
 .field-label {
   font-size: 13px;
   font-weight: 600;
-  color: var(--muted);
+  color: var(--text-muted);
 }
 
 .field input[type="text"],
 .field input[type="password"] {
   padding: 10px 14px;
-  border: 1px solid var(--panel-border);
-  border-radius: 10px;
-  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg);
   color: var(--text);
   font-size: 14px;
   outline: none;
-  transition: border-color 0.15s;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
 .field input:focus {
   border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 .field input::placeholder {
-  color: #b0bec5;
+  color: var(--text-disabled);
 }
 
 .check-field {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   cursor: pointer;
 }
 
@@ -366,20 +388,20 @@ onMounted(() => { if (isAdminUser.value) loadUsers(); });
 /* --- Messages --- */
 .msg {
   padding: 8px 14px;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   font-size: 13px;
 }
 
 .msg-error {
-  background: rgba(239, 68, 68, 0.08);
-  border: 1px solid rgba(239, 68, 68, 0.2);
-  color: #dc2626;
+  background: var(--danger-soft);
+  border: 1px solid rgba(239, 68, 68, 0.15);
+  color: #fca5a5;
 }
 
 .msg-ok {
-  background: rgba(34, 197, 94, 0.08);
-  border: 1px solid rgba(34, 197, 94, 0.2);
-  color: #16a34a;
+  background: rgba(16, 185, 129, 0.08);
+  border: 1px solid rgba(16, 185, 129, 0.15);
+  color: #6ee7b7;
 }
 
 /* --- Buttons --- */
@@ -389,26 +411,27 @@ onMounted(() => { if (isAdminUser.value) loadUsers(); });
   background: var(--accent);
   color: #fff;
   border: none;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
-  transition: opacity 0.15s;
+  transition: all var(--transition-fast);
 }
 
-.save-btn:hover { opacity: 0.88; }
+.save-btn:hover { opacity: 0.88; transform: translateY(-1px); }
 
 .btn-ghost {
   padding: 10px 20px;
   background: transparent;
-  border: 1px solid var(--panel-border);
-  border-radius: 10px;
-  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
   font-size: 14px;
   cursor: pointer;
+  transition: all var(--transition-fast);
 }
 
-.btn-ghost:hover { background: rgba(0,0,0,0.03); }
+.btn-ghost:hover { background: rgba(255, 255, 255, 0.03); border-color: var(--border-hover); }
 
 .add-btn {
   display: flex;
@@ -418,51 +441,59 @@ onMounted(() => { if (isAdminUser.value) loadUsers(); });
   background: var(--accent);
   color: #fff;
   border: none;
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
-  transition: opacity 0.15s;
+  transition: all var(--transition-fast);
 }
 
-.add-btn:hover { opacity: 0.88; }
+.add-btn:hover { opacity: 0.88; transform: translateY(-1px); }
 .add-btn svg { width: 16px; height: 16px; }
 
 /* --- User cards --- */
 .user-cards {
   display: grid;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .user-card {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 16px 20px;
-  border-radius: 20px;
+  padding: var(--space-4) var(--space-5);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.user-card:hover {
+  border-color: var(--border-hover);
+  box-shadow: var(--shadow-sm);
 }
 
 .user-card-main {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: var(--space-3);
 }
 
 .uc-avatar {
   width: 40px;
   height: 40px;
-  border-radius: 12px;
-  background: linear-gradient(135deg, #e2e8f0, #cbd5e1);
+  border-radius: var(--radius-md);
+  background: linear-gradient(135deg, #334155, #475569);
   display: grid;
   place-items: center;
   font-weight: 700;
   font-size: 16px;
-  color: var(--muted);
+  color: var(--text-muted);
   flex-shrink: 0;
 }
 
 .uc-avatar.admin {
-  background: linear-gradient(135deg, var(--accent), #0a6b6d);
+  background: linear-gradient(135deg, var(--accent), #0891b2);
   color: #fff;
 }
 
@@ -473,39 +504,18 @@ onMounted(() => { if (isAdminUser.value) loadUsers(); });
   font-size: 15px;
   display: flex;
   align-items: center;
-  gap: 8px;
-}
-
-.uc-badge {
-  padding: 1px 8px;
-  border-radius: 6px;
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 18px;
-}
-
-.badge-admin {
-  background: var(--accent-soft);
-  color: var(--accent);
-}
-
-.badge-user {
-  background: rgba(148, 163, 184, 0.12);
-  color: var(--muted);
+  gap: var(--space-2);
 }
 
 .uc-meta {
   font-size: 12px;
-  color: var(--muted);
+  color: var(--text-muted);
   display: flex;
   align-items: center;
   gap: 4px;
 }
 
 .uc-dot { opacity: 0.4; }
-
-.uc-status.on { color: #16a34a; }
-.uc-status.off { color: #dc2626; }
 
 .uc-actions {
   display: flex;
@@ -515,14 +525,14 @@ onMounted(() => { if (isAdminUser.value) loadUsers(); });
 .act-btn {
   width: 36px;
   height: 36px;
-  border: 1px solid var(--panel-border);
-  border-radius: 10px;
-  background: #fff;
-  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  color: var(--text-muted);
   cursor: pointer;
   display: grid;
   place-items: center;
-  transition: all 0.15s;
+  transition: all var(--transition-fast);
 }
 
 .act-btn svg { width: 16px; height: 16px; }
@@ -532,8 +542,8 @@ onMounted(() => { if (isAdminUser.value) loadUsers(); });
 
 .empty-state {
   text-align: center;
-  padding: 40px;
-  color: var(--muted);
+  padding: var(--space-10);
+  color: var(--text-muted);
   font-size: 14px;
 }
 
@@ -541,7 +551,7 @@ onMounted(() => { if (isAdminUser.value) loadUsers(); });
 .overlay {
   position: fixed;
   inset: 0;
-  background: rgba(15, 23, 42, 0.5);
+  background: rgba(0, 0, 0, 0.5);
   backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
@@ -549,33 +559,84 @@ onMounted(() => { if (isAdminUser.value) loadUsers(); });
   z-index: 1000;
 }
 
+.modal-overlay-enter-active,
+.modal-overlay-leave-active {
+  transition: opacity var(--transition-normal);
+}
+
+.modal-overlay-enter-from,
+.modal-overlay-leave-to {
+  opacity: 0;
+}
+
+.modal-card-enter-active,
+.modal-card-leave-active {
+  transition: all var(--transition-normal);
+}
+
+.modal-card-enter-from,
+.modal-card-leave-to {
+  opacity: 0;
+  transform: translateY(16px) scale(0.96);
+}
+
 .modal {
-  background: #fff;
-  border-radius: 20px;
-  padding: 28px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  padding: var(--space-6);
   width: 400px;
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.18);
+  box-shadow: var(--shadow-xl);
 }
 
 .modal h3 {
   margin: 0 0 4px;
   font-size: 18px;
+  color: var(--text);
 }
 
 .modal-desc {
-  margin: 0 0 20px;
-  color: var(--muted);
+  margin: 0 0 var(--space-5);
+  color: var(--text-muted);
   font-size: 14px;
 }
 
 .modal-desc strong { color: var(--text); }
 
-.modal .field { margin-bottom: 14px; }
+.modal .field { margin-bottom: var(--space-3); }
 
 .modal-footer {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
-  margin-top: 20px;
+  gap: var(--space-2);
+  margin-top: var(--space-5);
+}
+
+/* --- Mobile responsive --- */
+@media (max-width: 640px) {
+  .password-form {
+    max-width: none;
+  }
+
+  .user-card {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-3);
+  }
+
+  .uc-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  .act-btn {
+    width: 40px;
+    height: 40px;
+  }
+
+  .modal {
+    width: calc(100% - 32px);
+    max-width: none;
+  }
 }
 </style>

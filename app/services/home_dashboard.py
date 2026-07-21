@@ -15,9 +15,9 @@ from app.services.realtime_cache import RealtimeCacheService
 
 class HomeDashboardService:
     INDEX_TARGETS = (
-        ("sh000001", "涓婅瘉鎸囨暟"),
-        ("sz399001", "娣辫瘉鎴愭寚"),
-        ("sz399006", "鍒涗笟鏉挎寚"),
+        ("sh000001", "上证指数"),
+        ("sz399001", "深证成指"),
+        ("sz399006", "创业板指"),
     )
 
     def __init__(

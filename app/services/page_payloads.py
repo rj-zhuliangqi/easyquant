@@ -151,6 +151,34 @@ class PagePayloadService:
             include_sector_names=[],
             trading_date=None,
         )
+        # Auto-fallback: if minute-level data is too sparse, retry with day granularity
+        if comparison.get("missing_labels_count", 0) > 0 and comparison.get("series"):
+            total_labels = comparison["missing_labels_count"] + len(
+                set(
+                    lbl
+                    for s in comparison["series"]
+                    for p in s.get("points", [])
+                    if p.get("value") is not None
+                    for lbl in [p.get("label")]
+                )
+            )
+            non_null_count = sum(
+                1 for s in comparison["series"] for p in s.get("points", []) if p.get("value") is not None
+            )
+            total_points = sum(len(s.get("points", [])) for s in comparison["series"])
+            if total_points > 0 and non_null_count / total_points < 0.3:
+                comparison = self.dashboard.get_comparison_series(
+                    session,
+                    sector_type="industry",
+                    metric="net_strength",
+                    granularity="day",
+                    lookback_days=20,
+                    limit=8,
+                    rank_view="leaders",
+                    include_sector_names=[],
+                    trading_date=None,
+                )
+                comparison["auto_fallback"] = "day"
         signals = self.dashboard.get_monitor_signals(session, sector_type="industry", metric="net_strength", limit=8, trading_date=None)
         return self._wrap(
             "sector-monitor",

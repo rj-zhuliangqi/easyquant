@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import logging
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from datetime import datetime, timedelta
+from app.time_utils import now_cn
 from difflib import SequenceMatcher
 from io import StringIO
 from typing import Callable
@@ -11,8 +13,32 @@ import pandas as pd
 import requests
 
 
+logger = logging.getLogger(__name__)
+
+
 SECTOR_STOCK_COLUMNS = ["代码", "名称", "最新价", "今日涨跌幅", "今日主力净流入-净额"]
 INDIVIDUAL_COLUMNS = ["股票代码", "股票简称", "最新价", "涨跌幅", "净额"]
+
+
+INDIVIDUAL_EXTENDED_COLUMNS = [
+    "股票代码",
+    "股票简称",
+    "最新价",
+    "涨跌幅",
+    "净额",
+    "换手率",
+    "市盈率动",
+    "市净率",
+    "总市值",
+    "流通市值",
+]
+INDIVIDUAL_COLUMN_ALIASES = {
+    "turnover_rate": "换手率",
+    "pe_dynamic": "市盈率动",
+    "pb": "市净率",
+    "total_mv": "总市值",
+    "float_mv": "流通市值",
+}
 
 
 class AkshareGateway:
@@ -48,7 +74,7 @@ class AkshareGateway:
         return self._run(lambda: ak.stock_fund_flow_concept(symbol="即时"))
 
     def fetch_individual_realtime(self) -> pd.DataFrame:
-        now = datetime.now()
+        now = now_cn()
         if (
             self._last_individual_fetch_at is not None
             and now - self._last_individual_fetch_at < timedelta(seconds=30)
@@ -66,7 +92,8 @@ class AkshareGateway:
                 fallback_used=False,
                 updated_at=now.isoformat(),
             )
-            return frame.copy()
+            # 扩展开关：抛扩展列，外层使用时只取前 5 列（INDIVIDUAL_COLUMNS），无副作用。
+            return frame.reindex(columns=INDIVIDUAL_EXTENDED_COLUMNS)
 
         for _ in range(2):
             frame = self._standardize_columns(self._run(lambda: ak.stock_fund_flow_individual(symbol="即时")))
@@ -142,16 +169,37 @@ class AkshareGateway:
     def fetch_strong_limit_up_pool(self, date: str) -> pd.DataFrame:
         return self._standardize_columns(self._run(lambda: ak.stock_zt_pool_strong_em(date=date)))
 
-    def fetch_stock_daily_history(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
+    def fetch_stock_daily_history(
+        self,
+        symbol: str,
+        start_date: str,
+        end_date: str,
+        adjust: str = "",
+    ) -> pd.DataFrame:
+        """拉取个股日线。
+
+        ``adjust`` 透传给 ``ak.stock_zh_a_hist`` 复权口径（"" 不复权 | "qfq" 前复权
+        | "hfq" 后复权）；默认 "" 保持向后兼容，仅选股器等需要严格一致口径的场景
+        显式传入 ``"qfq"``。
+        """
         frame = self._standardize_columns(
-            self._run(lambda: ak.stock_zh_a_hist(symbol=symbol, period="daily", start_date=start_date, end_date=end_date, adjust=""))
+            self._run(
+                lambda: ak.stock_zh_a_hist(
+                    symbol=symbol,
+                    period="daily",
+                    start_date=start_date,
+                    end_date=end_date,
+                    adjust=adjust,
+                )
+            )
         )
         if not frame.empty:
             self._set_source_snapshot(
                 f"stock_daily_history:{symbol}",
                 source_label="akshare",
                 fallback_used=False,
-                updated_at=datetime.now().isoformat(),
+                updated_at=now_cn().isoformat(),
+                meta={"adjust": adjust or ""},
             )
             return frame
         frame = self._fetch_stock_daily_history_eastmoney(symbol=symbol, start_date=start_date, end_date=end_date)
@@ -159,7 +207,8 @@ class AkshareGateway:
             f"stock_daily_history:{symbol}",
             source_label="eastmoney" if not frame.empty else "akshare",
             fallback_used=not frame.empty,
-            updated_at=datetime.now().isoformat(),
+            updated_at=now_cn().isoformat(),
+            meta={"adjust": adjust or "fqt=1"},
             degraded_fields=[] if not frame.empty else ["daily_history"],
         )
         return frame
@@ -174,7 +223,7 @@ class AkshareGateway:
                 "market_index_spot",
                 source_label="tencent",
                 fallback_used=False,
-                updated_at=datetime.now().isoformat(),
+                updated_at=now_cn().isoformat(),
             )
             return frame
         frame = self._standardize_columns(self._run(ak.stock_zh_index_spot_sina))
@@ -182,7 +231,7 @@ class AkshareGateway:
             "market_index_spot",
             source_label="akshare" if not frame.empty else "tencent",
             fallback_used=not frame.empty,
-            updated_at=datetime.now().isoformat(),
+            updated_at=now_cn().isoformat(),
             degraded_fields=[] if not frame.empty else ["spot"],
         )
         return frame
@@ -194,7 +243,7 @@ class AkshareGateway:
                 f"market_index_history:{symbol}",
                 source_label="tencent",
                 fallback_used=False,
-                updated_at=datetime.now().isoformat(),
+                updated_at=now_cn().isoformat(),
             )
             return frame
         frame = self._standardize_columns(self._run(lambda: ak.stock_zh_index_daily(symbol=symbol)))
@@ -204,7 +253,7 @@ class AkshareGateway:
             f"market_index_history:{symbol}",
             source_label="akshare" if not frame.empty else "tencent",
             fallback_used=not frame.empty,
-            updated_at=datetime.now().isoformat(),
+            updated_at=now_cn().isoformat(),
             degraded_fields=[] if not frame.empty else ["history"],
         )
         return frame
@@ -213,12 +262,12 @@ class AkshareGateway:
         frame = self._fetch_market_breadth_eastmoney()
         if self._market_breadth_looks_valid(frame):
             self._last_market_breadth = frame.copy()
-            self._last_market_breadth_fetch_at = datetime.now()
+            self._last_market_breadth_fetch_at = now_cn()
             self._set_source_snapshot(
                 "market_breadth",
                 source_label="eastmoney",
                 fallback_used=False,
-                updated_at=datetime.now().isoformat(),
+                updated_at=now_cn().isoformat(),
             )
             return frame
 
@@ -226,12 +275,12 @@ class AkshareGateway:
         frame = self._build_market_breadth_from_spot(spot_frame)
         if self._market_breadth_looks_valid(frame, minimum_total=100):
             self._last_market_breadth = frame.copy()
-            self._last_market_breadth_fetch_at = datetime.now()
+            self._last_market_breadth_fetch_at = now_cn()
             self._set_source_snapshot(
                 "market_breadth",
                 source_label="akshare",
                 fallback_used=True,
-                updated_at=datetime.now().isoformat(),
+                updated_at=now_cn().isoformat(),
             )
             return frame
 
@@ -240,7 +289,7 @@ class AkshareGateway:
                 "market_breadth",
                 source_label="cache",
                 fallback_used=True,
-                updated_at=self._last_market_breadth_fetch_at.isoformat() if self._last_market_breadth_fetch_at else datetime.now().isoformat(),
+                updated_at=self._last_market_breadth_fetch_at.isoformat() if self._last_market_breadth_fetch_at else now_cn().isoformat(),
                 degraded_fields=["market_breadth"],
             )
             return self._last_market_breadth.copy()
@@ -250,7 +299,7 @@ class AkshareGateway:
             "market_breadth",
             source_label="akshare" if not frame.empty else "eastmoney",
             fallback_used=not frame.empty,
-            updated_at=datetime.now().isoformat(),
+            updated_at=now_cn().isoformat(),
             degraded_fields=[] if not frame.empty else ["up_count", "down_count", "flat_count", "limit_up_count", "limit_down_count"],
         )
         return frame
@@ -285,12 +334,16 @@ class AkshareGateway:
 
     def get_source_snapshot(self, key: str) -> dict[str, object]:
         snapshot = self._source_snapshots.get(key, {})
-        return {
+        result: dict[str, object] = {
             "source_label": snapshot.get("source_label", "akshare"),
             "updated_at": snapshot.get("updated_at"),
             "fallback_used": bool(snapshot.get("fallback_used", False)),
             "degraded_fields": list(snapshot.get("degraded_fields", [])),
         }
+        meta = snapshot.get("meta")
+        if meta:
+            result["meta"] = meta
+        return result
 
     def _fetch_market_index_spot_tencent(self) -> pd.DataFrame:
         symbols = ["sh000001", "sz399001", "sz399006"]
@@ -437,17 +490,27 @@ class AkshareGateway:
         fallback_used: bool,
         updated_at: str | None = None,
         degraded_fields: list[str] | None = None,
+        meta: dict[str, object] | None = None,
     ) -> None:
-        self._source_snapshots[key] = {
+        snapshot: dict[str, object] = {
             "source_label": source_label,
             "updated_at": updated_at,
             "fallback_used": fallback_used,
             "degraded_fields": degraded_fields or [],
         }
+        if meta:
+            snapshot["meta"] = {k: v for k, v in meta.items() if v is not None}
+        self._source_snapshots[key] = snapshot
 
     def _fetch_individual_realtime_eastmoney(self) -> pd.DataFrame:
+        """扩展 clist fields：`f12,f14,f2,f3,f62,f8,f9,f23,f20,f21` 一并取回。
+
+        字段含义：f12=代码 / f14=名称 / f2=最新价 / f3=涨跌幅 / f62=主力净额 /
+        f8=换手率 / f9=市盈率(动) / f23=市净率 / f20=总市值 / f21=流通市值。
+        字段缺失或解析失败时**不影响**基础列；只是扩展列变 None。
+        """
         items = self._fetch_eastmoney_clist(
-            fields="f12,f14,f2,f3,f62",
+            fields="f12,f14,f2,f3,f62,f8,f9,f23,f20,f21",
             fid="f62",
             po=1,
             pz=10000,
@@ -461,11 +524,16 @@ class AkshareGateway:
                 INDIVIDUAL_COLUMNS[2]: self._to_float(item.get("f2")),
                 INDIVIDUAL_COLUMNS[3]: self._to_float(item.get("f3")),
                 INDIVIDUAL_COLUMNS[4]: self._to_float(item.get("f62")),
+                "换手率": self._to_float(item.get("f8")),
+                "市盈率动": self._to_float(item.get("f9")),
+                "市净率": self._to_float(item.get("f23")),
+                "总市值": self._to_float(item.get("f20")),
+                "流通市值": self._to_float(item.get("f21")),
             }
             for item in items
             if item.get("f12")
         ]
-        return pd.DataFrame(rows, columns=INDIVIDUAL_COLUMNS)
+        return pd.DataFrame(rows, columns=INDIVIDUAL_EXTENDED_COLUMNS)
 
     def _fetch_market_breadth_eastmoney(self) -> pd.DataFrame:
         items = self._fetch_eastmoney_clist(
@@ -504,7 +572,7 @@ class AkshareGateway:
 
         total = up_count + down_count + flat_count
         market_activity = f"{(up_count / total) * 100:.2f}%" if total else None
-        timestamp = datetime.now().replace(second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = now_cn().replace(second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
         return pd.DataFrame(
             [
                 {"item": "up_count", "value": float(up_count)},
@@ -549,7 +617,7 @@ class AkshareGateway:
 
         total = up_count + down_count + flat_count
         market_activity = f"{(up_count / total) * 100:.2f}%" if total else None
-        timestamp = datetime.now().replace(second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = now_cn().replace(second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
         return pd.DataFrame(
             [
                 {"item": "up_count", "value": float(up_count)},
@@ -596,7 +664,7 @@ class AkshareGateway:
 
         total = up_count + down_count + flat_count
         market_activity = f"{(up_count / total) * 100:.2f}%" if total else None
-        timestamp = datetime.now().replace(second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = now_cn().replace(second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
         return pd.DataFrame(
             [
                 {"item": "up_count", "value": float(up_count)},
@@ -618,7 +686,7 @@ class AkshareGateway:
         pz: int,
         pn: int = 1,
     ) -> list[dict]:
-        page_size = max(1, min(int(pz), 100))
+        page_size = max(1, min(int(pz), 200))
         requested_total = max(int(pz), 1)
         current_page = max(int(pn), 1)
         collected: list[dict] = []
@@ -676,7 +744,7 @@ class AkshareGateway:
         params: dict[str, object] | None = None,
         headers: dict[str, str] | None = None,
         session: requests.Session | None = None,
-        timeout: int = 20,
+        timeout: tuple[float, float] = (5, 20),
     ):
         merged_headers = {"User-Agent": "Mozilla/5.0"}
         if headers:
@@ -692,6 +760,7 @@ class AkshareGateway:
                 response.raise_for_status()
                 return response
         except Exception:
+            logger.warning("akshare _request_get 失败: url=%s", url, exc_info=True)
             return None
 
     @staticmethod
@@ -913,7 +982,7 @@ class AkshareGateway:
 
         url = f"http://q.10jqka.com.cn/gn/detail/code/{code}/"
         try:
-            response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+            response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=(5, 20))
             response.raise_for_status()
             tables = pd.read_html(StringIO(response.text))
         except Exception:
@@ -948,15 +1017,26 @@ class AkshareGateway:
         return f"1.{code}" if code.startswith(("5", "6", "9")) or code.startswith("688") else f"0.{code}"
 
     def _run(self, fetcher: Callable[[], pd.DataFrame], timeout_seconds: int = 25) -> pd.DataFrame:
+        """在独立 executor 中执行 fetcher，超时后不等待卡死线程。
+
+        关键点：``shutdown(wait=False)`` -- 旧实现用 ``with ThreadPoolExecutor`` 会在
+        退出时 ``shutdown(wait=True)``，阻塞到底层 requests 真正跑完；akshare 内部
+        requests 多数无 timeout，一旦挂起 25s 超时实际变无限等待，会耗死 scheduler 线程。
+        """
+        executor = ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(fetcher)
         try:
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(fetcher)
-                result = future.result(timeout=timeout_seconds)
-                return result if isinstance(result, pd.DataFrame) else pd.DataFrame()
+            result = future.result(timeout=timeout_seconds)
+            return result if isinstance(result, pd.DataFrame) else pd.DataFrame()
         except TimeoutError:
+            future.cancel()
+            logger.warning("akshare fetcher timeout after %ss", timeout_seconds)
             return pd.DataFrame()
         except Exception:
+            logger.exception("akshare fetcher failed")
             return pd.DataFrame()
+        finally:
+            executor.shutdown(wait=False)
 
     @staticmethod
     def _to_float(value: object) -> float | None:

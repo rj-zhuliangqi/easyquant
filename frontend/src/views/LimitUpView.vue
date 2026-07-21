@@ -3,6 +3,9 @@ import { computed } from "vue";
 import { useQuery } from "@tanstack/vue-query";
 import EChartPanel from "../components/EChartPanel.vue";
 import QueryState from "../components/QueryState.vue";
+import MetricCard from "../components/ui/MetricCard.vue";
+import DataPanel from "../components/ui/DataPanel.vue";
+import EmptyState from "../components/ui/EmptyState.vue";
 import { fetchJson, pageQueryKey } from "../lib/api";
 import { formatDateTime, formatPercent } from "../lib/formatters";
 
@@ -28,8 +31,18 @@ const chartOption = computed(() => ({
       data: (payload.value.temperature_history?.items || []).map((item) => item.temperature_score),
       smooth: true,
       showSymbol: false,
-      areaStyle: {},
-      color: "#ff7f11",
+      areaStyle: {
+        color: {
+          type: "linear",
+          x: 0, y: 0, x2: 0, y2: 1,
+          colorStops: [
+            { offset: 0, color: "rgba(245, 158, 11, 0.3)" },
+            { offset: 1, color: "rgba(245, 158, 11, 0.02)" },
+          ],
+        },
+      },
+      lineStyle: { width: 2, color: "#f59e0b" },
+      color: "#f59e0b",
     },
   ],
 }));
@@ -41,62 +54,84 @@ const chartOption = computed(() => ({
       <div>
         <p class="eyebrow">情绪与空间</p>
         <h2>A股连板梯队</h2>
-        <p class="hero-copy">保留梯队和温度视图，切页往返不再重建整个页面。</p>
+        <p class="hero-copy">追踪连板梯队、炸板池与市场打板温度，把握情绪节奏。</p>
       </div>
       <QueryState :is-loading="queryLoading" :is-fetching="queryFetching" :updated-at="queryUpdatedAt" />
     </header>
 
     <section class="card-grid">
-      <article class="metric-card">
-        <span>最高连板</span>
-        <strong>{{ payload.summary?.highest_board ?? "--" }}</strong>
-      </article>
-      <article class="metric-card">
-        <span>涨停总数</span>
-        <strong>{{ payload.summary?.limit_up_count ?? "--" }}</strong>
-      </article>
-      <article class="metric-card">
-        <span>晋级率</span>
-        <strong>{{ formatPercent((payload.summary?.promotion_rate || 0) * 100) }}</strong>
-      </article>
-      <article class="metric-card">
-        <span>温度带</span>
-        <strong>{{ payload.temperature?.temperature_band || "--" }}</strong>
-      </article>
+      <MetricCard
+        label="最高连板"
+        :value="payload.summary?.highest_board ?? '--'"
+        :loading="queryLoading"
+        trend="up"
+      />
+      <MetricCard
+        label="涨停总数"
+        :value="payload.summary?.limit_up_count ?? '--'"
+        :loading="queryLoading"
+      />
+      <MetricCard
+        label="晋级率"
+        :value="formatPercent((payload.summary?.promotion_rate || 0) * 100)"
+        :loading="queryLoading"
+        :trend="(payload.summary?.promotion_rate || 0) > 0.5 ? 'up' : 'down'"
+      />
+      <MetricCard
+        label="温度带"
+        :value="payload.temperature?.temperature_band || '--'"
+        :loading="queryLoading"
+        trend="neutral"
+      />
     </section>
 
-    <section class="panel">
-      <div class="panel-head">
-        <h3>温度历史</h3>
-      </div>
+    <DataPanel title="温度历史">
       <EChartPanel :option="chartOption" />
-    </section>
+    </DataPanel>
 
     <section class="card-grid two-up">
-      <article class="panel">
-        <div class="panel-head">
-          <h3>梯队分组</h3>
-        </div>
+      <DataPanel title="梯队分组">
         <div class="list-stack">
-          <div v-for="group in payload.ladder?.groups || []" :key="group.board_count" class="row-card">
-            <strong>{{ group.board_count }} 连板</strong>
-            <span>{{ group.stock_count }} 只</span>
-            <small>{{ group.leader?.name || "无龙头" }}</small>
-          </div>
+          <!-- P4-3: 梯队组行可展开看组内个股 -->
+          <details v-for="group in payload.ladder?.groups || []" :key="group.board_count" class="ladder-group">
+            <summary class="row-card">
+              <strong>{{ group.board_count }} 连板</strong>
+              <span>{{ group.stock_count }} 只</span>
+              <small>龙头：{{ group.leader?.name || "—" }}</small>
+              <span class="expand-hint">{{ group.stocks?.length ? '▾ 点击展开' : '' }}</span>
+            </summary>
+            <div v-if="group.stocks?.length" class="ladder-children">
+              <div v-for="stock in group.stocks" :key="stock.code" class="child-row">
+                <strong>{{ stock.name }}</strong>
+                <span>{{ stock.code }}</span>
+                <button class="action-btn" type="button" :disabled="watchingCode === stock.code" @click="watchStock(stock)">
+                  {{ watchingCode === stock.code ? "加入中…" : "＋ 观察" }}
+                </button>
+              </div>
+            </div>
+          </details>
+          <EmptyState
+            v-if="!(payload.ladder?.groups?.length) && !queryLoading"
+            title="暂无数据"
+            description="当前没有连板梯队数据"
+          />
         </div>
-      </article>
-      <article class="panel">
-        <div class="panel-head">
-          <h3>炸板池</h3>
-        </div>
+      </DataPanel>
+
+      <DataPanel title="炸板池">
         <div class="list-stack">
           <div v-for="item in payload.broken?.items || []" :key="item.code" class="row-card">
             <strong>{{ item.name }}</strong>
             <span>{{ item.code }}</span>
             <small>炸板 {{ item.broken_board_count }} 次</small>
           </div>
+          <EmptyState
+            v-if="!(payload.broken?.items?.length) && !queryLoading"
+            title="暂无数据"
+            description="当前没有炸板数据"
+          />
         </div>
-      </article>
+      </DataPanel>
     </section>
   </section>
 </template>
