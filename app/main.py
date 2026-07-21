@@ -787,13 +787,17 @@ def create_app(
         except OperationalError:
             bootstrap_session.rollback()
             logger.warning("screener builtin presets bootstrap skipped because local database schema is behind")
-        try:
-            _maybe_kickoff_screener_backfill(bootstrap_session, daily_bars, screener, session_factory)
-        except OperationalError:
-            bootstrap_session.rollback()
-            logger.warning("screener backfill kickoff skipped because local database schema is behind")
-        except Exception:
-            logger.exception("screener backfill kickoff failed")
+        # 注意：启动补偿自动回补已禁用。曾在启动时后台跑全量回补（~4000 次网络调用），
+        # 长事务与生产写入冲突曾导致 DB 文件被截断为 0 字节。回补改为只由前端
+        # 「更新数据」按钮（POST /api/screener/backfill）或 15:40 cron 增量触发，
+        # 由用户主动发起，避免启动期长写事务。
+        # try:
+        #     _maybe_kickoff_screener_backfill(bootstrap_session, daily_bars, screener, session_factory)
+        # except OperationalError:
+        #     bootstrap_session.rollback()
+        #     logger.warning("screener backfill kickoff skipped because local database schema is behind")
+        # except Exception:
+        #     logger.exception("screener backfill kickoff failed")
     home_dashboard.market_temperature = market_temperature
     home_dashboard.market_signal = market_signal
     page_payloads = PagePayloadService(
