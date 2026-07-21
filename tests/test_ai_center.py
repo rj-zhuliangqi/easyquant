@@ -46,7 +46,7 @@ class AiGateway:
             ]
         )
 
-    def fetch_stock_daily_history(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
+    def fetch_stock_daily_history(self, symbol: str, start_date: str, end_date: str, adjust: str = "") -> pd.DataFrame:
         return pd.DataFrame(
             [
                 {"date": date(2026, 5, 7), "open": 10.0, "close": 10.4, "high": 10.6, "low": 9.9},

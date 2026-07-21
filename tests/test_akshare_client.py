@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 
 import pandas as pd
 
-from app.akshare_client import AkshareGateway, INDIVIDUAL_COLUMNS
+from app.akshare_client import AkshareGateway, INDIVIDUAL_COLUMNS, INDIVIDUAL_EXTENDED_COLUMNS
 from app.time_utils import now_cn
 
 
@@ -225,3 +225,96 @@ def test_fetch_market_breadth_falls_back_to_akshare_spot_snapshot(monkeypatch) -
     assert [item["value"] for item in records[:5]] == [60.0, 30.0, 30.0, 30.0, 30.0]
     assert source["source_label"] == "akshare"
     assert source["fallback_used"] is True
+
+
+def test_fetch_stock_daily_history_forwards_adjust_qfq(monkeypatch) -> None:
+    """向 akshare 透传 adjust="qfq"，并在 source snapshot 记录以供回归。"""
+    gateway = AkshareGateway()
+
+    def fake_run(fetcher, timeout_seconds: int = 25):
+        # 直接执行 fetcher，借此触发 ak.stock_zh_a_hist stub；不真正联网。
+        return pd.DataFrame([{"日期": "2026-05-01", "收盘": 10.0, "开盘": 9.0}])
+
+    monkeypatch.setattr(gateway, "_run", fake_run)
+    monkeypatch.setattr(gateway, "_fetch_stock_daily_history_eastmoney", lambda **_: pd.DataFrame())
+
+    frame = gateway.fetch_stock_daily_history("600000", "20260401", "20260515", adjust="qfq")
+    assert not frame.empty
+    snap = gateway.get_source_snapshot("stock_daily_history:600000")
+    assert snap["meta"]["adjust"] == "qfq"
+
+
+def test_fetch_stock_daily_history_default_adjust_empty_for_backward_compat(monkeypatch) -> None:
+    """P5-1d: limit_up 等老调用方不传 adjust，应保持 "" 旧口径。"""
+    gateway = AkshareGateway()
+    called = {"yes": False}
+
+    def fake_run(fetcher, timeout_seconds: int = 25):
+        called["yes"] = True
+        return pd.DataFrame([{"日期": "2026-05-01", "收盘": 10.0, "开盘": 9.0}])
+
+    monkeypatch.setattr(gateway, "_run", fake_run)
+    monkeypatch.setattr(gateway, "_fetch_stock_daily_history_eastmoney", lambda **_: pd.DataFrame())
+
+    gateway.fetch_stock_daily_history("002111", "20260501", "20260514")
+    assert called["yes"] is True
+    snap = gateway.get_source_snapshot("stock_daily_history:002111")
+    assert snap["meta"]["adjust"] == ""
+
+
+def test_fetch_individual_realtime_extends_columns_with_turnover_pe_pbmv(monkeypatch) -> None:
+    """q3: clist 扩展字段后,新增列加入结果（不影响原 INDIVIDUAL_COLUMNS 兼容）。"""
+    gateway = AkshareGateway()
+    payload = {
+        "data": {
+            "diff": [
+                {
+                    "f12": "600900", "f14": "CGN Power",
+                    "f2": 27.3, "f3": 1.52, "f62": 1241000000.0,
+                    "f8": 1.23, "f9": 12.5, "f23": 1.4, "f20": 1.23e11, "f21": 1.0e11,
+                },
+            ]
+        }
+    }
+    monkeypatch.setattr(
+        gateway,
+        "_request_get",
+        lambda url, **kwargs: type("R", (), {"json": lambda self: payload})(),
+    )
+
+    frame = gateway.fetch_individual_realtime()
+
+    # 扩展列存在
+    assert "换手率" in frame.columns
+    assert "市盈率动" in frame.columns
+    assert "市净率" in frame.columns
+    assert "总市值" in frame.columns
+    assert "流通市值" in frame.columns
+    assert list(frame.columns) == INDIVIDUAL_EXTENDED_COLUMNS
+    assert float(frame.iloc[0]["换手率"]) == 1.23
+    assert float(frame.iloc[0]["市盈率动"]) == 12.5
+    # 老基础列值仍正确（兼容）
+    assert str(frame.iloc[0][INDIVIDUAL_COLUMNS[0]]) == "600900"
+
+
+def test_fetch_individual_realtime_extended_columns_missing_handled(monkeypatch) -> None:
+    """字段缺失时仅扩展列为 None，基础列不受影响。"""
+    gateway = AkshareGateway()
+    payload = {
+        "data": {
+            "diff": [
+                {"f12": "600900", "f14": "CGN", "f2": 27.3, "f3": 1.52, "f62": 1241000000.0},
+            ]
+        }
+    }
+    monkeypatch.setattr(
+        gateway,
+        "_request_get",
+        lambda url, **kwargs: type("R", (), {"json": lambda self: payload})(),
+    )
+
+    frame = gateway.fetch_individual_realtime()
+    assert len(frame) == 1
+    assert frame.iloc[0]["换手率"] is None
+    assert frame.iloc[0]["市盈率动"] is None
+    assert float(frame.iloc[0][INDIVIDUAL_COLUMNS[2]]) == 27.3

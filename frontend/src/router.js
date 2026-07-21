@@ -14,6 +14,7 @@ const WorkspaceView = () => import("./views/WorkspaceView.vue");
 const AiCenterView = () => import("./views/AiCenterView.vue");
 const AiJobsView = () => import("./views/AiJobsView.vue");
 const ReviewView = () => import("./views/ReviewView.vue");
+const ScreenerView = () => import("./views/ScreenerView.vue");
 const UserMgmtView = () => import("./views/UserMgmtView.vue");
 
 export const routes = [
@@ -28,6 +29,7 @@ export const routes = [
   { path: "/review", name: "review", component: ReviewView, meta: { title: "复盘", keepAlive: true } },
   { path: "/ai-jobs", name: "ai-jobs", component: AiJobsView, meta: { title: "AI 任务", keepAlive: true } },
   { path: "/workspace", name: "workspace", component: WorkspaceView, meta: { title: "个人观察台", keepAlive: true } },
+  { path: "/screener", name: "screener", component: ScreenerView, meta: { title: "选股器", keepAlive: true } },
   { path: "/user-mgmt", name: "user-mgmt", component: UserMgmtView, meta: { title: "用户管理" } },
 ];
 

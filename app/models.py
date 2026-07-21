@@ -466,3 +466,71 @@ class NewsItem(Base):
     is_pinned: Mapped[bool] = mapped_column(Boolean, default=False)
     # 原始单条响应，便于排错；可后续归档
     raw_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class StockDailyBar(Base):
+    """个股日线 OHLCV（选股器本地库）。
+
+    价格为**前复权**口径（amount/volume/turnover_rate 为原始值）。数据时点为本地
+    交易日；``ensure_recent_bars`` 串行从 akshare 拉取并按 (code, date) 唯一 upsert。
+    """
+
+    __tablename__ = "stock_daily_bars"
+    __table_args__ = (
+        UniqueConstraint("stock_code", "trading_date", name="uq_stock_daily_bars_code_date"),
+        Index("ix_stock_daily_bars_code_date", "stock_code", "trading_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    stock_code: Mapped[str] = mapped_column(String(20), index=True)
+    trading_date: Mapped[date] = mapped_column(Date, index=True)
+    open: Mapped[float | None] = mapped_column(Float, nullable=True)
+    close: Mapped[float | None] = mapped_column(Float, nullable=True)
+    high: Mapped[float | None] = mapped_column(Float, nullable=True)
+    low: Mapped[float | None] = mapped_column(Float, nullable=True)
+    volume: Mapped[float | None] = mapped_column(Float, nullable=True)
+    amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    change_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    turnover_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class StockFundFlowDaily(Base):
+    """个股每日主力资金流向（东财口径）。
+
+    与 ``stock_daily_bars`` 通过 ``(stock_code, trading_date)`` 关联；用于筛选器
+    资金类条件。数据完整度可低于日线表，缺失时按 v2 文档降级处理。
+    """
+
+    __tablename__ = "stock_fund_flow_daily"
+    __table_args__ = (
+        UniqueConstraint("stock_code", "trading_date", name="uq_stock_flow_code_date"),
+        Index("ix_stock_flow_code_date", "stock_code", "trading_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    stock_code: Mapped[str] = mapped_column(String(20), index=True)
+    trading_date: Mapped[date] = mapped_column(Date, index=True)
+    main_net_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    main_net_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    super_large_net: Mapped[float | None] = mapped_column(Float, nullable=True)
+    large_net: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class ScreenerPreset(Base):
+    """选股器预设（6 套内置 + 用户自定义）。"""
+
+    __tablename__ = "screener_presets"
+    __table_args__ = (
+        UniqueConstraint("name", name="uq_screener_preset_name"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(120))
+    description: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    conditions_json: Mapped[str] = mapped_column(Text)
+    universe_json: Mapped[str] = mapped_column(Text, default="{}")
+    order_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    order: Mapped[str] = mapped_column(String(10), default="desc")
+    is_builtin: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)

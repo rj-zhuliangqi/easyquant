@@ -296,7 +296,7 @@ class FakeGateway:
             ]
         )
 
-    def fetch_stock_daily_history(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
+    def fetch_stock_daily_history(self, symbol: str, start_date: str, end_date: str, adjust: str = "") -> pd.DataFrame:
         return pd.DataFrame(
             [
                 {"日期": datetime(2026, 5, 8).date(), "股票代码": symbol, "成交额": 510000000.0, "振幅": 5.1, "涨跌幅": 3.2, "换手率": 14.1},

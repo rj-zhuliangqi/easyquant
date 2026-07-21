@@ -41,6 +41,7 @@ from app.services.auth import AuthService
 from app.services.collector import FundFlowCollector
 from app.services.ai_center import AiCenterService
 from app.services.dashboard import DashboardService
+from app.services.daily_bars import DailyBarsService
 from app.services.history_cache import HistoryCacheService
 from app.services.home_dashboard import HomeDashboardService
 from app.services.limit_up import LimitUpService
@@ -50,6 +51,7 @@ from app.services.market_time import is_trading_time
 from app.services.news_service import NewsService
 from app.services.page_payloads import PagePayloadService
 from app.services.realtime_cache import RealtimeCacheService
+from app.services.screener import ScreenerService
 from app.services.workspace import WorkspaceService
 
 
@@ -69,6 +71,7 @@ SPA_NAVIGATION_PATHS = (
     "/ai-jobs",
     "/review",
     "/workspace",
+    "/screener",
 )
 
 
@@ -627,6 +630,77 @@ def _ensure_home_summary_ready(
     collector.collect_snapshot(session, captured_at=now.replace(second=0, microsecond=0))
 
 
+def _run_screener_incremental_backfill(
+    session: Session,
+    daily_bars: DailyBarsService,
+) -> None:
+    """收盘增量：日线 + 资金流 + prune。"""
+    from app.models import StockDailyBar
+
+    universe = daily_bars.get_universe(session, min_amount=50_000_000.0)
+    if universe.empty:
+        return
+    codes = universe["code"].astype(str).str.zfill(6).tolist()
+    daily_bars.ensure_recent_bars(session, codes, days=10)
+    # 资金流当下没 upsert 增量接口，复用 _backfill_fund_flow 已封装的幂等
+    daily_bars._backfill_fund_flow(session, codes)  # noqa: SLF001 （同进程内服务调用）
+    try:
+        daily_bars.prune_old_bars(session)
+        daily_bars.prune_old_fund_flow(session)
+    except Exception:
+        logger.exception("screener incremental prune failed")
+
+
+def _maybe_kickoff_screener_backfill(
+    session: Session,
+    daily_bars: DailyBarsService,
+    screener: ScreenerService,
+    session_factory: sessionmaker[Session],
+) -> None:
+    """启动补偿：数据过期则后台线程触发全量回补（同样互斥锁保护）。"""
+    from datetime import timedelta
+    from datetime import date as _date
+
+    if daily_bars.progress.running:
+        return
+    coverage = daily_bars.coverage(session)
+    latest_date = coverage.get("latest_date")
+    today = daily_bars.now_provider().date()
+    if not latest_date:
+        stale = True
+    else:
+        try:
+            latest_date_obj = _date.fromisoformat(latest_date)
+        except Exception:  # noqa: BLE001
+            stale = True
+        else:
+            stale = (today - latest_date_obj) > timedelta(days=5)
+    if not stale:
+        return
+    thread = threading.Thread(
+        target=_threaded_full_backfill,
+        args=(daily_bars, screener, session_factory),
+        daemon=True,
+    )
+    thread.start()
+
+
+def _threaded_full_backfill(
+    daily_bars: DailyBarsService,
+    screener: ScreenerService,
+    session_factory: sessionmaker[Session],
+) -> None:
+    """后台线程跑 backfill_all（不能在主请求线程中跑，避免阻塞启动）。"""
+    try:
+        with session_factory() as session:
+            result = daily_bars.backfill_all(session)
+            logger.info("screener startup backfill: %s", result.get("progress", {}).get("message"))
+            screener.invalidate_cache()
+    except Exception:
+        logger.exception("screener startup backfill failed")
+
+
+
 def _warm_page_payload_cache(
     page_payloads: PagePayloadService,
     session_factory: sessionmaker[Session],
@@ -695,6 +769,8 @@ def create_app(
     ai_center = AiCenterService(gateway=gateway, now_provider=now_provider)
     auth_service = AuthService()
     news_service = NewsService()
+    daily_bars = DailyBarsService(gateway=gateway, now_provider=now_provider)
+    screener = ScreenerService(daily_bars_service=daily_bars)
     with session_factory() as bootstrap_session:
         try:
             ai_center.ensure_builtin_registry(bootstrap_session)
@@ -706,6 +782,18 @@ def create_app(
         except OperationalError:
             bootstrap_session.rollback()
             logger.warning("auth default admin bootstrap skipped because local database schema is behind")
+        try:
+            screener.seed_builtin_presets(bootstrap_session)
+        except OperationalError:
+            bootstrap_session.rollback()
+            logger.warning("screener builtin presets bootstrap skipped because local database schema is behind")
+        try:
+            _maybe_kickoff_screener_backfill(bootstrap_session, daily_bars, screener, session_factory)
+        except OperationalError:
+            bootstrap_session.rollback()
+            logger.warning("screener backfill kickoff skipped because local database schema is behind")
+        except Exception:
+            logger.exception("screener backfill kickoff failed")
     home_dashboard.market_temperature = market_temperature
     home_dashboard.market_signal = market_signal
     page_payloads = PagePayloadService(
@@ -745,6 +833,22 @@ def create_app(
                 max_instances=1,
                 coalesce=True,
                 misfire_grace_time=30,
+            )
+            # Screener 收盘增量 — 15:40（hx_A 股收盘后约 10 分钟）
+            scheduler.add_job(
+                lambda: _run_scheduled_job(
+                    "screener-incremental-backfill",
+                    session_factory,
+                    lambda session: _run_screener_incremental_backfill(session, daily_bars),
+                ),
+                "cron",
+                minute="40",
+                hour="15",
+                day_of_week="mon-fri",
+                id="screener-incremental-backfill",
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=3600,
             )
             scheduler.add_job(
                 lambda: _run_scheduled_job("individual-rankings-cache", session_factory, lambda session: _refresh_individual_rankings_once(session, realtime_cache, now_provider)),
@@ -2022,6 +2126,79 @@ def create_app(
                 },
             ]
         }
+
+    # ── Screener 路由 ────────────────────────────────────────
+
+    @app.get("/screener")
+    def screener_page() -> FileResponse:
+        return build_spa_shell_response()
+
+    @app.get("/api/screener/indicators")
+    def api_screener_indicators():
+        return screener.indicators_payload()
+
+    @app.get("/api/screener/presets")
+    def api_screener_presets(session: Session = Depends(get_db)):
+        return screener.list_presets(session)
+
+    @app.post("/api/screener/presets")
+    def api_screener_save_preset(payload: dict = Body(default={}), session: Session = Depends(get_db)):
+        try:
+            row = screener.save_preset(
+                session,
+                name=str(payload.get("name") or "").strip(),
+                description=payload.get("description"),
+                conditions=list(payload.get("conditions") or []),
+                universe=dict(payload.get("universe") or {}),
+                order_by=payload.get("order_by"),
+                order=str(payload.get("order") or "desc"),
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc))
+        if not row["name"]:
+            raise HTTPException(status_code=400, detail="name is required")
+        return row
+
+    @app.delete("/api/screener/presets/{preset_id}")
+    def api_screener_delete_preset(preset_id: int, session: Session = Depends(get_db)):
+        try:
+            ok = screener.delete_preset(session, preset_id)
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc))
+        if not ok:
+            raise HTTPException(status_code=404, detail="preset not found")
+        return {"deleted": True}
+
+    @app.post("/api/screener/run")
+    def api_screener_run(payload: dict = Body(default={}), session: Session = Depends(get_db)):
+        try:
+            return screener.run(session, payload)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+
+    @app.get("/api/screener/status")
+    def api_screener_status(session: Session = Depends(get_db)):
+        return {
+            "coverage": daily_bars.coverage(session),
+            "progress": daily_bars._snapshot(),  # noqa: SLF001 (内部诊断)
+        }
+
+    @app.post("/api/screener/backfill")
+    def api_screener_backfill(payload: dict = Body(default={}), session: Session = Depends(get_db)):
+        code_limit = payload.get("code_limit")
+        if code_limit is not None:
+            try:
+                code_limit = max(0, int(code_limit))
+            except (TypeError, ValueError):
+                code_limit = None
+        result = daily_bars.backfill_all(
+            session,
+            min_amount=float(payload.get("min_amount", 50_000_000.0)),
+            code_limit=code_limit,
+        )
+        if result.get("started"):
+            screener.invalidate_cache()
+        return result
 
     return app
 

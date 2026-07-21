@@ -20,6 +20,27 @@ SECTOR_STOCK_COLUMNS = ["代码", "名称", "最新价", "今日涨跌幅", "今
 INDIVIDUAL_COLUMNS = ["股票代码", "股票简称", "最新价", "涨跌幅", "净额"]
 
 
+INDIVIDUAL_EXTENDED_COLUMNS = [
+    "股票代码",
+    "股票简称",
+    "最新价",
+    "涨跌幅",
+    "净额",
+    "换手率",
+    "市盈率动",
+    "市净率",
+    "总市值",
+    "流通市值",
+]
+INDIVIDUAL_COLUMN_ALIASES = {
+    "turnover_rate": "换手率",
+    "pe_dynamic": "市盈率动",
+    "pb": "市净率",
+    "total_mv": "总市值",
+    "float_mv": "流通市值",
+}
+
+
 class AkshareGateway:
     def __init__(self) -> None:
         self._concept_board_index: pd.DataFrame | None = None
@@ -71,7 +92,8 @@ class AkshareGateway:
                 fallback_used=False,
                 updated_at=now.isoformat(),
             )
-            return frame.copy()
+            # 扩展开关：抛扩展列，外层使用时只取前 5 列（INDIVIDUAL_COLUMNS），无副作用。
+            return frame.reindex(columns=INDIVIDUAL_EXTENDED_COLUMNS)
 
         for _ in range(2):
             frame = self._standardize_columns(self._run(lambda: ak.stock_fund_flow_individual(symbol="即时")))
@@ -147,9 +169,29 @@ class AkshareGateway:
     def fetch_strong_limit_up_pool(self, date: str) -> pd.DataFrame:
         return self._standardize_columns(self._run(lambda: ak.stock_zt_pool_strong_em(date=date)))
 
-    def fetch_stock_daily_history(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
+    def fetch_stock_daily_history(
+        self,
+        symbol: str,
+        start_date: str,
+        end_date: str,
+        adjust: str = "",
+    ) -> pd.DataFrame:
+        """拉取个股日线。
+
+        ``adjust`` 透传给 ``ak.stock_zh_a_hist`` 复权口径（"" 不复权 | "qfq" 前复权
+        | "hfq" 后复权）；默认 "" 保持向后兼容，仅选股器等需要严格一致口径的场景
+        显式传入 ``"qfq"``。
+        """
         frame = self._standardize_columns(
-            self._run(lambda: ak.stock_zh_a_hist(symbol=symbol, period="daily", start_date=start_date, end_date=end_date, adjust=""))
+            self._run(
+                lambda: ak.stock_zh_a_hist(
+                    symbol=symbol,
+                    period="daily",
+                    start_date=start_date,
+                    end_date=end_date,
+                    adjust=adjust,
+                )
+            )
         )
         if not frame.empty:
             self._set_source_snapshot(
@@ -157,6 +199,7 @@ class AkshareGateway:
                 source_label="akshare",
                 fallback_used=False,
                 updated_at=now_cn().isoformat(),
+                meta={"adjust": adjust or ""},
             )
             return frame
         frame = self._fetch_stock_daily_history_eastmoney(symbol=symbol, start_date=start_date, end_date=end_date)
@@ -165,6 +208,7 @@ class AkshareGateway:
             source_label="eastmoney" if not frame.empty else "akshare",
             fallback_used=not frame.empty,
             updated_at=now_cn().isoformat(),
+            meta={"adjust": adjust or "fqt=1"},
             degraded_fields=[] if not frame.empty else ["daily_history"],
         )
         return frame
@@ -290,12 +334,16 @@ class AkshareGateway:
 
     def get_source_snapshot(self, key: str) -> dict[str, object]:
         snapshot = self._source_snapshots.get(key, {})
-        return {
+        result: dict[str, object] = {
             "source_label": snapshot.get("source_label", "akshare"),
             "updated_at": snapshot.get("updated_at"),
             "fallback_used": bool(snapshot.get("fallback_used", False)),
             "degraded_fields": list(snapshot.get("degraded_fields", [])),
         }
+        meta = snapshot.get("meta")
+        if meta:
+            result["meta"] = meta
+        return result
 
     def _fetch_market_index_spot_tencent(self) -> pd.DataFrame:
         symbols = ["sh000001", "sz399001", "sz399006"]
@@ -442,17 +490,27 @@ class AkshareGateway:
         fallback_used: bool,
         updated_at: str | None = None,
         degraded_fields: list[str] | None = None,
+        meta: dict[str, object] | None = None,
     ) -> None:
-        self._source_snapshots[key] = {
+        snapshot: dict[str, object] = {
             "source_label": source_label,
             "updated_at": updated_at,
             "fallback_used": fallback_used,
             "degraded_fields": degraded_fields or [],
         }
+        if meta:
+            snapshot["meta"] = {k: v for k, v in meta.items() if v is not None}
+        self._source_snapshots[key] = snapshot
 
     def _fetch_individual_realtime_eastmoney(self) -> pd.DataFrame:
+        """扩展 clist fields：`f12,f14,f2,f3,f62,f8,f9,f23,f20,f21` 一并取回。
+
+        字段含义：f12=代码 / f14=名称 / f2=最新价 / f3=涨跌幅 / f62=主力净额 /
+        f8=换手率 / f9=市盈率(动) / f23=市净率 / f20=总市值 / f21=流通市值。
+        字段缺失或解析失败时**不影响**基础列；只是扩展列变 None。
+        """
         items = self._fetch_eastmoney_clist(
-            fields="f12,f14,f2,f3,f62",
+            fields="f12,f14,f2,f3,f62,f8,f9,f23,f20,f21",
             fid="f62",
             po=1,
             pz=10000,
@@ -466,11 +524,16 @@ class AkshareGateway:
                 INDIVIDUAL_COLUMNS[2]: self._to_float(item.get("f2")),
                 INDIVIDUAL_COLUMNS[3]: self._to_float(item.get("f3")),
                 INDIVIDUAL_COLUMNS[4]: self._to_float(item.get("f62")),
+                "换手率": self._to_float(item.get("f8")),
+                "市盈率动": self._to_float(item.get("f9")),
+                "市净率": self._to_float(item.get("f23")),
+                "总市值": self._to_float(item.get("f20")),
+                "流通市值": self._to_float(item.get("f21")),
             }
             for item in items
             if item.get("f12")
         ]
-        return pd.DataFrame(rows, columns=INDIVIDUAL_COLUMNS)
+        return pd.DataFrame(rows, columns=INDIVIDUAL_EXTENDED_COLUMNS)
 
     def _fetch_market_breadth_eastmoney(self) -> pd.DataFrame:
         items = self._fetch_eastmoney_clist(
