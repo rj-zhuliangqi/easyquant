@@ -745,7 +745,23 @@ def create_app(
     # 同时清掉已存在的 *_PROXY 环境变量, 防止被 NO_PROXY 之外另一处覆盖
     for _k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "all_proxy", "ALL_PROXY"):
         os.environ.pop(_k, None)
-    logger.info("NO_PROXY 已生效: 选股器数据源走直连, 不依赖本地 Clash 是否启动")
+
+    # 关键: macOS 上 urllib.request.getproxies() 同时读 env 和系统 scutil 设置,
+    # 仅设 NO_PROXY env 不一定能 override 系统代理 -> requests 仍走 7890 死代理。
+    # monkey-patch 直接强制 getproxies 返空 dict, 进程内所有 requests/akshare 都看不到代理。
+    import urllib.request as _urllib_request
+
+    def _force_no_proxy(*_args, **_kwargs) -> dict[str, str]:
+        return {}
+
+    _urllib_request.getproxies = _force_no_proxy
+    try:
+        import requests.utils as _requests_utils
+        _requests_utils.getproxies = _force_no_proxy  # type: ignore[assignment]
+    except ImportError:
+        pass
+
+    logger.info("NO_PROXY 已生效 (env 清空 + getproxies monkey-patch): 选股器数据源直连, 不依赖 Clash")
 
     session_factory = session_factory or create_session_factory()
     gateway = gateway or AkshareGateway()
