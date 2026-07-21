@@ -120,3 +120,16 @@ class LimitUpIndicatorsService:
                     logger.error("LimitUpIndicatorsService: %s 重建失败: %s", cur, exc)
             cur += timedelta(days=1)
         return {"dates": dates, "rows": total_rows}
+
+    def prune_old(self, session: Session, keep_trading_days: int = 250) -> int:
+        """删除早于 ``MAX(trading_date) - keep_trading_days`` 的涨停指标行。"""
+        from sqlalchemy import delete, func, select as _select
+        latest = session.scalar(_select(func.max(StockLimitUpIndicator.trading_date)))
+        if latest is None:
+            return 0
+        cutoff = latest - timedelta(days=keep_trading_days)
+        result = session.execute(
+            delete(StockLimitUpIndicator).where(StockLimitUpIndicator.trading_date < cutoff)
+        )
+        session.commit()
+        return result.rowcount or 0

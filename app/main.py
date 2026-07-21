@@ -635,7 +635,7 @@ def _run_screener_incremental_backfill(
     session: Session,
     daily_bars: DailyBarsService,
 ) -> None:
-    """收盘增量：日线 + 资金流 + prune。"""
+    """收盘增量：日线 + 资金流 + prune + 持久化层 prune。"""
     from app.models import StockDailyBar
 
     universe = daily_bars.get_universe(session, min_amount=50_000_000.0)
@@ -650,6 +650,29 @@ def _run_screener_incremental_backfill(
         daily_bars.prune_old_fund_flow(session)
     except Exception:
         logger.exception("screener incremental prune failed")
+    # 持久化层 prune (2026-07-21)：4 张新表各保留 250 交易日
+    _prune_persistence_tables(session)
+
+
+def _prune_persistence_tables(session: Session) -> None:
+    """对 4 张新表执行 prune_old(keep_days=250)。单表失败不阻塞其他。"""
+    from app.services.daily_eod import DailyEodService
+    from app.services.indicators_daily import IndicatorsDailyService
+    from app.services.limit_up_history import LimitUpHistoryService
+    from app.services.limit_up_indicators import LimitUpIndicatorsService
+
+    for svc_cls, name in (
+        (DailyEodService, "stock_realtime_eod"),
+        (IndicatorsDailyService, "stock_indicators_daily"),
+        (LimitUpHistoryService, "stock_limit_up_history"),
+        (LimitUpIndicatorsService, "stock_limit_up_indicators"),
+    ):
+        try:
+            deleted = svc_cls().prune_old(session, keep_trading_days=250)
+            if deleted:
+                logger.info("prune %s: -%d 行", name, deleted)
+        except Exception:
+            logger.exception("prune %s failed", name)
 
 
 # ---------------- 持久化层 cron workers (2026-07-21) ----------------
@@ -683,6 +706,20 @@ def _run_indicators_daily(session: Session, now_provider: Callable[[], datetime]
     from app.services.indicators_daily import IndicatorsDailyService
     today = now_provider().date()
     IndicatorsDailyService(now_provider=now_provider).compute_for_date(session, today)
+
+
+def _run_vacuum(session: Session) -> None:
+    """周日 02:17 - VACUUM 回收 prune 后的空闲页。
+
+    注意：VACUUM 会重写整个 DB 文件，期间表级写锁；必须在低峰时段跑。
+    """
+    from sqlalchemy import text
+    try:
+        session.execute(text("VACUUM"))
+        session.commit()
+        logger.info("VACUUM completed")
+    except Exception:
+        logger.exception("VACUUM failed")
 
 
 def _maybe_kickoff_screener_backfill(
@@ -982,6 +1019,18 @@ def create_app(
                 max_instances=1,
                 coalesce=True,
                 misfire_grace_time=3600,
+            )
+            # 周日 02:17 - VACUUM 压缩 DB（prune 后回收空间）。避开整点减轻并发。
+            scheduler.add_job(
+                lambda: _run_scheduled_job("vacuum-sunday", session_factory, lambda session: _run_vacuum(session)),
+                "cron",
+                minute="17",
+                hour="2",
+                day_of_week="sun",
+                id="vacuum-sunday",
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=7200,
             )
             scheduler.add_job(
                 lambda: _run_scheduled_job("individual-rankings-cache", session_factory, lambda session: _refresh_individual_rankings_once(session, realtime_cache, now_provider)),

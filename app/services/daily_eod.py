@@ -110,6 +110,19 @@ class DailyEodService:
             cur += timedelta(days=1)
         return {"dates": dates, "rows": rows}
 
+    def prune_old(self, session: Session, keep_trading_days: int = 250) -> int:
+        """删除早于 ``MAX(trading_date) - keep_trading_days`` 的 EOD 行。"""
+        from sqlalchemy import delete, func
+        latest = session.scalar(select(func.max(StockRealtimeEod.trading_date)))
+        if latest is None:
+            return 0
+        cutoff = latest - timedelta(days=keep_trading_days)
+        result = session.execute(
+            delete(StockRealtimeEod).where(StockRealtimeEod.trading_date < cutoff)
+        )
+        session.commit()
+        return result.rowcount or 0
+
     # ---------------- internals ----------------
 
     def _load_snapshots(self, session: Session, trading_date: date) -> pd.DataFrame:

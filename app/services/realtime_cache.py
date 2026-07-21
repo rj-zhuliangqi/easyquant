@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import delete, or_, select
@@ -744,3 +744,25 @@ class RealtimeCacheService:
         if value is None or value == "":
             return None
         return str(value)
+
+    # ---------------- 分钟级快照归档/清理 (2026-07-21) ----------------
+
+    def prune_old_snapshots(self, session: Session, keep_days: int = 90) -> int:
+        """删除 individual_stock_snapshots 中早于 ``MAX(trading_date) - keep_days`` 的行。
+
+        用于分钟级 NN 训练数据归档后清理主库：主库保留近 ``keep_days`` 日 tick，
+        更早的由 archive_snapshots.py 导出到 CSV 后调用本方法删除。
+
+        注意：``stock_realtime_eod`` 已聚合了 EOD，所以删老 tick 不影响日级指标。
+        删 tick 只影响"分钟级回放"能力 -> 所以要先归档再删。
+        """
+        from sqlalchemy import func
+        latest = session.scalar(select(func.max(IndividualStockSnapshot.trading_date)))
+        if latest is None:
+            return 0
+        cutoff = latest - timedelta(days=keep_days)
+        result = session.execute(
+            delete(IndividualStockSnapshot).where(IndividualStockSnapshot.trading_date < cutoff)
+        )
+        session.commit()
+        return result.rowcount or 0

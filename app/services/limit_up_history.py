@@ -89,6 +89,25 @@ class LimitUpHistoryService:
                 results[pool_type] = 0
                 # 单池失败不阻塞其他池
                 continue
+
+        # 降级：东财 limit_up 池为空且是今天 -> 用实时行情+涨幅阈值判定 (2026-07-21)
+        # 复用 gateway.fetch_limit_up_from_realtime()，它内部走东财->新浪->akshare fallback
+        if results.get("limit_up", 0) == 0:
+            today = self.now_provider().date()
+            if trading_date == today:
+                try:
+                    degraded = self.gateway.fetch_limit_up_from_realtime()
+                    if degraded is not None and not degraded.empty:
+                        normalized = self._normalize_frame(degraded, "limit_up")
+                        if not normalized.empty:
+                            n = self._upsert(session, trading_date, "limit_up", normalized)
+                            results["limit_up"] = n
+                            logger.info(
+                                "LimitUpHistoryService: %s 东财涨停池空，降级用实时行情 +%d 行",
+                                trading_date, n,
+                            )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("LimitUpHistoryService: 降级涨停判定失败: %s", exc)
         return results
 
     def backfill_range(
@@ -109,6 +128,20 @@ class LimitUpHistoryService:
                     logger.error("LimitUpHistoryService: %s 整体失败: %s", cur, exc)
             cur = _next_day(cur)
         return total
+
+    def prune_old(self, session: Session, keep_trading_days: int = 250) -> int:
+        """删除早于 ``MAX(trading_date) - keep_trading_days`` 的涨停池历史。"""
+        from datetime import timedelta
+        from sqlalchemy import func, select as _select
+        latest = session.scalar(_select(func.max(StockLimitUpHistory.trading_date)))
+        if latest is None:
+            return 0
+        cutoff = latest - timedelta(days=keep_trading_days)
+        result = session.execute(
+            delete(StockLimitUpHistory).where(StockLimitUpHistory.trading_date < cutoff)
+        )
+        session.commit()
+        return result.rowcount or 0
 
     # ---------------- internals ----------------
 
