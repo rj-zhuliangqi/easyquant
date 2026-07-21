@@ -21,7 +21,14 @@ import pandas as pd
 from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
 
-from app.models import ScreenerPreset, StockDailyBar, StockFundFlowDaily
+from app.models import (
+    ScreenerPreset,
+    StockDailyBar,
+    StockFundFlowDaily,
+    StockIndicatorDaily,
+    StockLimitUpIndicator,
+    StockRealtimeEod,
+)
 from app.services.daily_bars import BoardPrefixes
 
 
@@ -115,14 +122,14 @@ BUILTIN_PRESETS: list[dict[str, Any]] = [
 # ---------------- 指标注册表 ----------------
 
 INDICATOR_REGISTRY: dict[str, dict[str, Any]] = {
-    # basic (from realtime)
-    "latest_price": {"label": "最新价", "group": "基础", "unit": "yuan", "default_op": "between", "default_value": [0, 10000], "source": "realtime"},
-    "change_pct": {"label": "今日涨跌幅", "group": "基础", "unit": "%", "default_op": "between", "default_value": [-10, 10]},
-    "total_mv": {"label": "总市值", "group": "基础", "unit": "yuan", "default_op": ">=", "default_value": 1e10},
-    "float_mv": {"label": "流通市值", "group": "基础", "unit": "yuan", "default_op": ">=", "default_value": 5e9},
-    "pe_dynamic": {"label": "市盈率(动)", "group": "基础", "unit": "x", "default_op": "between", "default_value": [0, 200], "nullable": True},
-    "pb": {"label": "市净率", "group": "基础", "unit": "x", "default_op": "between", "default_value": [0, 30], "nullable": True},
-    "turnover_rate": {"label": "换手率", "group": "基础", "unit": "%", "default_op": "between", "default_value": [0.5, 30]},
+    # basic (from realtime_eod; was previously "realtime" but unused in HTTP path)
+    "latest_price": {"label": "最新价", "group": "基础", "unit": "yuan", "default_op": "between", "default_value": [0, 10000], "source": "realtime_eod"},
+    "change_pct": {"label": "今日涨跌幅", "group": "基础", "unit": "%", "default_op": "between", "default_value": [-10, 10], "source": "realtime_eod"},
+    "total_mv": {"label": "总市值", "group": "基础", "unit": "yuan", "default_op": ">=", "default_value": 1e10, "source": "realtime_eod"},
+    "float_mv": {"label": "流通市值", "group": "基础", "unit": "yuan", "default_op": ">=", "default_value": 5e9, "source": "realtime_eod"},
+    "pe_dynamic": {"label": "市盈率(动)", "group": "基础", "unit": "x", "default_op": "between", "default_value": [0, 200], "nullable": True, "source": "realtime_eod"},
+    "pb": {"label": "市净率", "group": "基础", "unit": "x", "default_op": "between", "default_value": [0, 30], "nullable": True, "source": "realtime_eod"},
+    "turnover_rate": {"label": "换手率", "group": "基础", "unit": "%", "default_op": "between", "default_value": [0.5, 30], "source": "realtime_eod"},
     # trend
     "ma5": {"label": "MA5", "group": "趋势", "unit": "yuan"},
     "ma10": {"label": "MA10", "group": "趋势", "unit": "yuan"},
@@ -154,7 +161,8 @@ INDICATOR_REGISTRY: dict[str, dict[str, Any]] = {
     "bias20": {"label": "乖离率20", "group": "动量", "unit": "%"},
     # volume
     "volume_ratio": {"label": "量比（当日/前5日均量）", "group": "量能", "unit": "x", "default_op": "between", "default_value": [0.8, 5]},
-    "amount": {"label": "今日成交额", "group": "量能", "unit": "yuan"},
+    "volume_ratio_strict": {"label": "严格量比（同分钟）", "group": "量能", "unit": "x", "nullable": True, "source": "limit_up_history", "default_op": "between", "default_value": [0.8, 5]},
+    "amount": {"label": "今日成交额", "group": "量能", "unit": "yuan", "source": "realtime_eod"},
     "amount_ma5": {"label": "5日均成交额", "group": "量能", "unit": "yuan"},
     "turnover_ma5": {"label": "5日均换手率", "group": "量能", "unit": "%"},
     "volume_up_days": {"label": "连续放量天数", "group": "量能", "unit": "天"},
@@ -172,6 +180,9 @@ INDICATOR_REGISTRY: dict[str, dict[str, Any]] = {
     "main_net_ratio": {"label": "主力净占比(今日)", "group": "资金流", "unit": "%"},
     "super_large_net": {"label": "超大单净额", "group": "资金流", "unit": "yuan"},
     "main_net_inflow_5d_pct_mv": {"label": "5日主力净流入/流通市值(%)", "group": "资金流", "unit": "%", "default_op": ">", "default_value": 0.5, "nullable": True},
+    # 涨停类指标（持久化于 stock_limit_up_indicators / stock_limit_up_history）
+    "consecutive_limit_up_days": {"label": "连板数", "group": "形态", "unit": "板", "default_op": ">=", "default_value": 1, "source": "limit_up_indicators"},
+    "sealed_amount": {"label": "封单金额", "group": "资金流", "unit": "yuan", "default_op": ">", "default_value": 0, "nullable": True, "source": "limit_up_indicators"},
 }
 
 
@@ -402,7 +413,18 @@ class ScreenerService:
         boards = universe_cfg.get("boards") or ["main", "cyb", "kcb"]
         exclude_st = bool(universe_cfg.get("exclude_st", True))
         min_amount = float(universe_cfg.get("min_amount", 50_000_000.0))
-        universe = self.daily_bars.get_universe(session, min_amount=min_amount)
+        # 支持 as_of_date 历史回放（2026-07-21 持久化层新增）
+        as_of_str = universe_cfg.get("as_of_date")
+        as_of = None
+        if as_of_str:
+            try:
+                from datetime import date as _date
+                as_of = _date.fromisoformat(as_of_str)
+            except (TypeError, ValueError):
+                as_of = None
+        universe = self.daily_bars.get_universe(
+            session, min_amount=min_amount, universe_as_of=as_of
+        )
         if universe.empty:
             return []
         df = universe
@@ -472,14 +494,37 @@ class ScreenerService:
             "stock_code", "trading_date", "open", "close", "high", "low", "volume", "amount",
             "change_pct", "turnover_rate",
         ])
+        bars["stock_code"] = bars["stock_code"].astype(str).str.zfill(6)
         bars["trading_date"] = pd.to_datetime(bars["trading_date"])
 
         latest_date_obj = latest_date.date() if hasattr(latest_date, "date") else latest_date
         flows = _load_fund_flow(session, codes, latest_date)
         frame = compute_features(bars, flows, latest_date_obj)
 
-        # realtime 字段（pe/pb/turnover_rate/total_mv/float_mv/latest_price）
-        # 注意：传 callable 时才能合入实时字段（避免 isinstance(callable, Callable) 的 TypeError）
+        # === 持久化层覆盖 (2026-07-21) ===
+        # 1) 基础组字段 (pe/pb/total_mv/float_mv/turnover_rate/latest_price/change_pct)
+        #    从 stock_realtime_eod 读，缺则保留 live compute 值
+        rt_eod_df = _load_realtime_eod(session, codes, latest_date_obj)
+        if not rt_eod_df.empty:
+            frame = frame.merge(rt_eod_df, on="stock_code", how="left", suffixes=("", "_eod"))
+
+        # 2) bars/fundflow 派生 43 指标：优先 stock_indicators_daily 预计算，缺则保留 live
+        precomp_df = _load_precomputed_indicators(session, codes, latest_date_obj)
+        if not precomp_df.empty:
+            for col in precomp_df.columns:
+                if col == "stock_code":
+                    continue
+                # 仅当 precomputed 非空时覆盖
+                frame[col] = frame["stock_code"].map(
+                    precomp_df.set_index("stock_code")[col]
+                ).where(precomp_df.set_index("stock_code")[col].notna(), frame.get(col))
+
+        # 3) 涨停指标 (consecutive_limit_up_days / sealed_amount 等) 从 stock_limit_up_indicators
+        lu_df = _load_limit_up_indicators(session, codes, latest_date_obj)
+        if not lu_df.empty:
+            frame = frame.merge(lu_df, on="stock_code", how="left", suffixes=("", "_lu"))
+
+        # 向后兼容：旧版 _realtime_lookup callable 仍生效（测试用）
         realtime_value = request.get("_realtime_lookup")
         realtime_lookup = realtime_value if callable(realtime_value) else None
         if realtime_lookup:
@@ -532,7 +577,134 @@ def _load_fund_flow(session: Session, codes: list[str], latest_date: Any) -> pd.
     if not rows:
         return pd.DataFrame(columns=["stock_code", "trading_date", "main_net_amount", "main_net_ratio", "super_large_net", "large_net"])
     df = pd.DataFrame(rows, columns=["stock_code", "trading_date", "main_net_amount", "main_net_ratio", "super_large_net", "large_net"])
+    df["stock_code"] = df["stock_code"].astype(str).str.zfill(6)
     df["trading_date"] = pd.to_datetime(df["trading_date"])
+    return df
+
+
+# ---------------- 持久化层加载助手 (2026-07-21) ----------------
+
+
+def _load_realtime_eod(
+    session: Session, codes: list[str], trading_date: Any
+) -> pd.DataFrame:
+    """从 ``stock_realtime_eod`` 拉取基础组字段（pe/pb/total_mv/float_mv/turnover_rate/latest_price）。"""
+    if not codes:
+        return pd.DataFrame()
+    td = trading_date.date() if hasattr(trading_date, "date") else trading_date
+    rows = list(
+        session.execute(
+            select(
+                StockRealtimeEod.stock_code,
+                StockRealtimeEod.close,  # close → latest_price（指标用 latest_price 命名）
+                StockRealtimeEod.change_pct,
+                StockRealtimeEod.turnover_rate,
+                StockRealtimeEod.pe_dynamic,
+                StockRealtimeEod.pb,
+                StockRealtimeEod.total_mv,
+                StockRealtimeEod.float_mv,
+            )
+            .where(StockRealtimeEod.trading_date == td)
+            .where(StockRealtimeEod.stock_code.in_(codes))
+        )
+    )
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows, columns=[
+        "stock_code", "latest_price", "change_pct", "turnover_rate",
+        "pe_dynamic", "pb", "total_mv", "float_mv",
+    ])
+    df["stock_code"] = df["stock_code"].astype(str).str.zfill(6)
+    return df
+
+
+def _load_precomputed_indicators(
+    session: Session, codes: list[str], trading_date: Any
+) -> pd.DataFrame:
+    """从 ``stock_indicators_daily`` 拉取预计算的 43 列 bars/fundflow 派生指标。"""
+    if not codes:
+        return pd.DataFrame()
+    td = trading_date.date() if hasattr(trading_date, "date") else trading_date
+    rows = list(
+        session.execute(
+            select(StockIndicatorDaily).where(
+                StockIndicatorDaily.trading_date == td,
+                StockIndicatorDaily.stock_code.in_(codes),
+            )
+        )
+    )
+    if not rows:
+        return pd.DataFrame()
+    # 转 DataFrame，丢 ORM 元数据列
+    records = []
+    for r in rows:
+        records.append({
+            "stock_code": str(r.stock_code).zfill(6),
+            "compute_version": r.compute_version,
+            "data_hash": r.data_hash,
+            # 以下 43 列为预计算指标
+            "ma5": r.ma5, "ma10": r.ma10, "ma20": r.ma20, "ma60": r.ma60,
+            "close_vs_ma5": r.close_vs_ma5, "close_vs_ma10": r.close_vs_ma10,
+            "close_vs_ma20": r.close_vs_ma20, "close_vs_ma60": r.close_vs_ma60,
+            "ma_bullish": r.ma_bullish,
+            "golden_cross_recent": r.golden_cross_recent,
+            "death_cross_recent": r.death_cross_recent,
+            "high_20d_break": r.high_20d_break, "high_60d_break": r.high_60d_break,
+            "low_20d_break": r.low_20d_break,
+            "change_3d": r.change_3d, "change_5d": r.change_5d,
+            "change_10d": r.change_10d, "change_20d": r.change_20d,
+            "consecutive_up_days": r.consecutive_up_days,
+            "consecutive_down_days": r.consecutive_down_days,
+            "rsi6": r.rsi6, "rsi14": r.rsi14,
+            "macd_dif": r.macd_dif, "macd_dea": r.macd_dea, "macd_hist": r.macd_hist,
+            "macd_golden_recent": r.macd_golden_recent,
+            "bias20": r.bias20,
+            "volume_ratio": r.volume_ratio,
+            "amount_ma5": r.amount_ma5, "turnover_ma5": r.turnover_ma5,
+            "volume_up_days": r.volume_up_days,
+            "limit_up_today": r.limit_up_today,
+            "limit_up_count_5d": r.limit_up_count_5d,
+            "platform_breakout": r.platform_breakout,
+            "gap_up_pct": r.gap_up_pct, "lower_shadow_ratio": r.lower_shadow_ratio,
+            "main_net_inflow": r.main_net_inflow,
+            "main_net_inflow_5d": r.main_net_inflow_5d,
+            "main_net_inflow_10d": r.main_net_inflow_10d,
+            "main_net_inflow_days": r.main_net_inflow_days,
+            "main_net_ratio": r.main_net_ratio,
+            "super_large_net": r.super_large_net,
+            "main_net_inflow_5d_pct_mv": r.main_net_inflow_5d_pct_mv,
+        })
+    return pd.DataFrame(records)
+
+
+def _load_limit_up_indicators(
+    session: Session, codes: list[str], trading_date: Any
+) -> pd.DataFrame:
+    """从 ``stock_limit_up_indicators`` 拉取涨停指标。"""
+    if not codes:
+        return pd.DataFrame()
+    td = trading_date.date() if hasattr(trading_date, "date") else trading_date
+    rows = list(
+        session.execute(
+            select(
+                StockLimitUpIndicator.stock_code,
+                StockLimitUpIndicator.limit_up_today,
+                StockLimitUpIndicator.consecutive_limit_up_days,
+                StockLimitUpIndicator.sealed_amount,
+                StockLimitUpIndicator.broken_today,
+                StockLimitUpIndicator.strong_pool,
+            )
+            .where(StockLimitUpIndicator.trading_date == td)
+            .where(StockLimitUpIndicator.stock_code.in_(codes))
+        )
+    )
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows, columns=[
+        "stock_code", "limit_up_today", "consecutive_limit_up_days",
+        "sealed_amount", "broken_today", "strong_pool",
+    ])
+    df["stock_code"] = df["stock_code"].astype(str).str.zfill(6)
     return df
 
 

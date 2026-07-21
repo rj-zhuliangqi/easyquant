@@ -110,6 +110,7 @@ class DailyBarsService:
         session: Session,
         min_amount: float = 50_000_000.0,
         realtime_amounts: dict[str, float] | None = None,
+        universe_as_of: date | None = None,
     ) -> pd.DataFrame:
         """从 ``individual_stock_snapshots`` 取最新一日的全市场快照，按规则过滤。
 
@@ -121,6 +122,9 @@ class DailyBarsService:
 
         成交额优先使用 ``realtime_amounts``（由 ``fetch_individual_realtime()`` 提供，
         含 ``成交额`` 列），否则 fallback 到 ``net_amount``（保持向后兼容）。
+
+        ``universe_as_of`` (2026-07-21)：指定历史日期时，优先从
+        ``stock_realtime_eod`` 读 amount；用于历史回放。
         """
         latest_date = session.scalar(select(func.max(IndividualStockSnapshot.trading_date)))
         if latest_date is None:
@@ -153,10 +157,25 @@ class DailyBarsService:
         df["code"] = df["code"].astype(str).str.zfill(6)
         df["name"] = df["name"].astype(str)
 
-        # 成交额：realtime > snapshot.net_amount 兜底
+        # 成交额：realtime_amounts 注入 > stock_realtime_eod (as_of) > snapshot.net_amount 兜底
         if realtime_amounts:
             df["amount"] = df["code"].map(realtime_amounts)
             df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
+        elif universe_as_of is not None:
+            # 2026-07-21: 历史回放 → stock_realtime_eod.amount
+            from app.models import StockRealtimeEod  # 局部 import 避免循环
+            eod_amounts = dict(session.execute(
+                select(StockRealtimeEod.stock_code, StockRealtimeEod.amount).where(
+                    StockRealtimeEod.trading_date == universe_as_of,
+                )
+            ).all())
+            if eod_amounts:
+                df["amount"] = df["code"].map(
+                    {str(k).zfill(6): v for k, v in eod_amounts.items()}
+                )
+                df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
+            else:
+                df["amount"] = pd.to_numeric(df["net_amount"], errors="coerce")
         else:
             df["amount"] = pd.to_numeric(df["net_amount"], errors="coerce")
 
