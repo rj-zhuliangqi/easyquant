@@ -594,6 +594,14 @@ a:hover {
   color: var(--text);
 }
 
+/* 全局兜底：所有原生 select 的 option / optgroup 都用暗色背景，
+   避免浏览器默认白底覆盖主题（macOS Chrome / Safari 常见）。*/
+select option,
+select optgroup {
+  background: var(--surface);
+  color: var(--text);
+}
+
 /* ---------- 11. Buttons ---------- */
 .ghost-button {
   padding: 8px 14px;

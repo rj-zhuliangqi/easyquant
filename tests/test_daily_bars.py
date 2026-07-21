@@ -247,3 +247,84 @@ def test_backfill_all_writes_bars_and_flow(db_session) -> None:
     assert len(flows) == 3
     # qfq 守护
     assert gateway.daily_calls[0][3] == "qfq"
+
+
+# ---------------- 重试 / fallback -----------------
+
+
+def test_backfill_fund_flow_retries_on_first_empty(db_session) -> None:
+    """第一次返回空（瞬时限流），第二次返回数据 → 不记失败。"""
+    gateway = _FlakyFundFlowGateway(
+        first_n_empty=1, frame=_make_flow_frame(n_days=3)
+    )
+    # bars 也设上避免被 bars 阶段先失败污染 progress
+    gateway.set_daily(_make_bars_frame(n_days=3))
+    _seed_snapshots(db_session, datetime(2026, 5, 14, 15, 0, 0), [
+        {"trading_date": date(2026, 5, 14), "code": "000001", "name": "测试", "price": 10.0, "change_pct": 1.0, "net_amount": 200_000_000.0},
+    ])
+    service = DailyBarsService(gateway=gateway, now_provider=lambda: datetime(2026, 5, 14, 16, 0, 0))
+
+    result = service.backfill_all(db_session, code_limit=1)
+    assert result["started"] is True
+    # 资金流被尝试 2 次（首次空 + 重试成功）
+    assert gateway.flow_call_count == 2
+    # 重试成功 → 资金流阶段无失败记录
+    fund_flow_failures = [f for f in service.progress.failed if f["stage"] == "fund_flow"]
+    assert fund_flow_failures == []
+    flows = db_session.query(StockFundFlowDaily).filter_by(stock_code="000001").all()
+    assert len(flows) == 3
+
+
+def test_backfill_fund_flow_persistent_empty_records_one_failure(db_session) -> None:
+    """两次都空 → 记 1 条失败。"""
+    gateway = _FlakyFundFlowGateway(first_n_empty=99, frame=pd.DataFrame())
+    # bars 正常返回
+    gateway.set_daily(_make_bars_frame(n_days=3))
+    _seed_snapshots(db_session, datetime(2026, 5, 14, 15, 0, 0), [
+        {"trading_date": date(2026, 5, 14), "code": "000001", "name": "测试", "price": 10.0, "change_pct": 1.0, "net_amount": 200_000_000.0},
+    ])
+    service = DailyBarsService(gateway=gateway, now_provider=lambda: datetime(2026, 5, 14, 16, 0, 0))
+
+    result = service.backfill_all(db_session, code_limit=1)
+    assert result["started"] is True
+    assert gateway.flow_call_count == 2
+    fund_flow_failures = [f for f in service.progress.failed if f["stage"] == "fund_flow"]
+    assert len(fund_flow_failures) == 1
+
+
+def test_get_universe_prefers_realtime_amounts_over_net_amount(db_session) -> None:
+    """realtime_amounts 存在时优先用真实成交额，net_amount 仅作停牌判断。"""
+    _seed_snapshots(db_session, datetime(2026, 5, 14, 15, 0, 0), [
+        # net_amount 大但 realtime 成交额小 → 仍被剔除（universe bias 修复）
+        {"trading_date": date(2026, 5, 14), "code": "600001", "name": "测试A", "price": 10.0, "change_pct": 1.0, "net_amount": 500_000_000.0},
+        # net_amount 小但 realtime 成交额大 → 入选
+        {"trading_date": date(2026, 5, 14), "code": "600002", "name": "测试B", "price": 10.0, "change_pct": 1.0, "net_amount": 1_000_000.0},
+    ])
+    service = DailyBarsService(gateway=FakeGateway(), now_provider=lambda: datetime(2026, 5, 14, 16, 0, 0))
+    realtime_amounts = {
+        "600001": 10_000_000.0,  # < 50M
+        "600002": 200_000_000.0,  # >= 50M
+    }
+    universe = service.get_universe(
+        db_session, min_amount=50_000_000.0, realtime_amounts=realtime_amounts
+    )
+    codes = set(universe["code"].tolist())
+    assert "600002" in codes
+    assert "600001" not in codes
+
+
+class _FlakyFundFlowGateway(FakeGateway):
+    """前 N 次返回空，之后正常 — 模拟瞬时限流后恢复。"""
+
+    def __init__(self, first_n_empty: int, frame: pd.DataFrame) -> None:
+        super().__init__()
+        self.first_n_empty = first_n_empty
+        self._frame = frame
+        self.flow_call_count = 0
+
+    def fetch_stock_fund_flow_history(self, stock, market):
+        self.flow_call_count += 1
+        self.flow_calls.append((stock, market))
+        if self.flow_call_count <= self.first_n_empty:
+            return pd.DataFrame()
+        return self._frame.copy()

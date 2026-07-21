@@ -1,8 +1,10 @@
 <script setup>
-import { computed, ref, onMounted, onUnmounted } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useQuery, useQueryClient } from "@tanstack/vue-query";
 import DataPanel from "../components/ui/DataPanel.vue";
 import EmptyState from "../components/ui/EmptyState.vue";
+import StatusBadge from "../components/ui/StatusBadge.vue";
+import UiSelect from "../components/ui/UiSelect.vue";
 import QueryState from "../components/QueryState.vue";
 import { fetchJson } from "../lib/api";
 import { formatAmount, formatPercent, formatNumber } from "../lib/formatters";
@@ -25,6 +27,16 @@ const indicatorByName = computed(() => {
   }
   return map;
 });
+const indicatorUiOptions = computed(() =>
+  indicatorGroups.value.map((g) => ({
+    label: g.name,
+    options: g.indicators.map((ind) => ({
+      value: ind.name,
+      label: ind.label,
+      hint: ind.unit === "0/1" ? "布尔" : (ind.unit || ""),
+    })),
+  })),
+);
 
 // ---------- 预设 ----------
 const presetsQuery = useQuery({
@@ -42,7 +54,10 @@ const statusQuery = useQuery({
   staleTime: 3000,
 });
 const coverage = computed(() => statusQuery.data.value?.coverage || {});
+const cache = computed(() => statusQuery.data.value?.cache || {});
+const source = computed(() => statusQuery.data.value?.source || {});
 const progress = computed(() => statusQuery.data.value?.progress || {});
+
 const isBackfilling = computed(() => progress.value?.running === true);
 const backfillMessage = computed(() => progress.value?.message || "");
 const backfillProgressPct = computed(() => {
@@ -80,7 +95,7 @@ const conditions = ref([]);
 const universe = ref({
   exclude_st: true,
   boards: ["main", "cyb", "kcb"],
-  min_amount: 50000000,
+  min_amount: 50_000_000,
 });
 const orderBy = ref("change_pct");
 const orderDir = ref("desc");
@@ -97,48 +112,86 @@ const AMOUNT_TIERS = [
   { value: 500_000_000, label: "≥ 5 亿" },
   { value: 1_000_000_000, label: "≥ 10 亿" },
 ];
+const AMOUNT_OPTIONS = AMOUNT_TIERS.map((t) => ({ value: t.value, label: t.label }));
+const BOARD_UI_OPTIONS = [
+  { label: "板块", options: BOARD_OPTIONS },
+];
+const AMOUNT_UI_OPTIONS = [{ label: "门槛", options: AMOUNT_OPTIONS }];
+const ORDER_UI_OPTIONS = [
+  { label: "方向", options: [{ value: "desc", label: "降序" }, { value: "asc", label: "升序" }] },
+];
+const LIMIT_UI_OPTIONS = [
+  { label: "条数", options: [50, 100, 200, 500].map((v) => ({ value: v, label: `${v} 条` })) },
+];
 
 function newCondition() {
   return { indicator: "consecutive_up_days", op: ">=", value: 3 };
 }
-
 function addCondition() {
   conditions.value.push(newCondition());
 }
-
 function removeCondition(index) {
   conditions.value.splice(index, 1);
 }
 
-function onIndicatorChange(cond) {
+function isBooleanIndicator(name) {
+  return indicatorByName.value[name]?.unit === "0/1";
+}
+function isNumericIndicator(name) {
+  return !isBooleanIndicator(name);
+}
+
+const BOOLEAN_OP_OPTIONS = [{ value: "==", label: "等于" }];
+const NUMERIC_OP_OPTIONS = [
+  { value: ">=", label: "≥" },
+  { value: ">", label: ">" },
+  { value: "<=", label: "≤" },
+  { value: "<", label: "<" },
+  { value: "==", label: "=" },
+  { value: "!=", label: "≠" },
+  { value: "between", label: "区间" },
+];
+
+function opOptionsFor(cond) {
+  if (isBooleanIndicator(cond.indicator)) return BOOLEAN_OP_OPTIONS;
+  return NUMERIC_OP_OPTIONS;
+}
+
+function indicatorChanged(cond) {
   const meta = indicatorByName.value[cond.indicator];
   if (!meta) return;
-  // 布尔指标固定 == 1
   if (meta.unit === "0/1") {
     cond.op = "==";
-    cond.value = meta.default_value ?? 1;
+    cond.value = 1;
   } else {
     cond.op = meta.default_op || ">=";
     cond.value = meta.default_value ?? 0;
   }
 }
 
-function isBooleanIndicator(name) {
-  const meta = indicatorByName.value[name];
-  return meta?.unit === "0/1";
-}
-
 function isBetweenOp(op) {
   return op === "between";
+}
+
+function unitHint(name) {
+  return indicatorByName.value[name]?.unit || "";
 }
 
 // ---------- 预设应用 ----------
 const activePresetId = ref(null);
 function applyPreset(preset) {
   activePresetId.value = preset.id;
-  conditions.value = JSON.parse(JSON.stringify(preset.conditions || []));
+  // 深拷贝避免引用 preset 对象
+  conditions.value = structuredClone(preset.conditions || []);
   if (preset.order_by) orderBy.value = preset.order_by;
   if (preset.order) orderDir.value = preset.order;
+  if (preset.universe) {
+    universe.value = {
+      exclude_st: preset.universe.exclude_st ?? true,
+      boards: preset.universe.boards ?? ["main", "cyb", "kcb"],
+      min_amount: preset.universe.min_amount ?? 50_000_000,
+    };
+  }
 }
 
 async function deletePreset(preset) {
@@ -255,8 +308,37 @@ onUnmounted(() => {
 const results = computed(() => runResult.value?.results || []);
 const warnings = computed(() => runResult.value?.warnings || []);
 const dataDate = computed(() => runResult.value?.data_date || coverage.value?.latest_date || "");
-
 const hasData = computed(() => (coverage.value?.stock_count || 0) > 0);
+const isStale = computed(() => cache.value?.is_stale === true);
+
+const coveragePctText = computed(() => {
+  const pct = coverage.value?.coverage_pct;
+  if (pct == null) return "—";
+  return `${pct.toFixed(1)}%`;
+});
+
+const cacheAgeText = computed(() => {
+  const m = cache.value?.cache_age_minutes;
+  if (m == null) return "无缓存";
+  if (m < 60) return `${m} 分钟前`;
+  if (m < 24 * 60) return `${Math.floor(m / 60)} 小时前`;
+  return `${Math.floor(m / (24 * 60))} 天前`;
+});
+
+const sourceLabelText = computed(() => {
+  const label = source.value?.fund_flow || "akshare";
+  const fallback = source.value?.fallback_used;
+  if (label === "eastmoney") return "东方财富";
+  if (label === "akshare") return fallback ? "东方财富(回落)" : "AKShare";
+  if (label === "cache") return "本地缓存";
+  return label;
+});
+
+const sourceStatus = computed(() => {
+  if (source.value?.fallback_used) return "warning";
+  if (source.value?.fund_flow === "eastmoney") return "info";
+  return "success";
+});
 
 // 结果行展示的字段顺序
 const RESULT_COLUMNS = [
@@ -275,6 +357,16 @@ function changeClass(v) {
   if (n < 0) return "neg";
   return "";
 }
+
+function toggleBoard(value) {
+  const list = universe.value.boards;
+  const idx = list.indexOf(value);
+  if (idx >= 0) list.splice(idx, 1);
+  else list.push(value);
+  // 至少保留一个板块
+  if (!list.length) list.push("main");
+  universe.value = { ...universe.value, boards: [...list] };
+}
 </script>
 
 <template>
@@ -292,23 +384,30 @@ function changeClass(v) {
       />
     </header>
 
-    <!-- 数据状态条 -->
+    <!-- 数据状态条（拆成 metric cards + 数据源 + 缓存陈旧提示） -->
     <section class="status-bar">
-      <div class="status-cell">
-        <span class="status-label">覆盖股票</span>
+      <div class="metric-cell">
+        <span class="metric-label">覆盖股票</span>
         <strong>{{ coverage.stock_count ?? 0 }}</strong>
+        <span class="metric-hint" v-if="coverage.universe_size">/ {{ coverage.universe_size }} universe</span>
       </div>
-      <div class="status-cell">
-        <span class="status-label">数据日期</span>
+      <div class="metric-cell">
+        <span class="metric-label">日线最新</span>
         <strong>{{ coverage.latest_date || "--" }}</strong>
+        <span class="metric-hint">{{ cacheAgeText }}</span>
       </div>
-      <div class="status-cell">
-        <span class="status-label">日线行数</span>
-        <strong>{{ formatNumber(coverage.bar_rows ?? 0, 0) }}</strong>
-      </div>
-      <div class="status-cell">
-        <span class="status-label">资金流股票</span>
+      <div class="metric-cell">
+        <span class="metric-label">资金流</span>
         <strong>{{ coverage.flow_stock_count ?? 0 }}</strong>
+        <span class="metric-hint">最新 {{ coverage.flow_latest_date || "--" }}</span>
+      </div>
+      <div class="metric-cell">
+        <span class="metric-label">覆盖率</span>
+        <strong>{{ coveragePctText }}</strong>
+        <span class="metric-hint">bar / flow</span>
+      </div>
+      <div class="status-source">
+        <StatusBadge :status="sourceStatus" size="sm">数据源 {{ sourceLabelText }}</StatusBadge>
       </div>
       <div class="status-actions">
         <button
@@ -327,15 +426,21 @@ function changeClass(v) {
       </div>
     </section>
 
-    <!-- 回补进度 -->
+    <div v-if="isStale && hasData" class="stale-banner">
+      ⚠ 缓存已陈旧（{{ cacheAgeText }}），点击右上「更新数据」拉取最新行情
+    </div>
+
+    <!-- 回补进度（按 stage 分段着色） -->
     <section v-if="isBackfilling || backfillMessage" class="backfill-progress">
       <div class="progress-info">
-        <span>{{ backfillMessage || "回补中…" }}</span>
-        <span v-if="progress.stage">阶段：{{ progress.stage }}</span>
-        <span v-if="progress.total">{{ progress.done }} / {{ progress.total }}（{{ backfillProgressPct }}%）</span>
+        <span class="progress-stage" :data-stage="progress.stage">{{ progress.stage || "idle" }}</span>
+        <span class="progress-msg">{{ backfillMessage || "回补中…" }}</span>
+        <span v-if="progress.total" class="progress-counts">
+          {{ progress.done }} / {{ progress.total }}（{{ backfillProgressPct }}%）
+        </span>
       </div>
       <div class="progress-bar">
-        <div class="progress-fill" :style="{ width: backfillProgressPct + '%' }"></div>
+        <div class="progress-fill" :data-stage="progress.stage" :style="{ width: backfillProgressPct + '%' }"></div>
       </div>
       <div v-if="progress.failed?.length" class="progress-failed">
         失败 {{ progress.failed.length }} 只（详见后端日志）
@@ -366,7 +471,7 @@ function changeClass(v) {
     </section>
 
     <!-- 条件构建器 -->
-    <DataPanel title="条件构建器">
+    <DataPanel title="条件构建器" :subtitle="conditions.length ? `${conditions.length} 条` : '空'">
       <template #actions>
         <button class="btn btn-ghost" type="button" @click="addCondition">＋ 添加条件</button>
         <button class="btn btn-ghost" type="button" @click="showSaveDialog = true">保存为预设</button>
@@ -376,85 +481,109 @@ function changeClass(v) {
 
       <div class="condition-list">
         <div v-for="(cond, idx) in conditions" :key="idx" class="condition-row">
-          <select v-model="cond.indicator" class="c-indicator" @change="onIndicatorChange(cond)">
-            <optgroup v-for="g in indicatorGroups" :key="g.name" :label="g.name">
-              <option v-for="ind in g.indicators" :key="ind.name" :value="ind.name">{{ ind.label }}</option>
-            </optgroup>
-          </select>
-
-          <select v-model="cond.op" class="c-op" :disabled="isBooleanIndicator(cond.indicator)">
-            <option v-if="isBooleanIndicator(cond.indicator)" value="==">==</option>
-            <template v-else>
-              <option value=">=">≥</option>
-              <option value=">">&gt;</option>
-              <option value="<=">≤</option>
-              <option value="<">&lt;</option>
-              <option value="==">==</option>
-              <option value="between">区间</option>
-            </template>
-          </select>
-
-          <template v-if="isBetweenOp(cond.op)">
-            <input
-              v-model.number="cond.value[0]"
-              type="number"
-              class="c-value"
-              placeholder="下限"
-            />
-            <span class="c-sep">~</span>
-            <input
-              v-model.number="cond.value[1]"
-              type="number"
-              class="c-value"
-              placeholder="上限"
-            />
-          </template>
-          <template v-else>
-            <input
-              v-model.number="cond.value"
-              type="number"
-              class="c-value"
-              :disabled="isBooleanIndicator(cond.indicator)"
-            />
-          </template>
-
-          <button class="c-remove" type="button" @click="removeCondition(idx)" title="删除">×</button>
+          <span class="cond-idx">{{ idx + 1 }}</span>
+          <div class="cond-grid">
+            <div class="cond-field">
+              <label>指标</label>
+              <UiSelect
+                :model-value="cond.indicator"
+                :options="indicatorUiOptions"
+                size="sm"
+                @update:model-value="(v) => { cond.indicator = v; indicatorChanged(cond); }"
+              />
+            </div>
+            <div class="cond-field cond-op">
+              <label>操作符</label>
+              <UiSelect
+                :model-value="cond.op"
+                :options="opOptionsFor(cond)"
+                :disabled="isBooleanIndicator(cond.indicator)"
+                size="sm"
+                @update:model-value="(v) => { cond.op = v; if (v === 'between' && !Array.isArray(cond.value)) cond.value = [cond.value, cond.value]; }"
+              />
+            </div>
+            <div class="cond-field cond-val">
+              <label>值</label>
+              <template v-if="isBooleanIndicator(cond.indicator)">
+                <div class="bool-chips">
+                  <button
+                    type="button"
+                    class="bool-chip"
+                    :class="{ active: cond.value === 1 }"
+                    @click="cond.value = 1"
+                  >是</button>
+                  <button
+                    type="button"
+                    class="bool-chip"
+                    :class="{ active: cond.value === 0 }"
+                    @click="cond.value = 0"
+                  >否</button>
+                </div>
+              </template>
+              <template v-else-if="isBetweenOp(cond.op)">
+                <div class="between-inputs">
+                  <input v-model.number="cond.value[0]" type="number" placeholder="下限" />
+                  <span class="c-sep">~</span>
+                  <input v-model.number="cond.value[1]" type="number" placeholder="上限" />
+                </div>
+              </template>
+              <template v-else>
+                <input
+                  v-model.number="cond.value"
+                  type="number"
+                  :placeholder="unitHint(cond.indicator) || '数值'"
+                />
+              </template>
+            </div>
+            <button class="c-remove" type="button" @click="removeCondition(idx)" title="删除">×</button>
+          </div>
         </div>
       </div>
 
       <!-- 股票池 -->
-      <div class="universe-row">
-        <span class="universe-label">股票池：</span>
-        <label class="check"><input v-model="universe.exclude_st" type="checkbox" /> 排除 ST</label>
-        <span class="universe-label">板块：</span>
-        <label v-for="b in BOARD_OPTIONS" :key="b.value" class="check">
-          <input :value="b.value" v-model="universe.boards" type="checkbox" /> {{ b.label }}
-        </label>
-        <span class="universe-label">最低成交额：</span>
-        <select v-model.number="universe.min_amount">
-          <option v-for="t in AMOUNT_TIERS" :key="t.value" :value="t.value">{{ t.label }}</option>
-        </select>
+      <div class="ctrl-row">
+        <div class="ctrl-group">
+          <span class="ctrl-label">股票池</span>
+          <label class="check">
+            <input v-model="universe.exclude_st" type="checkbox" /> 排除 ST
+          </label>
+        </div>
+        <div class="ctrl-group">
+          <span class="ctrl-label">板块</span>
+          <label v-for="b in BOARD_OPTIONS" :key="b.value" class="check">
+            <input
+              type="checkbox"
+              :checked="universe.boards.includes(b.value)"
+              @change="toggleBoard(b.value)"
+            /> {{ b.label }}
+          </label>
+        </div>
+        <div class="ctrl-group ctrl-grow">
+          <span class="ctrl-label">最低成交额</span>
+          <UiSelect
+            v-model="universe.min_amount"
+            :options="AMOUNT_UI_OPTIONS"
+            size="sm"
+          />
+        </div>
       </div>
 
-      <!-- 排序与限数 -->
-      <div class="universe-row">
-        <span class="universe-label">排序：</span>
-        <select v-model="orderBy">
-          <optgroup v-for="g in indicatorGroups" :key="g.name" :label="g.name">
-            <option v-for="ind in g.indicators" :key="ind.name" :value="ind.name">{{ ind.label }}</option>
-          </optgroup>
-        </select>
-        <select v-model="orderDir">
-          <option value="desc">降序</option>
-          <option value="asc">升序</option>
-        </select>
-        <span class="universe-label">返回条数：</span>
-        <select v-model.number="limit">
-          <option :value="50">50</option>
-          <option :value="100">100</option>
-          <option :value="200">200</option>
-          <option :value="500">500</option>
-        </select>
+      <!-- 排序 + 限数 + 执行 -->
+      <div class="ctrl-row">
+        <div class="ctrl-group ctrl-grow">
+          <span class="ctrl-label">排序</span>
+          <UiSelect
+            v-model="orderBy"
+            :options="indicatorUiOptions"
+            size="sm"
+          />
+        </div>
+        <div class="ctrl-group">
+          <UiSelect v-model="orderDir" :options="ORDER_UI_OPTIONS" size="sm" />
+        </div>
+        <div class="ctrl-group">
+          <UiSelect v-model="limit" :options="LIMIT_UI_OPTIONS" size="sm" />
+        </div>
         <button
           class="btn btn-primary run-btn"
           type="button"
@@ -464,18 +593,21 @@ function changeClass(v) {
       </div>
     </DataPanel>
 
-    <!-- 保存预设对话框 -->
-    <div v-if="showSaveDialog" class="modal-mask" @click.self="showSaveDialog = false">
-      <div class="modal">
-        <h3>保存为预设</h3>
-        <label>名称<input v-model="saveName" type="text" placeholder="如：我的突破策略" /></label>
-        <label>说明<input v-model="saveDesc" type="text" placeholder="可选" /></label>
-        <div class="modal-actions">
-          <button class="btn btn-ghost" type="button" @click="showSaveDialog = false">取消</button>
-          <button class="btn btn-primary" type="button" @click="saveAsPreset">保存</button>
+    <!-- 保存预设对话框（Teleport 避免遮挡） -->
+    <Teleport to="body">
+      <div v-if="showSaveDialog" class="modal-mask" @click.self="showSaveDialog = false">
+        <div class="modal" role="dialog" aria-modal="true">
+          <h3>保存为预设</h3>
+          <p class="modal-hint">{{ conditions.length }} 条条件 · {{ universe.boards.length }} 个板块</p>
+          <label>名称<input v-model="saveName" type="text" placeholder="如：我的突破策略" /></label>
+          <label>说明<input v-model="saveDesc" type="text" placeholder="可选" /></label>
+          <div class="modal-actions">
+            <button class="btn btn-ghost" type="button" @click="showSaveDialog = false">取消</button>
+            <button class="btn btn-primary" type="button" @click="saveAsPreset">保存</button>
+          </div>
         </div>
       </div>
-    </div>
+    </Teleport>
 
     <!-- 结果 -->
     <DataPanel title="筛选结果" :subtitle="runResult ? `共 ${runResult.total} 条` : ''">
@@ -524,40 +656,140 @@ function changeClass(v) {
 </template>
 
 <style scoped>
-/* 状态条 */
+/* ---------- 状态条 / metric cards ---------- */
 .status-bar {
   display: flex;
   flex-wrap: wrap;
-  gap: 16px;
-  align-items: center;
-  padding: 12px 16px;
+  gap: 12px;
+  align-items: stretch;
+  padding: 14px 16px;
   background: var(--panel-bg, rgba(15, 23, 42, 0.5));
   border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
   border-radius: var(--radius-md, 10px);
-  margin-bottom: 16px;
+  margin-bottom: 12px;
 }
-.status-cell { display: flex; flex-direction: column; gap: 2px; }
-.status-label { font-size: 11px; color: var(--text-muted, #94a3b8); }
-.status-cell strong { font-size: 16px; font-weight: 700; }
-.status-actions { margin-left: auto; display: flex; gap: 8px; }
+.metric-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 110px;
+  padding: 8px 14px;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: 8px;
+}
+.metric-label {
+  font-size: 11px;
+  color: var(--text-muted, #94a3b8);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.metric-cell strong {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text, #e2e8f0);
+  font-variant-numeric: tabular-nums;
+}
+.metric-hint {
+  font-size: 11px;
+  color: var(--text-muted, #94a3b8);
+}
+.status-source {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+}
+.status-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
 
-/* 回补进度 */
+.stale-banner {
+  padding: 10px 14px;
+  background: rgba(251, 191, 36, 0.08);
+  border: 1px solid rgba(251, 191, 36, 0.25);
+  border-radius: 8px;
+  font-size: 13px;
+  color: #fbbf24;
+  margin-bottom: 12px;
+}
+
+/* ---------- 回补进度（按 stage 分色） ---------- */
 .backfill-progress {
   padding: 12px 16px;
   background: var(--panel-bg, rgba(15, 23, 42, 0.5));
   border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
   border-radius: var(--radius-md, 10px);
-  margin-bottom: 16px;
+  margin-bottom: 12px;
 }
-.progress-info { display: flex; gap: 16px; font-size: 12px; color: var(--text-muted, #94a3b8); margin-bottom: 8px; flex-wrap: wrap; }
-.progress-bar { height: 6px; background: rgba(255, 255, 255, 0.06); border-radius: 3px; overflow: hidden; }
-.progress-fill { height: 100%; background: linear-gradient(90deg, var(--accent, #06b6d4), #0891b2); transition: width 0.3s; }
-.progress-failed { font-size: 11px; color: var(--danger, #f87171); margin-top: 6px; }
+.progress-info {
+  display: flex;
+  gap: 16px;
+  font-size: 12px;
+  color: var(--text-muted, #94a3b8);
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.progress-stage {
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-weight: 600;
+  background: rgba(56, 189, 248, 0.15);
+  color: #38bdf8;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+}
+.progress-stage[data-stage="bars"] { background: rgba(56, 189, 248, 0.15); color: #38bdf8; }
+.progress-stage[data-stage="fund_flow"] { background: rgba(168, 85, 247, 0.15); color: #c084fc; }
+.progress-stage[data-stage="done"] { background: rgba(34, 197, 94, 0.15); color: #4ade80; }
+.progress-stage[data-stage="error"] { background: rgba(248, 113, 113, 0.15); color: #f87171; }
 
-/* 预设条 */
-.preset-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
-.preset-label { font-size: 13px; color: var(--text-muted, #94a3b8); }
-.preset-chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.progress-bar {
+  height: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #38bdf8, #0ea5e9);
+  transition: width 0.3s;
+}
+.progress-fill[data-stage="fund_flow"] {
+  background: linear-gradient(90deg, #c084fc, #a855f7);
+}
+.progress-fill[data-stage="done"] {
+  background: linear-gradient(90deg, #4ade80, #22c55e);
+}
+.progress-fill[data-stage="error"] {
+  background: linear-gradient(90deg, #f87171, #ef4444);
+}
+.progress-failed {
+  font-size: 11px;
+  color: var(--danger, #f87171);
+  margin-top: 6px;
+}
+
+/* ---------- 预设条 ---------- */
+.preset-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.preset-label {
+  font-size: 13px;
+  color: var(--text-muted, #94a3b8);
+}
+.preset-chips {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
 .preset-chip {
   padding: 6px 14px;
   border-radius: 999px;
@@ -568,79 +800,277 @@ function changeClass(v) {
   cursor: pointer;
   transition: all 0.15s;
 }
-.preset-chip:hover { border-color: var(--accent, #06b6d4); color: var(--text, #e2e8f0); }
-.preset-chip.active { background: var(--accent-soft, rgba(6, 182, 212, 0.15)); border-color: var(--accent, #06b6d4); color: var(--accent, #06b6d4); }
-
-/* 条件构建器 */
-.empty-hint { padding: 16px; color: var(--text-muted, #94a3b8); font-size: 13px; text-align: center; }
-.condition-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
-.condition-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.c-indicator { flex: 1 1 200px; min-width: 160px; }
-.c-op { width: 80px; }
-.c-value { width: 100px; }
-.c-sep { color: var(--text-muted, #94a3b8); }
-.c-remove {
-  width: 28px; height: 28px;
-  border-radius: 6px; border: none;
-  background: rgba(248, 113, 113, 0.1);
-  color: var(--danger, #f87171);
-  cursor: pointer; font-size: 16px;
-  flex-shrink: 0;
+.preset-chip:hover {
+  border-color: var(--accent, #06b6d4);
+  color: var(--text, #e2e8f0);
 }
-.c-remove:hover { background: rgba(248, 113, 113, 0.2); }
+.preset-chip.active {
+  background: var(--accent-soft, rgba(6, 182, 212, 0.15));
+  border-color: var(--accent, #06b6d4);
+  color: var(--accent, #06b6d4);
+}
 
-.universe-row {
-  display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+/* ---------- 条件构建器（每条单独一行） ---------- */
+.empty-hint {
+  padding: 16px;
+  color: var(--text-muted, #94a3b8);
+  font-size: 13px;
+  text-align: center;
+}
+.condition-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.condition-row {
+  display: flex;
+  gap: 10px;
+  align-items: stretch;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: 8px;
+}
+.cond-idx {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--accent-soft, rgba(56, 189, 248, 0.15));
+  color: var(--accent, #38bdf8);
+  font-weight: 700;
+  font-size: 12px;
+  flex-shrink: 0;
+  align-self: center;
+}
+.cond-grid {
+  display: grid;
+  grid-template-columns: 1.5fr 0.8fr 1.2fr auto;
+  gap: 10px;
+  flex: 1;
+  align-items: end;
+}
+.cond-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.cond-field label {
+  font-size: 11px;
+  color: var(--text-muted, #94a3b8);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.cond-field input[type="number"] {
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+  background: var(--surface, rgba(15, 23, 42, 0.6));
+  color: var(--text, #e2e8f0);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.cond-field input[type="number"]:focus {
+  outline: none;
+  border-color: var(--accent, #06b6d4);
+}
+.between-inputs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.between-inputs input {
+  flex: 1;
+  min-width: 60px;
+}
+.c-sep {
+  color: var(--text-muted, #94a3b8);
+  font-weight: 600;
+}
+.bool-chips {
+  display: flex;
+  gap: 6px;
+}
+.bool-chip {
+  flex: 1;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+  background: transparent;
+  color: var(--text-secondary, #cbd5e1);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.bool-chip:hover {
+  border-color: var(--accent, #06b6d4);
+}
+.bool-chip.active {
+  background: var(--accent-soft, rgba(56, 189, 248, 0.15));
+  border-color: var(--accent, #38bdf8);
+  color: var(--accent, #38bdf8);
+  font-weight: 600;
+}
+.c-remove {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  border: 1px solid rgba(248, 113, 113, 0.3);
+  background: rgba(248, 113, 113, 0.08);
+  color: var(--danger, #f87171);
+  cursor: pointer;
+  font-size: 18px;
+  flex-shrink: 0;
+  align-self: center;
+  transition: all 0.15s;
+}
+.c-remove:hover {
+  background: rgba(248, 113, 113, 0.2);
+}
+
+/* ---------- 控件行（股票池/排序） ---------- */
+.ctrl-row {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  flex-wrap: wrap;
   padding: 10px 0;
   border-top: 1px solid var(--border, rgba(255, 255, 255, 0.06));
   font-size: 13px;
 }
-.universe-row:first-of-type { border-top: none; }
-.universe-label { color: var(--text-muted, #94a3b8); }
-.check { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
-.run-btn { margin-left: auto; }
+.ctrl-row:first-of-type {
+  border-top: none;
+}
+.ctrl-group {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.ctrl-grow {
+  flex: 1;
+  min-width: 180px;
+}
+.ctrl-label {
+  color: var(--text-muted, #94a3b8);
+  font-size: 12px;
+}
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  user-select: none;
+}
+.run-btn {
+  margin-left: auto;
+}
 
-/* 通用按钮 */
+/* ---------- 按钮 ---------- */
 .btn {
-  padding: 6px 14px;
+  padding: 7px 14px;
   border-radius: 6px;
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
   border: 1px solid transparent;
   transition: all 0.15s;
+  font-family: inherit;
 }
-.btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.btn-primary { background: var(--accent, #06b6d4); color: #fff; border: none; }
-.btn-primary:hover:not(:disabled) { opacity: 0.9; }
-.btn-ghost { background: transparent; color: var(--text-secondary, #cbd5e1); border-color: var(--border, rgba(255, 255, 255, 0.1)); }
-.btn-ghost:hover:not(:disabled) { border-color: var(--accent, #06b6d4); color: var(--text, #e2e8f0); }
-.btn-sm { padding: 3px 10px; font-size: 12px; }
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.btn-primary {
+  background: var(--accent, #06b6d4);
+  color: #fff;
+  border: none;
+}
+.btn-primary:hover:not(:disabled) {
+  opacity: 0.9;
+}
+.btn-ghost {
+  background: transparent;
+  color: var(--text-secondary, #cbd5e1);
+  border-color: var(--border, rgba(255, 255, 255, 0.1));
+}
+.btn-ghost:hover:not(:disabled) {
+  border-color: var(--accent, #06b6d4);
+  color: var(--text, #e2e8f0);
+}
+.btn-sm {
+  padding: 3px 10px;
+  font-size: 12px;
+}
 
-/* 对话框 */
+/* ---------- 对话框 ---------- */
 .modal-mask {
-  position: fixed; inset: 0;
-  background: rgba(0, 0, 0, 0.5);
-  display: grid; place-items: center;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(2px);
+  display: grid;
+  place-items: center;
   z-index: 1000;
 }
 .modal {
   background: var(--panel-bg, #0f172a);
   border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
   border-radius: 12px;
-  padding: 20px;
-  width: 360px;
-  display: flex; flex-direction: column; gap: 12px;
+  padding: 22px;
+  width: 380px;
+  max-width: calc(100vw - 32px);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.4);
 }
-.modal h3 { margin: 0 0 4px; }
-.modal label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--text-muted, #94a3b8); }
-.modal input { padding: 8px; border-radius: 6px; border: 1px solid var(--border, rgba(255, 255, 255, 0.1)); background: transparent; color: var(--text, #e2e8f0); }
-.modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.modal h3 {
+  margin: 0;
+  font-size: 16px;
+}
+.modal-hint {
+  margin: -4px 0 4px;
+  font-size: 12px;
+  color: var(--text-muted, #94a3b8);
+}
+.modal label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-muted, #94a3b8);
+}
+.modal input {
+  padding: 9px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+  background: var(--surface, rgba(0, 0, 0, 0.2));
+  color: var(--text, #e2e8f0);
+  font-size: 13px;
+  font-family: inherit;
+}
+.modal input:focus {
+  outline: none;
+  border-color: var(--accent, #06b6d4);
+}
+.modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
 
-/* 警告 */
-.warnings { margin-bottom: 12px; }
+/* ---------- 警告 ---------- */
+.warnings {
+  margin-bottom: 12px;
+}
 .warn-item {
-  padding: 6px 12px;
+  padding: 8px 12px;
   background: rgba(251, 191, 36, 0.08);
   border: 1px solid rgba(251, 191, 36, 0.2);
   border-radius: 6px;
@@ -649,42 +1079,105 @@ function changeClass(v) {
   margin-bottom: 4px;
 }
 
-.inline-error { color: var(--danger, #f87171); font-size: 13px; margin: 8px 0; }
+.inline-error {
+  color: var(--danger, #f87171);
+  font-size: 13px;
+  margin: 8px 0;
+}
 
-/* 结果列表 */
-.result-list { display: flex; flex-direction: column; gap: 8px; }
+/* ---------- 结果列表 ---------- */
+.result-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
 .result-card {
   padding: 12px 14px;
   border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.02);
 }
-.rc-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
-.rc-code { font-weight: 700; font-size: 15px; }
-.rc-name { color: var(--text-secondary, #cbd5e1); font-size: 13px; }
-.rc-change { margin-left: auto; font-weight: 600; font-size: 14px; }
-.rc-change.pos { color: var(--up, #f87171); }
-.rc-change.neg { color: var(--down, #34d399); }
-.rc-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); gap: 8px; }
-.rc-metric { display: flex; flex-direction: column; gap: 2px; }
-.rc-metric-label { font-size: 11px; color: var(--text-muted, #94a3b8); }
-.rc-metric-value { font-size: 13px; font-weight: 600; }
-.rc-actions { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
-.rc-watch-msg { font-size: 11px; color: var(--text-muted, #94a3b8); }
-
-select, input[type="number"], input[type="text"] {
-  padding: 6px 8px;
-  border-radius: 6px;
-  border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
-  background: transparent;
-  color: var(--text, #e2e8f0);
+.rc-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.rc-code {
+  font-weight: 700;
+  font-size: 15px;
+}
+.rc-name {
+  color: var(--text-secondary, #cbd5e1);
   font-size: 13px;
 }
-select:focus, input:focus { outline: none; border-color: var(--accent, #06b6d4); }
+.rc-change {
+  margin-left: auto;
+  font-weight: 600;
+  font-size: 14px;
+}
+.rc-change.pos {
+  color: var(--up, #f87171);
+}
+.rc-change.neg {
+  color: var(--down, #34d399);
+}
+.rc-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+  gap: 8px;
+}
+.rc-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.rc-metric-label {
+  font-size: 11px;
+  color: var(--text-muted, #94a3b8);
+}
+.rc-metric-value {
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.rc-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+.rc-watch-msg {
+  font-size: 11px;
+  color: var(--text-muted, #94a3b8);
+}
+
+/* ---------- 响应式 ---------- */
+@media (max-width: 900px) {
+  .cond-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+  .cond-field.cond-val {
+    grid-column: 1 / -1;
+  }
+  .ctrl-grow {
+    min-width: 100%;
+  }
+}
 
 @media (max-width: 640px) {
-  .status-actions { margin-left: 0; width: 100%; }
-  .run-btn { margin-left: 0; }
-  .rc-metrics { grid-template-columns: repeat(3, 1fr); }
+  .status-actions {
+    margin-left: 0;
+    width: 100%;
+  }
+  .run-btn {
+    margin-left: 0;
+  }
+  .rc-metrics {
+    grid-template-columns: repeat(3, 1fr);
+  }
+  .cond-grid {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

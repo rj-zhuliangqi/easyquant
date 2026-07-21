@@ -214,7 +214,36 @@ class AkshareGateway:
         return frame
 
     def fetch_stock_fund_flow_history(self, stock: str, market: str) -> pd.DataFrame:
-        return self._standardize_columns(self._run(lambda: ak.stock_individual_fund_flow(stock=stock, market=market)))
+        """个股资金流历史，双源 fallback。
+
+        主源：``ak.stock_individual_fund_flow``（东财数据走 akshare 代理）；
+        备源：东方财富 ``push2his.eastmoney.com/api/qt/stock/fflow/daykline/get``。
+        任一源成功即返回；写入 ``_source_snapshots`` 供前端展示数据来源。
+        """
+        try:
+            frame = self._standardize_columns(
+                self._run(lambda: ak.stock_individual_fund_flow(stock=stock, market=market))
+            )
+            if not frame.empty:
+                self._set_source_snapshot(
+                    f"stock_fund_flow_history:{stock}",
+                    source_label="akshare",
+                    fallback_used=False,
+                    updated_at=now_cn().isoformat(),
+                )
+                return frame
+        except Exception:
+            logger.warning("akshare fund_flow failed for %s, trying eastmoney", stock)
+
+        frame = self._fetch_stock_fund_flow_history_eastmoney(stock, market)
+        self._set_source_snapshot(
+            f"stock_fund_flow_history:{stock}",
+            source_label="eastmoney" if not frame.empty else "none",
+            fallback_used=not frame.empty,
+            updated_at=now_cn().isoformat(),
+            degraded_fields=[] if not frame.empty else ["fund_flow_history"],
+        )
+        return frame
 
     def fetch_market_index_spot(self) -> pd.DataFrame:
         frame = self._fetch_market_index_spot_tencent_primary()
@@ -481,6 +510,52 @@ class AkshareGateway:
         if len(code) != 6 or not code.isdigit():
             return None
         return f"sh{code}" if code.startswith("6") else f"sz{code}"
+
+    def _fetch_stock_fund_flow_history_eastmoney(self, stock: str, market: str) -> pd.DataFrame:
+        """东方财富个股资金流历史接口。
+
+        endpoint: ``https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get``
+        返回 klines 每项 8 列 CSV：日期,主力净额,超大单净额,大单净额,中单净额,
+        小单净额,主力净占比,大单净占比。本方法返回与 akshare 同名中文列的 DataFrame，
+        以便 ``_fund_flow_history_to_rows`` 复用。
+        """
+        secid = self._eastmoney_secid(stock)
+        url = (
+            "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get"
+            f"?secid={secid}&fields1=f1,f2,f3,f4,f5,f6"
+            "&fields2=f51,f52,f53,f54,f55,f56,f57,f58"
+            "&lmt=1000&klt=1"
+        )
+        response = self._request_get(url, headers={"Referer": "https://quote.eastmoney.com/"})
+        if response is None:
+            return pd.DataFrame()
+        try:
+            payload = response.json()
+        except Exception:
+            return pd.DataFrame()
+
+        klines = payload.get("data", {}).get("klines", []) or []
+        if not klines:
+            return pd.DataFrame()
+
+        records: list[dict[str, object]] = []
+        for item in klines:
+            values = str(item).split(",")
+            if len(values) < 8:
+                continue
+            records.append(
+                {
+                    "日期": values[0],
+                    "主力净额": self._to_float(values[1]),
+                    "超大单净额": self._to_float(values[2]),
+                    "大单净额": self._to_float(values[3]),
+                    "中单净额": self._to_float(values[4]),
+                    "小单净额": self._to_float(values[5]),
+                    "主力净占比": self._to_float(values[6]),
+                    "大单净占比": self._to_float(values[7]),
+                }
+            )
+        return pd.DataFrame(records)
 
     def _set_source_snapshot(
         self,

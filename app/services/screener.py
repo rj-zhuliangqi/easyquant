@@ -322,7 +322,10 @@ class ScreenerService:
         else:
             order_by = request.get("order_by") or "change_pct"
             order = request.get("order") or "desc"
-        universe_cfg = {**(request.get("universe") or {}), **(self._safe_universe_from_preset(session, request))}
+        # 优先使用请求里的 universe；preset 只在请求未传时提供默认（避免覆盖用户显式选择）
+        preset_universe = self._safe_universe_from_preset(session, request)
+        request_universe = request.get("universe") or {}
+        universe_cfg = {**preset_universe, **request_universe}
 
         codes_filter = self._resolve_codes(session, universe_cfg)
         feature_payload = self._compute_features(session, codes_filter, request=request, universe_hash=_hash_universe(codes_filter))
@@ -451,7 +454,9 @@ class ScreenerService:
         frame = compute_features(bars, flows, latest_date_obj)
 
         # realtime 字段（pe/pb/turnover_rate/total_mv/float_mv/latest_price）
-        realtime_lookup = request.get("_realtime_lookup") if isinstance(request.get("_realtime_lookup"), Callable) else None
+        # 注意：传 callable 时才能合入实时字段（避免 isinstance(callable, Callable) 的 TypeError）
+        realtime_value = request.get("_realtime_lookup")
+        realtime_lookup = realtime_value if callable(realtime_value) else None
         if realtime_lookup:
             realtime_df = realtime_lookup(codes)
             if realtime_df is not None and not realtime_df.empty:
@@ -707,43 +712,6 @@ def _tail_streak_flag(bars: pd.DataFrame, col: str) -> pd.Series:
 def _empty_frame() -> pd.DataFrame:
     cols = list(INDICATOR_REGISTRY.keys()) + ["stock_code", "stock_name"]
     return pd.DataFrame(columns=cols)
-
-
-def _tail_streak_max(series: pd.Series) -> int:
-    count = 0
-    for value in reversed(series.tolist()):
-        if value == 1:
-            count += 1
-        else:
-            break
-    return count
-
-
-def _macd_series(group: pd.DataFrame) -> pd.DataFrame:
-    group = group.sort_values("trading_date").reset_index(drop=True)
-    close = group["close"]
-    ema12 = close.ewm(span=12, adjust=False).mean()
-    ema26 = close.ewm(span=26, adjust=False).mean()
-    dif = ema12 - ema26
-    dea = dif.ewm(span=9, adjust=False).mean()
-    hist = (dif - dea) * 2
-    out = group[["stock_code", "trading_date"]].copy()
-    out["dif"] = dif
-    out["dea"] = dea
-    out["hist"] = hist
-    return out
-
-
-def _macd_golden_recent(group: pd.DataFrame) -> int:
-    """近 3 日是否 MACD 金叉（DIF 上穿 DEA）。"""
-    if len(group) < 2:
-        return 0
-    dif = group["dif"].tolist()
-    dea = group["dea"].tolist()
-    for i in range(1, len(group)):
-        if dif[i - 1] <= dea[i - 1] and dif[i] > dea[i]:
-            return 1
-    return 0
 
 
 def _consecutive_inflow_days(fund_flow: pd.DataFrame) -> pd.Series:

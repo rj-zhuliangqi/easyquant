@@ -398,3 +398,33 @@ def test_run_returns_results_with_data_date(db_session) -> None:
     assert result["data_date"] is not None
     assert result["total"] >= 1
     assert all("code" in r for r in result["results"])
+
+
+def test_realtime_lookup_callable_does_not_raise(db_session) -> None:
+    """修 _realtime_lookup 用 callable() 后，传 callable 不再 TypeError。"""
+    df = _make_bars("000001", n_days=30, trend=0.0, seed=42)
+    _seed_bars(db_session, df)
+    db_session.add(IndividualStockSnapshot(
+        trading_date=df["trading_date"].iloc[-1].date(),
+        captured_at=datetime(2026, 5, 14, 15, 0, 0),
+        stock_code="000001", stock_name="测试",
+        latest_price=10.0, change_percent=1.0, net_amount=200_000_000.0,
+    ))
+    db_session.commit()
+
+    daily_bars = DailyBarsService(gateway=None, now_provider=lambda: datetime(2026, 5, 14, 16, 0, 0))
+    screener = ScreenerService(daily_bars_service=daily_bars)
+
+    def my_lookup(codes):
+        return pd.DataFrame({"stock_code": codes, "pe_dynamic": [12.5] * len(codes)})
+
+    # 传 callable 不抛异常（旧 isinstance(x, Callable) 会 TypeError）
+    result = screener.run(db_session, {
+        "conditions": [{"indicator": "change_pct", "op": ">=", "value": -100}],
+        "universe": {"boards": ["main"]},
+        "order_by": "change_pct",
+        "order": "desc",
+        "limit": 10,
+        "_realtime_lookup": my_lookup,
+    })
+    assert result["total"] >= 1
