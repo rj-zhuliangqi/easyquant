@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useQuery, useQueryClient } from "@tanstack/vue-query";
 import DataPanel from "../components/ui/DataPanel.vue";
 import EmptyState from "../components/ui/EmptyState.vue";
@@ -192,7 +192,37 @@ function applyPreset(preset) {
       min_amount: preset.universe.min_amount ?? 50_000_000,
     };
   }
+  // 一键预览: 点击预设即自动跑筛选, 用户能立刻看到该策略选了什么 (2026-07-20 feature request)
+  runScreener();
 }
+
+// 克隆为新预设: 用户改好条件后, 一键复制当前预设作为可编辑副本
+async function clonePreset(preset) {
+  const presetId = preset.id;
+  try {
+    const row = await fetchJson(`/api/screener/presets/${presetId}`);
+    activePresetId.value = null; // 克隆后切到自由编辑态
+    conditions.value = structuredClone(row.conditions || []);
+    if (row.order_by) orderBy.value = row.order_by;
+    if (row.order) orderDir.value = row.order;
+    if (row.universe) {
+      universe.value = {
+        exclude_st: row.universe.exclude_st ?? true,
+        boards: row.universe.boards ?? ["main", "cyb", "kcb"],
+        min_amount: row.universe.min_amount ?? 50_000_000,
+      };
+    }
+    saveName.value = `${row.name}-副本`;
+    saveDesc.value = `克隆自「${row.name}」`;
+    showSaveDialog.value = true;
+  } catch (e) {
+    alert(`克隆失败：${e.message || e}`);
+  }
+}
+
+// 条件任何变动 -> 退出 preset 锁定, 避免 preset_id 静默吞掉用户编辑 (后端已修, 前端再保险)
+watch(conditions, () => { activePresetId.value = null; }, { deep: true });
+watch([orderBy, orderDir, universe], () => { activePresetId.value = null; }, { deep: true });
 
 async function deletePreset(preset) {
   if (!confirm(`删除预设「${preset.name}」？`)) return;
@@ -443,7 +473,22 @@ function toggleBoard(value) {
         <div class="progress-fill" :data-stage="progress.stage" :style="{ width: backfillProgressPct + '%' }"></div>
       </div>
       <div v-if="progress.failed?.length" class="progress-failed">
-        失败 {{ progress.failed.length }} 只（详见后端日志）
+        失败 {{ progress.failed.length }} 只
+        <span class="breakdown" v-if="progress.failure_breakdown && Object.keys(progress.failure_breakdown).length">
+          （<span v-for="(count, cat) in progress.failure_breakdown" :key="cat" class="bd-pill" :data-cat="cat">{{ cat }}:{{ count }}</span>）
+        </span>
+        <details v-if="progress.failed?.length <= 30" class="failed-list">
+          <summary>看具体哪些股票</summary>
+          <ul>
+            <li v-for="(f, idx) in progress.failed" :key="idx">
+              <code>{{ f.code }}</code>
+              <span v-if="f.stage" class="stage-tag">{{ f.stage }}</span>
+              <span v-if="f.category" class="cat-tag" :data-cat="f.category">{{ f.category }}</span>
+              <span v-if="f.error" class="err-msg">{{ f.error }}</span>
+            </li>
+          </ul>
+        </details>
+        <span v-else class="muted">(失败超过 30 只，仅显示总数)</span>
       </div>
     </section>
 
@@ -459,14 +504,29 @@ function toggleBoard(value) {
     <section class="preset-bar">
       <div class="preset-label">策略预设：</div>
       <div class="preset-chips">
-        <button
+        <div
           v-for="preset in presets"
           :key="preset.id"
-          class="preset-chip"
+          class="preset-chip-wrap"
           :class="{ active: activePresetId === preset.id }"
-          :title="preset.description || ''"
-          @click="applyPreset(preset)"
-        >{{ preset.name }}</button>
+        >
+          <button
+            class="preset-chip"
+            :title="preset.description || ''"
+            @click="applyPreset(preset)"
+          >{{ preset.name }}</button>
+          <button
+            v-if="!preset.is_builtin"
+            class="preset-chip-del"
+            title="删除自定义预设"
+            @click.stop="deletePreset(preset)"
+          >×</button>
+          <button
+            class="preset-chip-clone"
+            title="克隆为新预设（改名后即可编辑）"
+            @click.stop="clonePreset(preset)"
+          >⎘</button>
+        </div>
       </div>
     </section>
 
@@ -772,6 +832,74 @@ function toggleBoard(value) {
   color: var(--danger, #f87171);
   margin-top: 6px;
 }
+.progress-failed .breakdown {
+  margin-left: 6px;
+}
+.progress-failed .bd-pill {
+  display: inline-block;
+  padding: 1px 6px;
+  margin: 0 3px;
+  border-radius: 999px;
+  background: rgba(248,113,113,0.15);
+  border: 1px solid rgba(248,113,113,0.4);
+  font-size: 10px;
+  font-family: var(--mono, monospace);
+}
+.progress-failed .failed-list {
+  margin-top: 6px;
+}
+.progress-failed .failed-list summary {
+  cursor: pointer;
+  user-select: none;
+  color: var(--text-muted, #94a3b8);
+}
+.progress-failed .failed-list ul {
+  list-style: none;
+  padding: 6px 0 0 0;
+  max-height: 160px;
+  overflow-y: auto;
+  margin: 0;
+}
+.progress-failed .failed-list li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  font-size: 11px;
+}
+.progress-failed .failed-list code {
+  color: var(--text, #e2e8f0);
+  min-width: 56px;
+}
+.progress-failed .failed-list .stage-tag {
+  padding: 1px 5px;
+  background: rgba(148,163,184,0.15);
+  border-radius: 4px;
+  color: var(--text-muted, #94a3b8);
+}
+.progress-failed .failed-list .cat-tag {
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-family: var(--mono, monospace);
+}
+.progress-failed .failed-list .cat-tag[data-cat="network"] { background: rgba(248,113,113,0.2); color: #fca5a5; }
+.progress-failed .failed-list .cat-tag[data-cat="proxy"] { background: rgba(251,191,36,0.2); color: #fde68a; }
+.progress-failed .failed-list .cat-tag[data-cat="parse"] { background: rgba(167,139,250,0.2); color: #c4b5fd; }
+.progress-failed .failed-list .cat-tag[data-cat="empty"] { background: rgba(148,163,184,0.2); color: #cbd5e1; }
+.progress-failed .failed-list .err-msg {
+  color: var(--text-muted, #94a3b8);
+  font-family: var(--mono, monospace);
+  font-size: 10px;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.progress-failed .muted {
+  color: var(--text-muted, #94a3b8);
+  margin-left: 6px;
+}
 
 /* ---------- 预设条 ---------- */
 .preset-bar {
@@ -790,24 +918,56 @@ function toggleBoard(value) {
   gap: 8px;
   flex-wrap: wrap;
 }
-.preset-chip {
-  padding: 6px 14px;
+.preset-chip-wrap {
+  display: inline-flex;
+  align-items: center;
   border-radius: 999px;
   border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+  background: transparent;
+  transition: border-color 0.15s;
+}
+.preset-chip-wrap.active {
+  border-color: var(--accent, #06b6d4);
+  background: var(--accent-soft, rgba(6, 182, 212, 0.15));
+}
+.preset-chip {
+  padding: 6px 14px;
+  border: 0;
+  border-radius: 999px;
   background: transparent;
   color: var(--text-secondary, #cbd5e1);
   font-size: 13px;
   cursor: pointer;
-  transition: all 0.15s;
 }
-.preset-chip:hover {
+.preset-chip-wrap:hover {
   border-color: var(--accent, #06b6d4);
-  color: var(--text, #e2e8f0);
 }
-.preset-chip.active {
-  background: var(--accent-soft, rgba(6, 182, 212, 0.15));
-  border-color: var(--accent, #06b6d4);
+.preset-chip-wrap.active .preset-chip {
   color: var(--accent, #06b6d4);
+}
+.preset-chip-del,
+.preset-chip-clone {
+  border: 0;
+  background: transparent;
+  color: var(--text-muted, #94a3b8);
+  font-size: 14px;
+  width: 22px;
+  height: 28px;
+  cursor: pointer;
+  opacity: 0.6;
+}
+.preset-chip-del:hover {
+  color: var(--danger, #f87171);
+  opacity: 1;
+}
+.preset-chip-clone {
+  border-left: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+  font-size: 16px;
+  line-height: 1;
+}
+.preset-chip-clone:hover {
+  color: var(--accent, #06b6d4);
+  opacity: 1;
 }
 
 /* ---------- 条件构建器（每条单独一行） ---------- */

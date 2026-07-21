@@ -206,6 +206,23 @@ class ScreenerService:
             "ops": list(SUPPORTED_OPS),
         }
 
+    def get_preset(self, session: Session, preset_id: int) -> dict[str, Any] | None:
+        """单条 GET: 按 id 读预设, 用于前端"打开即看 + 克隆"。"""
+        row = session.get(ScreenerPreset, preset_id)
+        if row is None:
+            return None
+        return {
+            "id": row.id,
+            "name": row.name,
+            "description": row.description,
+            "conditions": json.loads(row.conditions_json or "[]"),
+            "universe": json.loads(row.universe_json or "{}"),
+            "order_by": row.order_by,
+            "order": row.order,
+            "is_builtin": bool(row.is_builtin),
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        }
+
     def list_presets(self, session: Session) -> list[dict[str, Any]]:
         rows = list(session.scalars(select(ScreenerPreset).order_by(ScreenerPreset.id)))
         return [
@@ -312,16 +329,24 @@ class ScreenerService:
             }
         """
         conditions = list(request.get("conditions") or [])
+        # 关键修复: 当 request 同时带 conditions(非空)且带 preset_id 时,
+        # 用户条件优先, preset 只提供 universe 兜底和 order_by 默认。
+        # 旧逻辑无条件用 preset conditions -> 用户在 builder 里改条件会被静默覆盖(2026-07-20 reported)
+        user_conditions_present = bool(conditions)
         if request.get("preset_id"):
             row = session.get(ScreenerPreset, int(request["preset_id"]))
             if row is None:
                 raise KeyError(f"preset_id {request['preset_id']} 不存在")
-            conditions = json.loads(row.conditions_json or "[]")
-            order_by = row.order_by or request.get("order_by") or "change_pct"
-            order = row.order or request.get("order") or "desc"
+            preset_conditions = json.loads(row.conditions_json or "[]")
+            if not user_conditions_present:
+                conditions = preset_conditions
+            order_by_default = row.order_by or "change_pct"
+            order_default = row.order or "desc"
         else:
-            order_by = request.get("order_by") or "change_pct"
-            order = request.get("order") or "desc"
+            order_by_default = "change_pct"
+            order_default = "desc"
+        order_by = request.get("order_by") or order_by_default
+        order = request.get("order") or order_default
         # 优先使用请求里的 universe；preset 只在请求未传时提供默认（避免覆盖用户显式选择）
         preset_universe = self._safe_universe_from_preset(session, request)
         request_universe = request.get("universe") or {}

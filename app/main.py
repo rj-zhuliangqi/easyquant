@@ -733,6 +733,20 @@ def create_app(
         _se_logger.addHandler(_se_handler)
         logger.setLevel(logging.INFO)
 
+    # 数据源去代理: 国内 A 股数据源(东财/同花顺/腾讯/新浪)不应该被本地系统代理劫持。
+    # 关键事件: 2026-07-20 Clash 关闭时 macOS 系统代理指向 7890 无监听,
+    # akshare 全量 ProxyError -> 选股器一只都拉不到; 加 NO_PROXY 让 urllib/requests
+    # 直接访问国内站, 不依赖本地代理是否启动。生产 cloudflared 隧道是另一条路, 不受影响。
+    _no_proxy_domains = (
+        "*"  # 简单粗暴: 这个后端只聊 A 股数据, 全走直连最稳; 若以后接入境外 API 再细化
+    )
+    os.environ.setdefault("NO_PROXY", _no_proxy_domains)
+    os.environ.setdefault("no_proxy", _no_proxy_domains)
+    # 同时清掉已存在的 *_PROXY 环境变量, 防止被 NO_PROXY 之外另一处覆盖
+    for _k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "all_proxy", "ALL_PROXY"):
+        os.environ.pop(_k, None)
+    logger.info("NO_PROXY 已生效: 选股器数据源走直连, 不依赖本地 Clash 是否启动")
+
     session_factory = session_factory or create_session_factory()
     gateway = gateway or AkshareGateway()
     now_provider = now_provider or datetime.now
@@ -2145,6 +2159,13 @@ def create_app(
     def api_screener_presets(session: Session = Depends(get_db)):
         return screener.list_presets(session)
 
+    @app.get("/api/screener/presets/{preset_id}")
+    def api_screener_get_preset(preset_id: int, session: Session = Depends(get_db)):
+        row = screener.get_preset(session, preset_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="preset not found")
+        return row
+
     @app.post("/api/screener/presets")
     def api_screener_save_preset(payload: dict = Body(default={}), session: Session = Depends(get_db)):
         try:
@@ -2243,17 +2264,21 @@ def create_app(
         }
 
     @app.post("/api/screener/backfill")
-    def api_screener_backfill(payload: dict = Body(default={}), session: Session = Depends(get_db)):
+    def api_screener_backfill(payload: dict = Body(default={})):
         code_limit = payload.get("code_limit")
         if code_limit is not None:
             try:
                 code_limit = max(0, int(code_limit))
             except (TypeError, ValueError):
                 code_limit = None
+        # run_async=True: POST 立即返回 {started, job_id}，worker 在 daemon 线程中跑。
+        # 避免 Cloudflare tunnel 100s 读超时切断仍在跑的同步请求（524 根因）。
+        # worker 必须自建 Session — 不能复用 request 的 Depends session。
         result = daily_bars.backfill_all(
-            session,
+            session_or_factory=session_factory,
             min_amount=float(payload.get("min_amount", 50_000_000.0)),
             code_limit=code_limit,
+            run_async=True,
         )
         if result.get("started"):
             screener.invalidate_cache()

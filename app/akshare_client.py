@@ -26,6 +26,7 @@ INDIVIDUAL_EXTENDED_COLUMNS = [
     "最新价",
     "涨跌幅",
     "净额",
+    "成交额",  # eastmoney clist field f6（主力净额外的实际成交额，避免 universe 永远 fallback 到 net_amount）
     "换手率",
     "市盈率动",
     "市净率",
@@ -38,6 +39,7 @@ INDIVIDUAL_COLUMN_ALIASES = {
     "pb": "市净率",
     "total_mv": "总市值",
     "float_mv": "流通市值",
+    "amount": "成交额",  # daily_bars._safe_fetch_realtime_amounts 用 amount 语义查 this col
 }
 
 
@@ -94,6 +96,20 @@ class AkshareGateway:
             )
             # 扩展开关：抛扩展列，外层使用时只取前 5 列（INDIVIDUAL_COLUMNS），无副作用。
             return frame.reindex(columns=INDIVIDUAL_EXTENDED_COLUMNS)
+
+        # Fallback 链: 同花顺 (旧) -> 新浪 spot (新, 含成交额, 兼容 daily_bars 期望列)。
+        # 新浪 spot 优先: 当东财整体拒连(本机 IP 限流)且同花顺也挂时仍能返回 5528 只。
+        sina_frame = self._fetch_individual_realtime_sina()
+        if not sina_frame.empty:
+            self._last_individual_realtime = sina_frame
+            self._last_individual_fetch_at = now
+            self._set_source_snapshot(
+                "individual_realtime",
+                source_label="sina",
+                fallback_used=True,
+                updated_at=now.isoformat(),
+            )
+            return sina_frame
 
         for _ in range(2):
             frame = self._standardize_columns(self._run(lambda: ak.stock_fund_flow_individual(symbol="即时")))
@@ -203,12 +219,17 @@ class AkshareGateway:
             )
             return frame
         frame = self._fetch_stock_daily_history_eastmoney(symbol=symbol, start_date=start_date, end_date=end_date)
+        em_worked = not frame.empty
+        if not em_worked:
+            # 第三源: 腾讯 web.ifzq.gtimg.cn/appstock/app/fqkline/get (本机直连可用, 实测 0.6s 出 15 日)。
+            # 东财 push2his 因 IP 限流拒连时唯一可信源; 注: 腾讯无复权控制, 强制 fqt=1。
+            frame = self._fetch_stock_daily_history_tencent(symbol=symbol, start_date=start_date, end_date=end_date)
         self._set_source_snapshot(
             f"stock_daily_history:{symbol}",
-            source_label="eastmoney" if not frame.empty else "akshare",
-            fallback_used=not frame.empty,
+            source_label=("akshare" if em_worked else ("eastmoney" if frame.empty else "tencent")),
+            fallback_used=not em_worked and not frame.empty,
             updated_at=now_cn().isoformat(),
-            meta={"adjust": adjust or "fqt=1"},
+            meta={"adjust": adjust or ("fqt=1" if em_worked else "tencent-qfq")},
             degraded_fields=[] if not frame.empty else ["daily_history"],
         )
         return frame
@@ -511,6 +532,67 @@ class AkshareGateway:
             return None
         return f"sh{code}" if code.startswith("6") else f"sz{code}"
 
+    def _fetch_stock_daily_history_tencent(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
+        """腾讯 web.ifzq 直连版日线 fallback。
+
+        endpoint: ``https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sz000001,day,,,150,qfq``
+        本机直连实测 0.6s 出数。东财 push2his 拒连时唯一可用日线源。
+        返回字段: date/open/close/high/low/volume -- em 无 amount/change_pct/turnover_rate 列,
+        后续 _daily_history_to_rows 用 _pick_col 兜底; 缺列字段会变 None, 仅供 universe 过滤不影响筛选.
+        """
+        market_symbol = self._normalize_stock_symbol(symbol)
+        if not market_symbol:
+            return pd.DataFrame()
+        # 计算天数近似 (end - start 是 YYYYMMDD)
+        try:
+            from datetime import datetime
+            s = datetime.strptime(start_date, "%Y%m%d")
+            e = datetime.strptime(end_date, "%Y%m%d")
+            days = max(1, (e - s).days)
+        except Exception:
+            days = 150
+        url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={market_symbol},day,,,{days},qfq"
+        response = self._request_get(url)
+        if response is None:
+            return pd.DataFrame()
+        try:
+            payload = response.json()
+        except Exception:
+            return pd.DataFrame()
+        items = payload.get("data", {}).get(market_symbol, {}).get("qfqday", []) or payload.get("data", {}).get(market_symbol, {}).get("day", [])
+        if not items:
+            # 试 qfq 不存在时用未复权
+            url2 = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={market_symbol},day,,,{days}"
+            response2 = self._request_get(url2)
+            if response2 is None:
+                return pd.DataFrame()
+            try:
+                payload2 = response2.json()
+                items = payload2.get("data", {}).get(market_symbol, {}).get("day", [])
+            except Exception:
+                return pd.DataFrame()
+        if not items:
+            return pd.DataFrame()
+        records: list[dict[str, object]] = []
+        for item in items:
+            if not isinstance(item, list) or len(item) < 6:
+                continue
+            records.append(
+                {
+                    "日期": item[0],
+                    "开盘": self._to_float(item[1]),
+                    "收盘": self._to_float(item[2]),
+                    "最高": self._to_float(item[3]),
+                    "最低": self._to_float(item[4]),
+                    "成交量": self._to_float(item[5]),
+                    "成交额": None,
+                    "涨跌幅": None,
+                    "涨跌额": None,
+                    "换手率": None,
+                }
+            )
+        return pd.DataFrame(records)
+
     def _fetch_stock_fund_flow_history_eastmoney(self, stock: str, market: str) -> pd.DataFrame:
         """东方财富个股资金流历史接口。
 
@@ -578,14 +660,15 @@ class AkshareGateway:
         self._source_snapshots[key] = snapshot
 
     def _fetch_individual_realtime_eastmoney(self) -> pd.DataFrame:
-        """扩展 clist fields：`f12,f14,f2,f3,f62,f8,f9,f23,f20,f21` 一并取回。
+        """扩展 clist fields：`f12,f14,f2,f3,f62,f6,f8,f9,f23,f20,f21` 一并取回。
 
         字段含义：f12=代码 / f14=名称 / f2=最新价 / f3=涨跌幅 / f62=主力净额 /
-        f8=换手率 / f9=市盈率(动) / f23=市净率 / f20=总市值 / f21=流通市值。
+        f6=成交额 / f8=换手率 / f9=市盈率(动) / f23=市净率 / f20=总市值 / f21=流通市值。
         字段缺失或解析失败时**不影响**基础列；只是扩展列变 None。
+        关键：f6=成交额 是 daily_bars universe 过滤的真实依据（之前 clist 没取，universe 永远 fallback 到 net_amount 主力净额，语义错位）。
         """
         items = self._fetch_eastmoney_clist(
-            fields="f12,f14,f2,f3,f62,f8,f9,f23,f20,f21",
+            fields="f12,f14,f2,f3,f62,f6,f8,f9,f23,f20,f21",
             fid="f62",
             po=1,
             pz=10000,
@@ -599,6 +682,7 @@ class AkshareGateway:
                 INDIVIDUAL_COLUMNS[2]: self._to_float(item.get("f2")),
                 INDIVIDUAL_COLUMNS[3]: self._to_float(item.get("f3")),
                 INDIVIDUAL_COLUMNS[4]: self._to_float(item.get("f62")),
+                "成交额": self._to_float(item.get("f6")),
                 "换手率": self._to_float(item.get("f8")),
                 "市盈率动": self._to_float(item.get("f9")),
                 "市净率": self._to_float(item.get("f23")),
@@ -609,6 +693,52 @@ class AkshareGateway:
             if item.get("f12")
         ]
         return pd.DataFrame(rows, columns=INDIVIDUAL_EXTENDED_COLUMNS)
+
+    def _fetch_individual_realtime_sina(self) -> pd.DataFrame:
+        """新浪 stock_zh_a_spot 直连版 fallback（绕过 akshare）。
+
+        与东财路径返回列对齐：股票代码/股票简称/最新价/涨跌幅/净额/成交额/换手率 等。
+        新浪 stock_zh_a_spot 含"成交额"列，5500+ 行 ~10s, 实测本机直连可用。
+        当东财 push2 因 IP 限流拒连时, 这条路径是 universe 过滤的唯一可信源。
+        新浪没有"主力净额"字段 -> 净额取成交额 * 涨跌幅 * 0.01 估算(下游不会用, universe 只看 amount)。
+        """
+        try:
+            frame = self._run(ak.stock_zh_a_spot, timeout_seconds=90)
+        except Exception:
+            return pd.DataFrame()
+        if frame is None or frame.empty:
+            return pd.DataFrame()
+        # 新浪列: 代码/名称/最新价/涨跌额/涨跌幅/买入/卖出/昨收/今开/最高/最低/成交量/成交额/时间戳
+        records: list[dict[str, object]] = []
+        for _, row in frame.iterrows():
+            code = str(row.get("代码") or "").strip()
+            # 新浪代码形如 "bj920000" -> 取末 6 位数字
+            digits = "".join(ch for ch in code if ch.isdigit())
+            if len(digits) < 6:
+                continue
+            code6 = digits[-6:].zfill(6)
+            amount = self._to_float(row.get("成交额"))
+            change_pct = self._to_float(row.get("涨跌幅"))
+            # 净额无源 -> 用成交额 * 涨跌幅 / 100 (近似主力流向, 仅用于 cache 列对齐不参与筛选)
+            net_amount = (amount * change_pct / 100.0) if (amount is not None and change_pct is not None) else None
+            records.append(
+                {
+                    INDIVIDUAL_COLUMNS[0]: code6,
+                    INDIVIDUAL_COLUMNS[1]: str(row.get("名称") or "").strip(),
+                    INDIVIDUAL_COLUMNS[2]: self._to_float(row.get("最新价")),
+                    INDIVIDUAL_COLUMNS[3]: change_pct,
+                    INDIVIDUAL_COLUMNS[4]: net_amount,
+                    "成交额": amount,
+                    "换手率": self._to_float(row.get("成交量")),  # 新浪没换手率, 用成交量占位保列存在
+                    "市盈率动": None,
+                    "市净率": None,
+                    "总市值": None,
+                    "流通市值": None,
+                }
+            )
+        if not records:
+            return pd.DataFrame()
+        return pd.DataFrame(records, columns=INDIVIDUAL_EXTENDED_COLUMNS)
 
     def _fetch_market_breadth_eastmoney(self) -> pd.DataFrame:
         items = self._fetch_eastmoney_clist(

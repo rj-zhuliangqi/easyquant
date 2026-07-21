@@ -18,6 +18,7 @@ def test_fetch_individual_realtime_uses_last_cache_when_fetch_failed() -> None:
 
     gateway = StubGateway()
     gateway._fetch_individual_realtime_eastmoney = lambda: pd.DataFrame()  # type: ignore[method-assign]
+    gateway._fetch_individual_realtime_sina = lambda: pd.DataFrame()  # type: ignore[method-assign]
     gateway._last_individual_realtime = pd.DataFrame(
         [
             {

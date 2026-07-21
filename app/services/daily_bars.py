@@ -9,6 +9,8 @@
 - 串行 + 0.2-0.3s 抖动避免触发限流；单只失败仅记录不中断。
 - 资金流缺失时记入 ``warnings``，筛选引擎降级（跳过该条件）。
 - ``self.progress["running"]`` 互斥锁防止并发回补。
+- ``backfill_all(run_async=True)`` 入队即返回 ``{started, job_id}``，避免 Cloudflare
+  tunnel 100s 读超时切断仍在跑的同步请求（参见 plan：选股器 524 根因）。
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ import logging
 import random
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any, Callable, Iterable
@@ -35,13 +38,14 @@ logger = logging.getLogger(__name__)
 @dataclass
 class DailyBarsProgress:
     running: bool = False
-    stage: str = "idle"  # idle | bars | fund_flow | done
+    stage: str = "idle"  # idle | bars | fund_flow | done | error
     done: int = 0
     total: int = 0
     failed: list[dict[str, str]] = field(default_factory=list)
     message: str = ""
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    failure_breakdown: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -67,6 +71,11 @@ class DailyBarsService:
         self.now_provider = now_provider or datetime.now
         self._lock = threading.Lock()
         self.progress = DailyBarsProgress()
+        # fire-and-forget worker 状态（524 修复）
+        self._bg_thread: threading.Thread | None = None
+        self._job_id: str | None = None
+        # _safe_fetch_* 捕获的最近一次真异常（key="bars"|"flow"，value="ExceptionType: msg"）
+        self._last_fetch_error: dict[str, str] = {}
 
     # ---------------- public: query -----------------
 
@@ -187,62 +196,128 @@ class DailyBarsService:
 
     def backfill_all(
         self,
-        session: Session,
+        session_or_factory: Session | Callable[[], Session],
         min_amount: float = 50_000_000.0,
         days: int = 150,
         code_limit: int | None = None,
         progress_cb: Callable[[DailyBarsProgress], None] | None = None,
+        run_async: bool = False,
     ) -> dict[str, Any]:
         """二阶段回补：日线 → 资金流。
 
+        ``session_or_factory``：
+        - 同步模式（run_async=False，传 Session）：直接使用
+        - 异步模式（run_async=True，传 callable）：worker 自建 Session（避免依赖 request 的 Depends session）
+
         ``code_limit`` 用于测试 / 冒烟（仅前 N 只）。
+
+        ``run_async=True`` → 入队即返回 ``{started, job_id, already_running}``，实际工作在 daemon 线程跑。
+        必须配合 callable factory（传 Session 会双线程争用同一对象 → sqlalchemy "concurrent operations"）。
+        ``run_async=False``（默认）→ 阻塞执行（用于测试和单次脚本；main.py 显式传 True）。
         """
-        if not self._ensure_lock():
-            return {"started": False, "already_running": True, "progress": self._snapshot()}
-
-        try:
-            # 拉一次实时快照（含成交额），用作 universe 过滤的真实依据
-            realtime_amounts = self._safe_fetch_realtime_amounts()
-            universe = self.get_universe(session, min_amount=min_amount, realtime_amounts=realtime_amounts)
-            if universe.empty:
-                self.progress.message = "universe 为空，跳过回补"
-                self.progress.stage = "done"
-                return {"started": True, "already_running": False, "progress": self._snapshot()}
-
-            codes = universe["code"].astype(str).str.zfill(6).tolist()
-            if code_limit is not None:
-                codes = codes[: max(0, int(code_limit))]
-            self.progress.total = len(codes)
-            self.progress.message = f"universe={len(codes)}，开始回补日线"
-
-            # 阶段 1：日线
-            self._backfill_bars(session, codes, days=days, progress_cb=progress_cb)
-            # 阶段 2：资金流
-            self.progress.stage = "fund_flow"
-            self.progress.message = "开始回补资金流"
-            if progress_cb:
-                progress_cb(self._snapshot())
-            self._backfill_fund_flow(session, codes, progress_cb=progress_cb)
-
-            self.progress.stage = "done"
-            self.progress.message = (
-                f"回补完成：universe={len(codes)}, "
-                f"failed={len(self.progress.failed)}"
+        with self._lock:
+            if self.progress.running:
+                return {"started": False, "already_running": True, "job_id": self._job_id, "progress": self._snapshot()}
+            self.progress = DailyBarsProgress(
+                running=True,
+                stage="bars",
+                started_at=self.now_provider(),
             )
-            # 收尾 prune
+            self._last_fetch_error = {}
+            self._job_id = f"bf-{int(time.time())}-{uuid.uuid4().hex[:6]}"
+            job_id = self._job_id
+
+        def _worker(session: Session) -> None:
             try:
-                self.prune_old_bars(session)
-                self.prune_old_fund_flow(session)
-            except Exception:
-                logger.exception("prune_old_bars failed")
+                result = self._do_backfill(session, min_amount=min_amount, days=days, code_limit=code_limit, progress_cb=progress_cb)
+                logger.info("backfill job %s done: %s", job_id, result.get("progress", {}).get("message"))
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("backfill job %s crashed", job_id)
+                self.progress.stage = "error"
+                self.progress.message = f"回补异常：{exc}"
+                self.progress.failed.append({"code": "-", "stage": "internal", "error": str(exc), "category": "internal"})
+                self.progress.failure_breakdown["internal"] = self.progress.failure_breakdown.get("internal", 0) + 1
+            finally:
+                self.progress.running = False
+                self.progress.finished_at = self.now_provider()
+
+        def _run_async() -> None:
+            session = session_or_factory() if callable(session_or_factory) else session_or_factory
+            try:
+                _worker(session)
+            finally:
+                try:
+                    session.close()
+                except Exception:
+                    pass
+
+        if run_async:
+            t = threading.Thread(target=_run_async, name=f"screener-backfill-{job_id}", daemon=True)
+            t.start()
+            self._bg_thread = t
+            return {"started": True, "already_running": False, "job_id": job_id, "progress": self._snapshot()}
+        else:
+            session = session_or_factory if not callable(session_or_factory) else session_or_factory()
+            try:
+                _worker(session)
+            finally:
+                try:
+                    session.close()
+                except Exception:
+                    pass
+            return {"started": True, "already_running": False, "job_id": job_id, "progress": self._snapshot()}
+
+    def _do_backfill(
+        self,
+        session: Session,
+        *,
+        min_amount: float,
+        days: int,
+        code_limit: int | None,
+        progress_cb: Callable[[DailyBarsProgress], None] | None,
+    ) -> dict[str, Any]:
+        """backfill_all 的实际工作（原 backfill_all body）。"""
+        # 拉一次实时快照（含成交额），用作 universe 过滤的真实依据
+        realtime_amounts = self._safe_fetch_realtime_amounts()
+        universe = self.get_universe(session, min_amount=min_amount, realtime_amounts=realtime_amounts)
+        if universe.empty:
+            self.progress.message = "universe 为空，跳过回补"
+            self.progress.stage = "done"
             return {"started": True, "already_running": False, "progress": self._snapshot()}
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("backfill_all crashed")
-            self.progress.stage = "error"
-            self.progress.message = f"回补异常：{exc}"
-            return {"started": True, "already_running": False, "progress": self._snapshot()}
-        finally:
-            self._release_lock()
+
+        codes = universe["code"].astype(str).str.zfill(6).tolist()
+        if code_limit is not None:
+            codes = codes[: max(0, int(code_limit))]
+        self.progress.total = len(codes)
+        self.progress.message = f"universe={len(codes)}，开始回补日线"
+
+        # 阶段 1：日线
+        self._backfill_bars(session, codes, days=days, progress_cb=progress_cb)
+        # 阶段 2：资金流
+        self.progress.stage = "fund_flow"
+        self.progress.message = "开始回补资金流"
+        if progress_cb:
+            progress_cb(self._snapshot())
+        self._backfill_fund_flow(session, codes, progress_cb=progress_cb)
+
+        self.progress.stage = "done"
+        self.progress.message = (
+            f"回补完成：universe={len(codes)}, "
+            f"failed={len(self.progress.failed)}"
+        )
+        # 收尾 prune
+        try:
+            self.prune_old_bars(session)
+            self.prune_old_fund_flow(session)
+        except Exception:
+            logger.exception("prune_old_bars failed")
+        return {"started": True, "already_running": False, "progress": self._snapshot()}
+
+    def wait_for_background_job(self, timeout: float | None = None) -> None:
+        """测试用：等待后台线程结束（pytest fixture teardown）。"""
+        thread = self._bg_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=timeout)
 
     def _backfill_bars(
         self,
@@ -262,9 +337,12 @@ class DailyBarsService:
                 _sleep_jitter()
                 frame = self._safe_fetch_daily(code, start, end)
             if frame is None or frame.empty:
+                category = self._categorize_failure("bars")
+                self._last_fetch_error.pop("bars", None)
                 self.progress.failed.append(
-                    {"code": code, "stage": "bars", "error": "empty"}
+                    {"code": code, "stage": "bars", "error": "empty", "category": category}
                 )
+                self.progress.failure_breakdown[category] = self.progress.failure_breakdown.get(category, 0) + 1
             else:
                 rows = _daily_history_to_rows(code, frame)
                 if rows:
@@ -280,6 +358,7 @@ class DailyBarsService:
         try:
             return self.gateway.fetch_stock_daily_history(code, start, end, adjust="qfq")
         except Exception as exc:  # noqa: BLE001
+            self._last_fetch_error["bars"] = f"{type(exc).__name__}: {str(exc)[:120]}"
             logger.warning("fetch_stock_daily_history failed: %s exc=%s", code, exc)
             return pd.DataFrame()
 
@@ -300,9 +379,12 @@ class DailyBarsService:
                 _sleep_jitter()
                 frame = self._safe_fetch_fund_flow(code, market)
             if frame is None or frame.empty:
+                category = self._categorize_failure("flow")
+                self._last_fetch_error.pop("flow", None)
                 self.progress.failed.append(
-                    {"code": code, "stage": "fund_flow", "error": "empty"}
+                    {"code": code, "stage": "fund_flow", "error": "empty", "category": category}
                 )
+                self.progress.failure_breakdown[category] = self.progress.failure_breakdown.get(category, 0) + 1
             else:
                 rows = _fund_flow_history_to_rows(code, frame)
                 if rows:
@@ -321,24 +403,58 @@ class DailyBarsService:
         try:
             return self.gateway.fetch_stock_fund_flow_history(code, market)
         except Exception as exc:  # noqa: BLE001
+            self._last_fetch_error["flow"] = f"{type(exc).__name__}: {str(exc)[:120]}"
             logger.warning("fetch_stock_fund_flow_history failed: %s exc=%s", code, exc)
             return pd.DataFrame()
+
+    def _categorize_failure(self, stage: str) -> str:
+        """根据 ``_last_fetch_error`` 把失败归类到 network/proxy/parse/empty/other。
+
+        - 真实异常（网络/解析/代理）: 来自 ``_safe_fetch_*`` 写入 ``_last_fetch_error``
+        - 异常类别不存在: 返回 "empty"（数据源返回空但连接成功 — 通常是限流/无数据）
+        """
+        err = self._last_fetch_error.get(stage, "")
+        if not err:
+            return "empty"
+        el = err.lower()
+        if "timeout" in el or "aborted" in el or "timedout" in el:
+            return "network"
+        if "proxy" in el or "remote end closed" in el or "maxretry" in el:
+            return "proxy"
+        if "connection" in el or "remote disconnected" in el or "connectionerror" in el:
+            return "network"
+        if "json" in el or "parse" in el or "decode" in el or "valueerror" in el:
+            return "parse"
+        return "other"
 
     def _safe_fetch_realtime_amounts(self) -> dict[str, float]:
         """从 ``fetch_individual_realtime()`` 提取 ``code -> 成交额`` 映射。
 
         失败时返回空 dict，``get_universe`` 会 fallback 到 snapshot.net_amount。
+        结果缓存 60s，避免 /api/screener/status 高频轮询拖慢响应。
         """
+        now = self.now_provider()
+        cached_at = getattr(self, "_realtime_amounts_cache_at", None)
+        cached = getattr(self, "_realtime_amounts_cache", None)
+        if cached is not None and cached_at and (now - cached_at).total_seconds() < 60:
+            return cached
         try:
             frame = self.gateway.fetch_individual_realtime()
         except Exception as exc:  # noqa: BLE001
             logger.warning("fetch_individual_realtime failed: %s", exc)
-            return {}
-        if frame is None or frame.empty or "代码" not in frame.columns or "成交额" not in frame.columns:
-            return {}
-        codes = frame["代码"].astype(str).str.zfill(6)
+            return cached if cached is not None else {}
+        if frame is None or frame.empty or "成交额" not in frame.columns:
+            return cached if cached is not None else {}
+        # 列名兼容: 新浪 path 返回 "代码"/"股票代码" 都能命中; 数据来自 INDIVIDUAL_EXTENDED_COLUMNS[0]="股票代码"。
+        code_col = "股票代码" if "股票代码" in frame.columns else ("代码" if "代码" in frame.columns else None)
+        if code_col is None:
+            return cached if cached is not None else {}
+        codes = frame[code_col].astype(str).str.zfill(6)
         amounts = pd.to_numeric(frame["成交额"], errors="coerce")
-        return dict(zip(codes, amounts))
+        result = dict(zip(codes, amounts))
+        self._realtime_amounts_cache = result
+        self._realtime_amounts_cache_at = now
+        return result
 
     def ensure_recent_bars(
         self,
@@ -404,6 +520,8 @@ class DailyBarsService:
             "message": self.progress.message,
             "started_at": self.progress.started_at.isoformat() if self.progress.started_at else None,
             "finished_at": self.progress.finished_at.isoformat() if self.progress.finished_at else None,
+            "failure_breakdown": dict(self.progress.failure_breakdown),
+            "job_id": self._job_id,
         }
 
 
