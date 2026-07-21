@@ -2183,15 +2183,16 @@ def create_app(
     @app.get("/api/screener/status")
     def api_screener_status(session: Session = Depends(get_db)):
         coverage = daily_bars.coverage(session)
-        # universe 当前规模（未缓存交易日的实时快照也参与计算）
-        try:
-            realtime_amounts = daily_bars._safe_fetch_realtime_amounts()  # noqa: SLF001
-            universe_df = daily_bars.get_universe(
-                session, min_amount=50_000_000.0, realtime_amounts=realtime_amounts
-            )
-            universe_size = int(len(universe_df))
-        except Exception:
-            universe_size = 0
+        # universe 规模仅在缓存存在时返回（不主动触发网络拉取，避免高频轮询拖慢状态接口）
+        universe_size = 0
+        if coverage.get("latest_date"):
+            try:
+                snapshot_universe = daily_bars.get_universe(
+                    session, min_amount=50_000_000.0, realtime_amounts=None
+                )
+                universe_size = int(len(snapshot_universe))
+            except Exception:
+                universe_size = 0
         coverage = {
             **coverage,
             "universe_size": universe_size,
@@ -2209,13 +2210,15 @@ def create_app(
             bar_max_dt = datetime.fromisoformat(bar_max) if bar_max else None
         except Exception:
             bar_max_dt = None
+        # bar_max_dt 来自 DB（naive），now_cn 是 tz-aware → 统一为 naive 比较
+        now_naive = now.replace(tzinfo=None) if now.tzinfo else now
         cache_age_minutes = (
-            int((now - bar_max_dt).total_seconds() // 60) if bar_max_dt else None
+            int((now_naive - bar_max_dt).total_seconds() // 60) if bar_max_dt else None
         )
         is_stale = (
             cache_age_minutes is None
             or cache_age_minutes > 24 * 60
-            or (bar_max_dt and bar_max_dt.date() < now.date() and is_trading_day(now))
+            or (bar_max_dt and bar_max_dt.date() < now_naive.date() and is_trading_day(now))
         )
         cache = {
             "bar_max_date": bar_max,
