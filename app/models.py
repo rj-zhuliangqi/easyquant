@@ -534,3 +534,193 @@ class ScreenerPreset(Base):
     is_builtin: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+# ====================================================================
+# 持久化层 v1：拉取数据 → 落库 → 派生指标 (2026-07-21)
+# 4 张新表：
+#   - stock_realtime_eod        : 每只股票每个交易日的 EOD 聚合（替代实时 merge）
+#   - stock_indicators_daily    : 预计算的 43 个技术指标（避免每次现场算）
+#   - stock_limit_up_history    : 东财涨停/炸板/强势/昨涨停 4 池入库
+#   - stock_limit_up_indicators : 涨停类指标的扁平视图（用于筛选器）
+# ====================================================================
+
+
+class StockRealtimeEod(Base):
+    """个股每日 EOD 聚合（由 individual_stock_snapshots 当日所有 tick 聚合）。
+
+    用于：(a) 基础组指标（pe/pb/total_mv/float_mv/turnover_rate/latest_price）历史回放；
+    (b) 按 as_of_date 过滤历史 universe（成交额门槛）。
+    """
+
+    __tablename__ = "stock_realtime_eod"
+    __table_args__ = (
+        UniqueConstraint("stock_code", "trading_date", name="uq_realtime_eod_code_date"),
+        Index("ix_realtime_eod_code_date", "stock_code", "trading_date"),
+        Index("ix_realtime_eod_trading_date", "trading_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    stock_code: Mapped[str] = mapped_column(String(20), index=True)
+    stock_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    trading_date: Mapped[date] = mapped_column(Date, index=True)
+    open: Mapped[float | None] = mapped_column(Float, nullable=True)
+    close: Mapped[float | None] = mapped_column(Float, nullable=True)
+    high: Mapped[float | None] = mapped_column(Float, nullable=True)
+    low: Mapped[float | None] = mapped_column(Float, nullable=True)
+    vwap: Mapped[float | None] = mapped_column(Float, nullable=True)
+    volume: Mapped[float | None] = mapped_column(Float, nullable=True)
+    amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    change_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    turnover_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pe_dynamic: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pb: Mapped[float | None] = mapped_column(Float, nullable=True)
+    total_mv: Mapped[float | None] = mapped_column(Float, nullable=True)
+    float_mv: Mapped[float | None] = mapped_column(Float, nullable=True)
+    snapshot_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    first_captured_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_captured_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    source_label: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class StockIndicatorDaily(Base):
+    """个股每日预计算指标（bars + fundflow 派生，43 列浮点数）。
+
+    基础组（pe/pb/总市值/流通市值/换手率/latest_price）**不在此表**，它们从
+    StockRealtimeEod 读取。本表只装 bars/fundflow 派生指标。
+    """
+
+    __tablename__ = "stock_indicators_daily"
+    __table_args__ = (
+        UniqueConstraint("stock_code", "trading_date", name="uq_indicators_daily_code_date"),
+        Index("ix_indicators_daily_code_date", "stock_code", "trading_date"),
+        Index("ix_indicators_daily_trading_date", "trading_date"),
+        Index("ix_indicators_daily_hash", "data_hash"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    stock_code: Mapped[str] = mapped_column(String(20), index=True)
+    trading_date: Mapped[date] = mapped_column(Date, index=True)
+    compute_version: Mapped[str] = mapped_column(String(20), default="bars.v2.indicators.v1")
+    data_hash: Mapped[str] = mapped_column(String(40))
+    bar_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # 趋势 MA（8）
+    ma5: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ma10: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ma20: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ma60: Mapped[float | None] = mapped_column(Float, nullable=True)
+    close_vs_ma5: Mapped[float | None] = mapped_column(Float, nullable=True)
+    close_vs_ma10: Mapped[float | None] = mapped_column(Float, nullable=True)
+    close_vs_ma20: Mapped[float | None] = mapped_column(Float, nullable=True)
+    close_vs_ma60: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # 形态（6）
+    ma_bullish: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    golden_cross_recent: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    death_cross_recent: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    high_20d_break: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    high_60d_break: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    low_20d_break: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # 动量（13）
+    change_3d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    change_5d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    change_10d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    change_20d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    consecutive_up_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    consecutive_down_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rsi6: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rsi14: Mapped[float | None] = mapped_column(Float, nullable=True)
+    macd_dif: Mapped[float | None] = mapped_column(Float, nullable=True)
+    macd_dea: Mapped[float | None] = mapped_column(Float, nullable=True)
+    macd_hist: Mapped[float | None] = mapped_column(Float, nullable=True)
+    macd_golden_recent: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bias20: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # 量能（4）
+    volume_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    amount_ma5: Mapped[float | None] = mapped_column(Float, nullable=True)
+    turnover_ma5: Mapped[float | None] = mapped_column(Float, nullable=True)
+    volume_up_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # 涨停/形态（5）
+    limit_up_today: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    limit_up_count_5d: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    platform_breakout: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    gap_up_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    lower_shadow_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # 资金流（7）
+    main_net_inflow: Mapped[float | None] = mapped_column(Float, nullable=True)
+    main_net_inflow_5d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    main_net_inflow_10d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    main_net_inflow_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    main_net_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    super_large_net: Mapped[float | None] = mapped_column(Float, nullable=True)
+    main_net_inflow_5d_pct_mv: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class StockLimitUpHistory(Base):
+    """东财涨停池历史（4 池：limit_up / broken / strong / previous）。
+
+    用于复算连板天数、封单金额、强势股等指标。
+    """
+
+    __tablename__ = "stock_limit_up_history"
+    __table_args__ = (
+        UniqueConstraint(
+            "trading_date", "stock_code", "pool_type", name="uq_limit_up_history_date_code_pool"
+        ),
+        Index("ix_limit_up_history_code_date", "stock_code", "trading_date"),
+        Index("ix_limit_up_history_date_pool", "trading_date", "pool_type"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    trading_date: Mapped[date] = mapped_column(Date, index=True)
+    stock_code: Mapped[str] = mapped_column(String(20))
+    stock_name: Mapped[str] = mapped_column(String(120), default="")
+    pool_type: Mapped[str] = mapped_column(String(20))
+    board_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    first_limit_up_time: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    last_limit_up_time: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    limit_up_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sealed_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    turnover: Mapped[float | None] = mapped_column(Float, nullable=True)
+    turnover_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    change_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    industry: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    volume_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    amplitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    float_market_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    total_market_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    net_inflow: Mapped[float | None] = mapped_column(Float, nullable=True)
+    broken_board_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    captured_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class StockLimitUpIndicator(Base):
+    """涨停指标扁平视图（每日每只一行）。
+
+    由 StockLimitUpHistory GROUP BY (trading_date, stock_code) 聚合生成，
+    提供给筛选器快速读取：是否涨停、连板数、封单金额、是否炸板、是否强势股。
+    """
+
+    __tablename__ = "stock_limit_up_indicators"
+    __table_args__ = (
+        UniqueConstraint("stock_code", "trading_date", name="uq_limit_up_indicators_code_date"),
+        Index("ix_limit_up_indicators_date", "trading_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    stock_code: Mapped[str] = mapped_column(String(20), index=True)
+    trading_date: Mapped[date] = mapped_column(Date, index=True)
+    limit_up_today: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    consecutive_limit_up_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    sealed_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    broken_today: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    strong_pool: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
