@@ -40,7 +40,7 @@ POOL_FETCHERS = (
 class LimitUpHistoryService:
     """涨停池 EOD 持久化服务。"""
 
-    def __init__(self, gateway: Any, now_provider: Callable[[], datetime] | None = None) -> None:
+    def __init__(self, gateway: Any = None, now_provider: Callable[[], datetime] | None = None) -> None:
         self.gateway = gateway
         self.now_provider = now_provider or datetime.now
 

@@ -677,17 +677,19 @@ def _run_screener_fundflow_today(
 
 
 def _prune_persistence_tables(session: Session) -> None:
-    """对 4 张新表执行 prune_old(keep_days=250)。单表失败不阻塞其他。"""
+    """对 5 张新表执行 prune_old(keep_days=250)。单表失败不阻塞其他。"""
     from app.services.daily_eod import DailyEodService
     from app.services.indicators_daily import IndicatorsDailyService
     from app.services.limit_up_history import LimitUpHistoryService
     from app.services.limit_up_indicators import LimitUpIndicatorsService
+    from app.services.lhb_history import LhbHistoryService
 
     for svc_cls, name in (
         (DailyEodService, "stock_realtime_eod"),
         (IndicatorsDailyService, "stock_indicators_daily"),
         (LimitUpHistoryService, "stock_limit_up_history"),
         (LimitUpIndicatorsService, "stock_limit_up_indicators"),
+        (LhbHistoryService, "stock_lhb_detail"),
     ):
         try:
             deleted = svc_cls().prune_old(session, keep_trading_days=250)
@@ -711,6 +713,7 @@ def _persistence_freshness(session: Session) -> dict[str, dict]:
         ("stock_indicators_daily", False),
         ("stock_limit_up_history", False),
         ("stock_limit_up_indicators", False),
+        ("stock_lhb_detail", False),
     ]
     out: dict[str, dict] = {}
     for table, with_day_count in specs:
@@ -766,6 +769,16 @@ def _run_indicators_daily(session: Session, now_provider: Callable[[], datetime]
     today = now_provider().date()
     res = IndicatorsDailyService(now_provider=now_provider).compute_for_date(session, today)
     logger.info("cron indicators-daily %s: %s -> stock_indicators_daily", today, res)
+
+
+def _run_lhb_history(session: Session, gateway: Any, now_provider: Callable[[], datetime]) -> None:
+    """17:00 - 龙虎榜明细入库（17:00 后出齐）。force=True 跳时间门。"""
+    from app.services.lhb_history import LhbHistoryService
+    today = now_provider().date()
+    n = LhbHistoryService(gateway=gateway, now_provider=now_provider).refresh_for_date(
+        session, today, force=True,
+    )
+    logger.info("cron lhb-history %s: +%d 行 -> stock_lhb_detail", today, n)
 
 
 def _run_vacuum(session: Session) -> None:
@@ -1091,6 +1104,22 @@ def create_app(
                 hour="16",
                 day_of_week="mon-fri",
                 id="indicators-daily-compute",
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=3600,
+            )
+            # 17:00 - 龙虎榜明细 -> stock_lhb_detail（17:00 后出齐）
+            scheduler.add_job(
+                lambda: _run_scheduled_job(
+                    "lhb-history-refresh",
+                    session_factory,
+                    lambda session: _run_lhb_history(session, gateway, now_provider),
+                ),
+                "cron",
+                minute="0",
+                hour="17",
+                day_of_week="mon-fri",
+                id="lhb-history-refresh",
                 max_instances=1,
                 coalesce=True,
                 misfire_grace_time=3600,
@@ -2535,15 +2564,15 @@ def create_app(
     def api_screener_data_backfill(payload: dict = Body(...)):
         """手动触发持久化层回补。
 
-        Body: {"task": "eod"|"indicators"|"limit_up"|"limit_up_indicators",
+        Body: {"task": "eod"|"indicators"|"limit_up"|"limit_up_indicators"|"lhb",
                "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD"}
         """
         from datetime import date as _date
         task = (payload.get("task") or "").strip()
-        if task not in {"eod", "indicators", "limit_up", "limit_up_indicators"}:
+        if task not in {"eod", "indicators", "limit_up", "limit_up_indicators", "lhb"}:
             raise HTTPException(
                 status_code=400,
-                detail=f"task 必须为 eod/indicators/limit_up/limit_up_indicators 之一, got {task!r}",
+                detail=f"task 必须为 eod/indicators/limit_up/limit_up_indicators/lhb 之一, got {task!r}",
             )
         try:
             start = _date.fromisoformat(payload["start_date"])
@@ -2570,6 +2599,9 @@ def create_app(
                 elif task == "limit_up_indicators":
                     from app.services.limit_up_indicators import LimitUpIndicatorsService
                     LimitUpIndicatorsService().backfill_range(session, start, end)
+                elif task == "lhb":
+                    from app.services.lhb_history import LhbHistoryService
+                    LhbHistoryService(gateway=gateway).backfill_range(session, start, end)
                 screener.invalidate_cache()
             except Exception as exc:  # noqa: BLE001
                 logger.exception("data-backfill worker failed: task=%s job_id=%s", task, job_id)

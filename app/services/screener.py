@@ -26,6 +26,7 @@ from app.models import (
     StockDailyBar,
     StockFundFlowDaily,
     StockIndicatorDaily,
+    StockLhbDetail,
     StockLimitUpIndicator,
     StockRealtimeEod,
 )
@@ -130,6 +131,37 @@ BUILTIN_PRESETS: list[dict[str, Any]] = [
         "order_by": "rsi14",
         "order": "asc",
     },
+    {
+        "name": "龙虎榜接力",
+        "description": "机构净买入上榜股，顺势跟进（依赖龙虎榜，17:00 后出齐）",
+        "category": "事件驱动",
+        # 评分模式 min_score=4：lhb_today(2)+inst(2)=4 即命中，
+        # 趋势/避涨停为加分项；lhb 缺数据时整体不出票（事件策略本就该等数据）
+        "match_mode": "score",
+        "min_score": 4,
+        "conditions": [
+            {"indicator": "lhb_today", "op": "==", "value": 1, "weight": 2},
+            {"indicator": "lhb_inst_net_buy", "op": ">", "value": 0, "weight": 2},
+            {"indicator": "close_vs_ma20", "op": ">=", "value": 0, "weight": 1},
+            {"indicator": "limit_up_today", "op": "==", "value": 0, "weight": 1},
+        ],
+        "order_by": "score",
+        "order": "desc",
+    },
+    {
+        "name": "涨停接力",
+        "description": "连板股次日跟踪，2 板起算（依赖涨停指标，16:10 后出齐）",
+        "category": "事件驱动",
+        # 全 AND：事件信号需精确，缺数据宁可不选
+        "match_mode": "all",
+        "conditions": [
+            {"indicator": "consecutive_limit_up_days", "op": ">=", "value": 2},
+            {"indicator": "limit_up_today", "op": "==", "value": 1},
+            {"indicator": "volume_ratio", "op": "<=", "value": 5.0},
+        ],
+        "order_by": "consecutive_limit_up_days",
+        "order": "desc",
+    },
 ]
 
 
@@ -197,6 +229,10 @@ INDICATOR_REGISTRY: dict[str, dict[str, Any]] = {
     # 涨停类指标（持久化于 stock_limit_up_indicators / stock_limit_up_history）
     "consecutive_limit_up_days": {"label": "连板数", "group": "形态", "unit": "板", "default_op": ">=", "default_value": 1, "source": "limit_up_indicators"},
     "sealed_amount": {"label": "封单金额", "group": "资金流", "unit": "yuan", "default_op": ">", "default_value": 0, "nullable": True, "source": "limit_up_indicators"},
+    # 龙虎榜（实时从 stock_lhb_detail 聚合，表小不预计算；2026-07-22）
+    "lhb_today": {"label": "当日龙虎榜上榜", "group": "事件", "unit": "0/1", "default_op": "==", "default_value": 1, "source": "lhb_detail"},
+    "lhb_net_buy": {"label": "龙虎榜净买额", "group": "事件", "unit": "yuan", "default_op": ">", "default_value": 0, "nullable": True, "source": "lhb_detail"},
+    "lhb_inst_net_buy": {"label": "龙虎榜机构净席位(买-卖)", "group": "事件", "unit": "席", "default_op": ">", "default_value": 0, "nullable": True, "source": "lhb_detail"},
 }
 
 
@@ -210,6 +246,7 @@ class ScreenerService:
 
     CACHE_TTL_SECONDS = 600
     WARN_NO_FUND_FLOW = "资金流数据尚未回填；资金类条件被跳过"
+    WARN_NO_LHB = "龙虎榜数据尚未入库（17:00 后出齐）；龙虎榜类条件被跳过"
     WARN_RSI_LIMITED = "RSI 在历史不足时返回近似值"
     WARN_LIMITED_BARS = "部分股票日线不足 60 日，相关指标返回 NaN"
 
@@ -425,6 +462,12 @@ class ScreenerService:
         if referenced & _FUNDFLOW_INDICATORS and feature_payload["flow_universe_size"] == 0:
             warnings.append(self.WARN_NO_FUND_FLOW)
 
+        # 龙虎榜降级：引用了 lhb 指标但当日无 lhb 数据（17:00 前或当日无人上榜）
+        if referenced & _LHB_INDICATORS and (
+            "lhb_today" not in df.columns or df["lhb_today"].isna().all()
+        ):
+            warnings.append(self.WARN_NO_LHB)
+
         filtered = apply_dsl(df, conditions, match_mode=match_mode, min_score=min_score)
         limit = int(request.get("limit") or 100)
         if limit > 0:
@@ -583,6 +626,11 @@ class ScreenerService:
         lu_df = _load_limit_up_indicators(session, codes, latest_date_obj)
         if not lu_df.empty:
             frame = frame.merge(lu_df, on="stock_code", how="left", suffixes=("", "_lu"))
+
+        # 4) 龙虎榜指标 (lhb_today/lhb_net_buy/lhb_inst_net_buy) 从 stock_lhb_detail 实时聚合
+        lhb_df = _load_lhb_indicators(session, codes, latest_date_obj)
+        if not lhb_df.empty:
+            frame = frame.merge(lhb_df, on="stock_code", how="left", suffixes=("", "_lhb"))
 
         # 向后兼容：旧版 _realtime_lookup callable 仍生效（测试用）
         realtime_value = request.get("_realtime_lookup")
@@ -766,6 +814,37 @@ def _load_limit_up_indicators(
     ])
     df["stock_code"] = df["stock_code"].astype(str).str.zfill(6)
     return df
+
+
+def _load_lhb_indicators(
+    session: Session, codes: list[str], trading_date: Any
+) -> pd.DataFrame:
+    """从 ``stock_lhb_detail`` 聚合龙虎榜指标（当日，按 stock_code）。
+
+    一只票一日可能多行（多个上榜原因），net_buy/inst_net_count 取净额求和，
+    lhb_today 置 1。表小（~100 行/日），实时查不预计算。
+    """
+    if not codes:
+        return pd.DataFrame()
+    td = trading_date.date() if hasattr(trading_date, "date") else trading_date
+    rows = list(
+        session.execute(
+            select(
+                StockLhbDetail.stock_code,
+                func.sum(StockLhbDetail.net_buy).label("lhb_net_buy"),
+                func.sum(StockLhbDetail.inst_net_count).label("lhb_inst_net_buy"),
+            )
+            .where(StockLhbDetail.trading_date == td)
+            .where(StockLhbDetail.stock_code.in_(codes))
+            .group_by(StockLhbDetail.stock_code)
+        )
+    )
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows, columns=["stock_code", "lhb_net_buy", "lhb_inst_net_buy"])
+    df["stock_code"] = df["stock_code"].astype(str).str.zfill(6)
+    df["lhb_today"] = 1
+    return df[["stock_code", "lhb_today", "lhb_net_buy", "lhb_inst_net_buy"]]
 
 
 def compute_features(bars: pd.DataFrame, fund_flow: pd.DataFrame, latest_trading_date: date) -> pd.DataFrame:
@@ -1013,6 +1092,13 @@ _FUNDFLOW_INDICATORS = {
     "main_net_ratio",
     "super_large_net",
     "main_net_inflow_5d_pct_mv",
+}
+
+# 龙虎榜类指标（实时从 stock_lhb_detail 聚合）
+_LHB_INDICATORS = {
+    "lhb_today",
+    "lhb_net_buy",
+    "lhb_inst_net_buy",
 }
 
 

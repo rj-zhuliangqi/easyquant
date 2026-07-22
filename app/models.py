@@ -728,3 +728,42 @@ class StockLimitUpIndicator(Base):
     broken_today: Mapped[int | None] = mapped_column(Integer, nullable=True)
     strong_pool: Mapped[int | None] = mapped_column(Integer, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class StockLhbDetail(Base):
+    """龙虎榜明细（东财 stock_lhb_detail_em，每日 ~100 行）。
+
+    一只股票一日可因多个上榜原因多行；唯一约束 (trading_date, stock_code, reason)。
+    机构席位数从「解读」文本解析（"N家机构买入/卖出"），inst_net_count = 买-卖。
+    选股器 lhb_today/lhb_net_buy/lhb_inst_net_buy 实时从此表聚合（表小，不预计算）。
+    """
+
+    __tablename__ = "stock_lhb_detail"
+    __table_args__ = (
+        UniqueConstraint(
+            "trading_date", "stock_code", "reason", name="uq_lhb_detail_date_code_reason"
+        ),
+        Index("ix_lhb_detail_code_date", "stock_code", "trading_date"),
+        Index("ix_lhb_detail_date", "trading_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    trading_date: Mapped[date] = mapped_column(Date, index=True)
+    stock_code: Mapped[str] = mapped_column(String(20), index=True)
+    stock_name: Mapped[str] = mapped_column(String(120), default="")
+    reason: Mapped[str] = mapped_column(String(200), default="")
+    interpretation: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    close: Mapped[float | None] = mapped_column(Float, nullable=True)
+    change_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    net_buy: Mapped[float | None] = mapped_column(Float, nullable=True)
+    buy_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sell_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    trading_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    net_buy_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    turnover_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    float_mv: Mapped[float | None] = mapped_column(Float, nullable=True)
+    inst_buy_count: Mapped[int] = mapped_column(Integer, default=0)
+    inst_sell_count: Mapped[int] = mapped_column(Integer, default=0)
+    inst_net_count: Mapped[int] = mapped_column(Integer, default=0)
+    source_label: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)

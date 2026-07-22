@@ -410,6 +410,64 @@ class AkshareGateway:
         )
         return frame
 
+    def fetch_lhb_detail(self, date_str: str) -> pd.DataFrame:
+        """龙虎榜明细（东财 datacenter，1 次调用 ~100 行）。
+
+        走 ``datacenter-web.eastmoney.com``（非 push2），Clash 封 push2 不影响。
+        「解读」列解析机构席位：``(\\d+)家机构买入`` / ``(\\d+)家机构卖出``，
+        inst_net_count = 买席位数 - 卖席位数，供选股器 lhb_inst_net_buy 指标用。
+
+        返回列：股票代码 / 名称 / 上榜原因 / 解读 / 收盘价 / 涨跌幅 / 龙虎榜净买额 /
+        龙虎榜买入额 / 龙虎榜卖出额 / 龙虎榜成交额 / 净买额占总成交比 / 换手率 / 流通市值 /
+        机构买入席位 / 机构卖出席位 / 机构净席位。
+        """
+        frame = self._run(
+            lambda: ak.stock_lhb_detail_em(start_date=date_str, end_date=date_str),
+            rate_key="eastmoney",
+        )
+        if frame is None or frame.empty:
+            self._set_source_snapshot(
+                "lhb_detail",
+                source_label="none",
+                fallback_used=False,
+                updated_at=now_cn().isoformat(),
+                degraded_fields=["lhb_detail"],
+            )
+            return pd.DataFrame(columns=[
+                "股票代码", "名称", "上榜原因", "解读", "收盘价", "涨跌幅",
+                "龙虎榜净买额", "龙虎榜买入额", "龙虎榜卖出额", "龙虎榜成交额",
+                "净买额占总成交比", "换手率", "流通市值",
+                "机构买入席位", "机构卖出席位", "机构净席位",
+            ])
+        out = pd.DataFrame()
+        out["股票代码"] = frame.get("代码", "").astype(str)
+        out["名称"] = frame.get("名称", "").astype(str)
+        out["上榜原因"] = frame.get("上榜原因", "").astype(str)
+        out["解读"] = frame.get("解读", "").astype(str)
+        out["收盘价"] = pd.to_numeric(frame.get("收盘价"), errors="coerce")
+        out["涨跌幅"] = pd.to_numeric(frame.get("涨跌幅"), errors="coerce")
+        out["龙虎榜净买额"] = pd.to_numeric(frame.get("龙虎榜净买额"), errors="coerce")
+        out["龙虎榜买入额"] = pd.to_numeric(frame.get("龙虎榜买入额"), errors="coerce")
+        out["龙虎榜卖出额"] = pd.to_numeric(frame.get("龙虎榜卖出额"), errors="coerce")
+        out["龙虎榜成交额"] = pd.to_numeric(frame.get("龙虎榜成交额"), errors="coerce")
+        out["净买额占总成交比"] = pd.to_numeric(frame.get("净买额占总成交比"), errors="coerce")
+        out["换手率"] = pd.to_numeric(frame.get("换手率"), errors="coerce")
+        out["流通市值"] = pd.to_numeric(frame.get("流通市值"), errors="coerce")
+        # 解析机构席位
+        interp = out["解读"].fillna("").astype(str)
+        out["机构买入席位"] = interp.str.extract(r"(\d+)\s*家机构买入").fillna(0).astype(int)
+        out["机构卖出席位"] = interp.str.extract(r"(\d+)\s*家机构卖出").fillna(0).astype(int)
+        out["机构净席位"] = out["机构买入席位"] - out["机构卖出席位"]
+        out = out[out["股票代码"].astype(str).str.fullmatch(r"\d{6}", na=False)]
+        self._set_source_snapshot(
+            "lhb_detail",
+            source_label="eastmoney" if not out.empty else "none",
+            fallback_used=False,
+            updated_at=now_cn().isoformat(),
+            degraded_fields=[] if not out.empty else ["lhb_detail"],
+        )
+        return out.reset_index(drop=True)
+
     def fetch_market_index_spot(self) -> pd.DataFrame:
         frame = self._fetch_market_index_spot_tencent_primary()
         if not frame.empty:
