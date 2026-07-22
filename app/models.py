@@ -540,6 +540,26 @@ class ScreenerPreset(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
+class ScreenerPresetHit(Base):
+    """选股器预设每日命中快照（17:10 cron 跑所有内置预设记录）。
+
+    用于前端"近 5 日命中数 / 5 日均值"，让用户判断策略当前是否有票。
+    """
+
+    __tablename__ = "screener_preset_hits"
+    __table_args__ = (
+        UniqueConstraint("preset_id", "trading_date", name="uq_screener_preset_hit_id_date"),
+        Index("ix_screener_preset_hit_date", "trading_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    preset_id: Mapped[int] = mapped_column(Integer, index=True)
+    trading_date: Mapped[date] = mapped_column(Date, index=True)
+    hit_count: Mapped[int] = mapped_column(Integer, default=0)
+    hit_codes: Mapped[str] = mapped_column(Text, default="[]")  # JSON list，cap 100
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
 # ====================================================================
 # 持久化层 v1：拉取数据 → 落库 → 派生指标 (2026-07-21)
 # 4 张新表：

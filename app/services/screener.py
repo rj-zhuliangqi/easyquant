@@ -13,7 +13,7 @@ import hashlib
 import json
 import logging
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Callable
 
 import numpy as np
@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     ScreenerPreset,
+    ScreenerPresetHit,
     StockDailyBar,
     StockFundFlowDaily,
     StockIndicatorDaily,
@@ -400,6 +401,91 @@ class ScreenerService:
         if added:
             session.commit()
         return added
+
+    # ---------------- 命中历史 (2026-07-22) ----------------
+
+    def snapshot_preset_hits(self, session: Session, trading_date: date) -> dict[str, int]:
+        """跑所有预设记录当日命中数 + 代码到 ``screener_preset_hits``。
+
+        17:10 cron 调（此时 lhb 17:00 / indicators 16:30 均已就绪）。单预设失败不阻塞。
+        缓存命中：8 个预设共享同一帧，第一个算完后续走缓存。
+
+        Returns:
+            {"snapshots": int, "total_hits": int}
+        """
+        presets = list(session.execute(select(ScreenerPreset)).scalars())
+        snapshots = 0
+        total_hits = 0
+        now = self._now()
+        for preset in presets:
+            try:
+                result = self.run(session, {"preset_id": preset.id, "limit": 100})
+                hits = result.get("results") or []
+                codes = [str(r.get("code")) for r in hits if r.get("code")]
+                hit_count = int(result.get("total") or len(hits))
+                self._upsert_hit(session, preset.id, trading_date, hit_count, codes, now)
+                snapshots += 1
+                total_hits += hit_count
+            except Exception:  # noqa: BLE001
+                logger.exception("snapshot_preset_hits: preset=%s 失败", preset.name)
+                continue
+        return {"snapshots": snapshots, "total_hits": total_hits}
+
+    def get_hit_history(
+        self, session: Session, preset_id: int, *, days: int = 5
+    ) -> list[dict[str, Any]]:
+        """返回某预设近 ``days`` 个交易日的命中快照（供前端"近 5 日命中数"）。"""
+        rows = list(
+            session.execute(
+                select(ScreenerPresetHit)
+                .where(ScreenerPresetHit.preset_id == preset_id)
+                .order_by(ScreenerPresetHit.trading_date.desc())
+                .limit(days)
+            ).scalars()
+        )
+        return [
+            {
+                "trading_date": r.trading_date.isoformat() if r.trading_date else None,
+                "hit_count": int(r.hit_count or 0),
+                "hit_codes": json.loads(r.hit_codes or "[]"),
+            }
+            for r in reversed(rows)  # 时间升序
+        ]
+
+    @staticmethod
+    def _upsert_hit(
+        session: Session,
+        preset_id: int,
+        trading_date: date,
+        hit_count: int,
+        codes: list[str],
+        now: datetime,
+    ) -> None:
+        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+        capped = codes[:100]
+        stmt = sqlite_insert(ScreenerPresetHit).values(
+            preset_id=preset_id,
+            trading_date=trading_date,
+            hit_count=hit_count,
+            hit_codes=json.dumps(capped, ensure_ascii=False),
+            updated_at=now,
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["preset_id", "trading_date"],
+            set_={
+                "hit_count": stmt.excluded.hit_count,
+                "hit_codes": stmt.excluded.hit_codes,
+                "updated_at": stmt.excluded.updated_at,
+            },
+        )
+        session.execute(stmt)
+        session.commit()
+
+    @staticmethod
+    def _now() -> datetime:
+        return datetime.now()
+
 
     def run(
         self,

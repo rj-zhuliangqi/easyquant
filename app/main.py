@@ -781,6 +781,13 @@ def _run_lhb_history(session: Session, gateway: Any, now_provider: Callable[[], 
     logger.info("cron lhb-history %s: +%d 行 -> stock_lhb_detail", today, n)
 
 
+def _run_screener_preset_hits(session: Session, screener: Any, now_provider: Callable[[], datetime]) -> None:
+    """17:10 - 跑所有预设记录当日命中数（lhb/indicators 已就绪）。"""
+    today = now_provider().date()
+    res = screener.snapshot_preset_hits(session, today)
+    logger.info("cron screener-preset-hits %s: %s -> screener_preset_hits", today, res)
+
+
 def _run_vacuum(session: Session) -> None:
     """周日 02:17 - VACUUM 回收 prune 后的空闲页。
 
@@ -1120,6 +1127,22 @@ def create_app(
                 hour="17",
                 day_of_week="mon-fri",
                 id="lhb-history-refresh",
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=3600,
+            )
+            # 17:10 - 预设命中快照（lhb 17:00 / indicators 16:30 均已就绪）
+            scheduler.add_job(
+                lambda: _run_scheduled_job(
+                    "screener-preset-hits-snapshot",
+                    session_factory,
+                    lambda session: _run_screener_preset_hits(session, screener, now_provider),
+                ),
+                "cron",
+                minute="10",
+                hour="17",
+                day_of_week="mon-fri",
+                id="screener-preset-hits-snapshot",
                 max_instances=1,
                 coalesce=True,
                 misfire_grace_time=3600,

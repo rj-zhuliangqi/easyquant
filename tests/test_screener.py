@@ -14,6 +14,7 @@ import pytest
 from app.models import (
     IndividualStockSnapshot,
     ScreenerPreset,
+    ScreenerPresetHit,
     StockDailyBar,
     StockFundFlowDaily,
 )
@@ -336,6 +337,46 @@ def test_save_preset_cannot_override_builtin(db_session) -> None:
             description="覆盖",
             conditions=[],
         )
+
+
+# ---------------- 命中历史 ----------------
+
+
+def test_snapshot_preset_hits_records_all_presets(db_session) -> None:
+    """无 bars 数据时各预设命中 0，但每个预设都应写一行快照。"""
+    screener = ScreenerService()
+    screener.seed_builtin_presets(db_session)
+    res = screener.snapshot_preset_hits(db_session, date(2026, 7, 22))
+    assert res["snapshots"] == len(BUILTIN_PRESETS)
+    rows = db_session.query(ScreenerPresetHit).all()
+    assert len(rows) == len(BUILTIN_PRESETS)
+    assert all(r.hit_count == 0 for r in rows)
+    assert all(r.trading_date == date(2026, 7, 22) for r in rows)
+
+
+def test_snapshot_preset_hits_idempotent_upsert(db_session) -> None:
+    """同日重跑覆盖不新增行。"""
+    screener = ScreenerService()
+    screener.seed_builtin_presets(db_session)
+    screener.snapshot_preset_hits(db_session, date(2026, 7, 22))
+    screener.snapshot_preset_hits(db_session, date(2026, 7, 22))
+    rows = db_session.query(ScreenerPresetHit).filter_by(trading_date=date(2026, 7, 22)).all()
+    assert len(rows) == len(BUILTIN_PRESETS)
+
+
+def test_get_hit_history_returns_recent(db_session) -> None:
+    screener = ScreenerService()
+    screener.seed_builtin_presets(db_session)
+    preset = db_session.query(ScreenerPreset).first()
+    # 手写 3 天快照
+    ScreenerService._upsert_hit(db_session, preset.id, date(2026, 7, 20), 3, ["000001", "000002"], datetime.now())
+    ScreenerService._upsert_hit(db_session, preset.id, date(2026, 7, 21), 5, ["000003"], datetime.now())
+    ScreenerService._upsert_hit(db_session, preset.id, date(2026, 7, 22), 0, [], datetime.now())
+    hist = screener.get_hit_history(db_session, preset.id, days=5)
+    assert len(hist) == 3
+    assert [h["trading_date"] for h in hist] == ["2026-07-20", "2026-07-21", "2026-07-22"]
+    assert hist[1]["hit_count"] == 5
+    assert hist[0]["hit_codes"] == ["000001", "000002"]
 
 
 # ---------------- 性能冒烟 -----------------
