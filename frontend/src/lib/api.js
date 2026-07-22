@@ -125,6 +125,35 @@ export function pageQueryKey(pageName, params = {}) {
   return ["page", pageName, params];
 }
 
+// ---------- 选股器 (2026-07-22 重构) ----------
+export async function fetchScreenerStrategies() {
+  return fetchJson("/api/screener/strategies");
+}
+
+export async function fetchScreenerStock(code) {
+  return fetchJson(`/api/screener/stocks/${encodeURIComponent(code)}`);
+}
+
+export async function runScreener(payload) {
+  return fetchJson("/api/screener/run", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function saveScreenerPreset(payload) {
+  return fetchJson("/api/screener/presets", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteScreenerPreset(id) {
+  return fetchJson(`/api/screener/presets/${id}`, { method: "DELETE" });
+}
+
 export async function fetchRealtimeNews({
   limit = 50,
   hours = 48,

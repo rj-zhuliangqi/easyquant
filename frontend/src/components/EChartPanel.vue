@@ -1,10 +1,24 @@
 <script setup>
 import * as echarts from "echarts/core";
-import { LineChart } from "echarts/charts";
-import { GridComponent, TooltipComponent, LegendComponent } from "echarts/components";
+import { BarChart, CandlestickChart, LineChart } from "echarts/charts";
+import {
+  DataZoomComponent,
+  GridComponent,
+  LegendComponent,
+  TooltipComponent,
+} from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
 
-echarts.use([LineChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer]);
+echarts.use([
+  BarChart,
+  CandlestickChart,
+  LineChart,
+  DataZoomComponent,
+  GridComponent,
+  LegendComponent,
+  TooltipComponent,
+  CanvasRenderer,
+]);
 
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
@@ -113,8 +127,11 @@ const chartSummary = computed(() => {
   const summaries = series.map((s) => {
     const data = s.data || [];
     if (!data.length) return `${s.name || "数据系列"}: 无数据`;
-    const values = data.filter((v) => v != null);
-    if (!values.length) return `${s.name || "数据系列"}: 无有效数据`;
+    // candlestick/bar-with-object 等数据点可能是数组或对象，只对纯数值做统计
+    const values = data
+      .map((v) => (typeof v === "number" ? v : Array.isArray(v) ? v[1] : v?.value))
+      .filter((v) => typeof v === "number" && !Number.isNaN(v));
+    if (!values.length) return `${s.name || "数据系列"}: 共 ${data.length} 个数据点`;
     const max = Math.max(...values);
     const min = Math.min(...values);
     const avg = (values.reduce((a, b) => a + b, 0) / values.length).toFixed(2);
