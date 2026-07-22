@@ -379,6 +379,77 @@ def test_get_hit_history_returns_recent(db_session) -> None:
     assert hist[0]["hit_codes"] == ["000001", "000002"]
 
 
+# ---------------- 策略目录 / 个股详情 (Phase 3) ----------------
+
+
+def test_strategies_catalog_merges_hits(db_session) -> None:
+    from app.models import ScreenerPresetHit
+
+    screener = ScreenerService()
+    screener.seed_builtin_presets(db_session)
+    preset = db_session.query(ScreenerPreset).first()
+    db_session.add(ScreenerPresetHit(preset_id=preset.id, trading_date=date(2026, 7, 22),
+                                     hit_count=7, hit_codes='["000001"]'))
+    db_session.commit()
+
+    catalog = screener.strategies_catalog(db_session)
+    assert len(catalog) == len(BUILTIN_PRESETS)
+    entry = next(c for c in catalog if c["id"] == preset.id)
+    assert entry["name"] == preset.name
+    assert entry["category"] == preset.category
+    assert entry["match_mode"] == preset.match_mode
+    assert 7 in entry["hit_5d"]
+    assert entry["total_5d"] == 7
+    assert entry["last_hit_date"] == "2026-07-22"
+    # 没命中数据的预设 hit_5d 为空、avg_5d=0
+    other = next(c for c in catalog if c["id"] != preset.id)
+    assert other["hit_5d"] == []
+    assert other["avg_5d"] == 0.0
+
+
+def test_stock_detail_aggregates_sources(db_session) -> None:
+    from app.models import StockIndicatorDaily, StockLhbDetail, StockRealtimeEod
+
+    code = "000001"
+    _seed_bars(db_session, _make_bars(code, n_days=10, start=date(2026, 7, 1), seed=2))
+    db_session.add(StockRealtimeEod(
+        stock_code=code, stock_name="平安", trading_date=date(2026, 7, 10),
+        close=11.0, change_pct=1.2, turnover_rate=2.0, pe_dynamic=8.0,
+        pb=0.9, total_mv=2e11, float_mv=1.5e11,
+    ))
+    db_session.add(StockIndicatorDaily(
+        stock_code=code, trading_date=date(2026, 7, 10),
+        compute_version="bars.v2.indicators.v1", data_hash="x", bar_count=10,
+        rsi14=55.0, ma20=10.5, volume_ratio=1.8, main_net_inflow=1e7,
+    ))
+    _seed_flow(db_session, code, [date(2026, 7, 9), date(2026, 7, 10)], [1e7, -5e6])
+    db_session.add(StockLhbDetail(
+        trading_date=date(2026, 7, 10), stock_code=code, stock_name="平安",
+        reason="涨幅偏离7%", interpretation="3家机构买入", net_buy=1e8, inst_net_count=3,
+    ))
+    db_session.commit()
+
+    screener = ScreenerService()
+    detail = screener.stock_detail(db_session, code)
+    assert detail is not None
+    assert detail["code"] == code
+    assert detail["name"] == "平安"
+    assert len(detail["kline"]) == 10
+    assert detail["kline"][0]["date"] == "2026-07-01"
+    assert detail["basics"]["latest_price"] == 11.0
+    assert detail["basics"]["pe_dynamic"] == 8.0
+    assert len(detail["fund_flow"]) == 2
+    assert len(detail["lhb"]) == 1
+    assert detail["lhb"][0]["inst_net_count"] == 3
+    assert detail["indicators"]["rsi14"] == 55.0
+    assert detail["indicators"]["data_date"] == "2026-07-10"
+
+
+def test_stock_detail_missing_code_returns_none(db_session) -> None:
+    screener = ScreenerService()
+    assert screener.stock_detail(db_session, "999999") is None
+
+
 # ---------------- 性能冒烟 -----------------
 
 

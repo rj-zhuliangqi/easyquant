@@ -2495,6 +2495,19 @@ def create_app(
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc))
 
+    @app.get("/api/screener/strategies")
+    def api_screener_strategies(session: Session = Depends(get_db)):
+        """策略商城目录：preset 列表 + 近 5 日命中数。"""
+        return screener.strategies_catalog(session)
+
+    @app.get("/api/screener/stocks/{code}")
+    def api_screener_stock_detail(code: str, session: Session = Depends(get_db)):
+        """个股抽屉详情：60 日 K 线 + 龙虎榜 + 关键指标 + 近期资金流。"""
+        detail = screener.stock_detail(session, code)
+        if detail is None:
+            raise HTTPException(status_code=404, detail=f"无 {code} 日线数据")
+        return detail
+
     @app.get("/api/screener/status")
     def api_screener_status(session: Session = Depends(get_db)):
         coverage = daily_bars.coverage(session)

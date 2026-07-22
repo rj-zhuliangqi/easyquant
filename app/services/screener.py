@@ -486,6 +486,189 @@ class ScreenerService:
     def _now() -> datetime:
         return datetime.now()
 
+    # ---------------- 策略目录 / 个股详情 (2026-07-22 Phase 3) ----------------
+
+    def strategies_catalog(self, session: Session) -> list[dict[str, Any]]:
+        """策略商城目录：合并预设 + 近 5 日命中历史。
+
+        每条：id/name/description/category/match_mode/min_score/conditions/
+              is_builtin/order_by/order/hit_5d(近5日命中数列表)/avg_5d/total_5d。
+        """
+        presets = list(session.execute(select(ScreenerPreset).order_by(ScreenerPreset.id)).scalars())
+        catalog: list[dict[str, Any]] = []
+        for row in presets:
+            hist = self.get_hit_history(session, row.id, days=5)
+            counts = [h["hit_count"] for h in hist]
+            total_5d = sum(counts)
+            avg_5d = round(total_5d / len(counts), 1) if counts else 0.0
+            try:
+                conditions = json.loads(row.conditions_json or "[]")
+            except Exception:  # noqa: BLE001
+                conditions = []
+            catalog.append({
+                "id": row.id,
+                "name": row.name,
+                "description": row.description,
+                "category": row.category,
+                "match_mode": row.match_mode,
+                "min_score": row.min_score,
+                "conditions": conditions,
+                "is_builtin": row.is_builtin,
+                "order_by": row.order_by,
+                "order": row.order,
+                "hit_5d": counts,
+                "avg_5d": avg_5d,
+                "total_5d": total_5d,
+                "last_hit_date": hist[-1]["trading_date"] if hist else None,
+            })
+        return catalog
+
+    def stock_detail(self, session: Session, code: str) -> dict[str, Any] | None:
+        """个股抽屉详情：近 60 日 K 线 + 近期龙虎榜 + 最新指标 + 近期资金流。
+
+        供前端 StockDrawer 渲染。code 缺失返回 None。
+        """
+        code = str(code).strip().zfill(6)
+        if not code:
+            return None
+
+        # 近 60 日 K 线
+        bar_rows = list(
+            session.execute(
+                select(
+                    StockDailyBar.trading_date, StockDailyBar.open, StockDailyBar.close,
+                    StockDailyBar.high, StockDailyBar.low, StockDailyBar.volume,
+                    StockDailyBar.amount, StockDailyBar.change_pct, StockDailyBar.turnover_rate,
+                )
+                .where(StockDailyBar.stock_code == code)
+                .order_by(StockDailyBar.trading_date.desc())
+                .limit(60)
+            )
+        )
+        if not bar_rows:
+            return None
+        kline = [
+            {
+                "date": r[0].isoformat() if r[0] else None,
+                "open": _maybe_float(r[1]), "close": _maybe_float(r[2]),
+                "high": _maybe_float(r[3]), "low": _maybe_float(r[4]),
+                "volume": _maybe_float(r[5]), "amount": _maybe_float(r[6]),
+                "change_pct": _maybe_float(r[7]), "turnover_rate": _maybe_float(r[8]),
+            }
+            for r in reversed(bar_rows)  # 升序
+        ]
+        name_row = session.execute(
+            select(StockRealtimeEod.stock_name)
+            .where(StockRealtimeEod.stock_code == code)
+            .order_by(StockRealtimeEod.trading_date.desc())
+            .limit(1)
+        ).first()
+        stock_name = name_row[0] if name_row else ""
+
+        # 最新预计算指标
+        ind = session.execute(
+            select(StockIndicatorDaily)
+            .where(StockIndicatorDaily.stock_code == code)
+            .order_by(StockIndicatorDaily.trading_date.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        indicators = self._indicator_row_to_dict(ind) if ind else {}
+
+        # 最新 EOD 基础组
+        eod = session.execute(
+            select(
+                StockRealtimeEod.close, StockRealtimeEod.change_pct,
+                StockRealtimeEod.turnover_rate, StockRealtimeEod.pe_dynamic,
+                StockRealtimeEod.pb, StockRealtimeEod.total_mv, StockRealtimeEod.float_mv,
+                StockRealtimeEod.trading_date,
+            )
+            .where(StockRealtimeEod.stock_code == code)
+            .order_by(StockRealtimeEod.trading_date.desc())
+            .limit(1)
+        ).first()
+        basics = {
+            "latest_price": _maybe_float(eod[0]) if eod else None,
+            "change_pct": _maybe_float(eod[1]) if eod else None,
+            "turnover_rate": _maybe_float(eod[2]) if eod else None,
+            "pe_dynamic": _maybe_float(eod[3]) if eod else None,
+            "pb": _maybe_float(eod[4]) if eod else None,
+            "total_mv": _maybe_float(eod[5]) if eod else None,
+            "float_mv": _maybe_float(eod[6]) if eod else None,
+            "data_date": eod[7].isoformat() if eod and eod[7] else None,
+        } if eod else {}
+
+        # 近 10 日资金流
+        flow_rows = list(
+            session.execute(
+                select(
+                    StockFundFlowDaily.trading_date, StockFundFlowDaily.main_net_amount,
+                    StockFundFlowDaily.main_net_ratio, StockFundFlowDaily.super_large_net,
+                )
+                .where(StockFundFlowDaily.stock_code == code)
+                .order_by(StockFundFlowDaily.trading_date.desc())
+                .limit(10)
+            )
+        )
+        fund_flow = [
+            {
+                "date": r[0].isoformat() if r[0] else None,
+                "main_net": _maybe_float(r[1]),
+                "main_net_ratio": _maybe_float(r[2]),
+                "super_large_net": _maybe_float(r[3]),
+            }
+            for r in reversed(flow_rows)
+        ]
+
+        # 近 30 日龙虎榜
+        lhb_rows = list(
+            session.execute(
+                select(
+                    StockLhbDetail.trading_date, StockLhbDetail.reason,
+                    StockLhbDetail.interpretation, StockLhbDetail.net_buy,
+                    StockLhbDetail.inst_net_count,
+                )
+                .where(StockLhbDetail.stock_code == code)
+                .order_by(StockLhbDetail.trading_date.desc())
+                .limit(30)
+            )
+        )
+        lhb = [
+            {
+                "date": r[0].isoformat() if r[0] else None,
+                "reason": r[1], "interpretation": r[2],
+                "net_buy": _maybe_float(r[3]), "inst_net_count": int(r[4] or 0),
+            }
+            for r in lhb_rows
+        ]
+
+        return {
+            "code": code,
+            "name": stock_name,
+            "kline": kline,
+            "indicators": indicators,
+            "basics": basics,
+            "fund_flow": fund_flow,
+            "lhb": lhb,
+        }
+
+    @staticmethod
+    def _indicator_row_to_dict(ind: Any) -> dict[str, Any]:
+        """从 StockIndicatorDaily ORM 行抽取前端关心的关键指标。"""
+        out: dict[str, Any] = {}
+        for key in (
+            "ma5", "ma10", "ma20", "ma60",
+            "close_vs_ma20", "ma_bullish",
+            "change_5d", "change_20d", "consecutive_up_days",
+            "rsi14", "macd_dif", "macd_hist",
+            "volume_ratio", "limit_up_today", "platform_breakout",
+            "main_net_inflow", "main_net_inflow_5d", "main_net_inflow_days",
+        ):
+            val = getattr(ind, key, None)
+            out[key] = _maybe_float(val)
+        td = getattr(ind, "trading_date", None)
+        out["data_date"] = td.isoformat() if td else None
+        return out
+
 
     def run(
         self,
