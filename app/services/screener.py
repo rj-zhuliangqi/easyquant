@@ -3,7 +3,7 @@
 只依赖 DB（pandas 计算），与 akshare 在调用层彻底解耦——所有计算基于
 ``stock_daily_bars`` + ``stock_fund_flow_daily`` + 实时快照（基础组指标）。
 
-性能：2000 只 × 120 日 pandas 计算 < 3s。特征帧以 ``(latest_date, universe_hash)``
+性能：2000 只 × 120 日 pandas 计算 < 3s。特征帧以 ``(universe_hash, as_of_date)``
 为 key 缓存 10 分钟，回补完成时主动失效。
 """
 
@@ -448,7 +448,10 @@ class ScreenerService:
         request: dict[str, Any],
         universe_hash: str,
     ) -> dict[str, Any]:
-        cache_key = ("features", universe_hash)
+        # 缓存 key 纳入 as_of_date：历史回放与当日 universe 可能同 hash，
+        # 不区分会命中当日缓存返回错日期指标。
+        as_of = (request.get("universe") or {}).get("as_of_date")
+        cache_key = ("features", universe_hash, as_of)
         now_ts = time.time()
         cached = self._cache.get(cache_key)
         if cached and now_ts - cached[0] < self.CACHE_TTL_SECONDS:
@@ -511,13 +514,18 @@ class ScreenerService:
         # 2) bars/fundflow 派生 43 指标：优先 stock_indicators_daily 预计算，缺则保留 live
         precomp_df = _load_precomputed_indicators(session, codes, latest_date_obj)
         if not precomp_df.empty:
+            # 先把预计算表按 stock_code 建索引，再 map 到 frame 的整数 index，
+            # 最后 where：mapped 非空取预计算值，否则保留 live compute 值。
+            # （旧实现 .where(cond, other) 的 cond 用 stock_code 字符串 index，
+            # 与调用方 frame 整数 index 对齐后全 NaN -> 永远取 other，预计算覆盖形同虚设。）
+            precomp_idx = precomp_df.set_index("stock_code")
             for col in precomp_df.columns:
                 if col == "stock_code":
                     continue
-                # 仅当 precomputed 非空时覆盖
-                frame[col] = frame["stock_code"].map(
-                    precomp_df.set_index("stock_code")[col]
-                ).where(precomp_df.set_index("stock_code")[col].notna(), frame.get(col))
+                if col not in frame.columns:
+                    continue
+                mapped = frame["stock_code"].map(precomp_idx[col])
+                frame[col] = mapped.where(mapped.notna(), frame[col])
 
         # 3) 涨停指标 (consecutive_limit_up_days / sealed_amount 等) 从 stock_limit_up_indicators
         lu_df = _load_limit_up_indicators(session, codes, latest_date_obj)

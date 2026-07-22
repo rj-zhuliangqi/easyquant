@@ -417,6 +417,53 @@ class DailyBarsService:
                 progress_cb(self._snapshot())
             _sleep_jitter()
 
+    def backfill_fund_flow_today(self, session: Session) -> int:
+        """批量回补当日全市场资金流（一次 clist，替代 5000 次逐只拉历史）。
+
+        15:40 增量 cron 主路径：收盘后东财 clist 一次返回全市场今日主力净额/占比/
+        超大单/大单，直接 upsert 进 ``stock_fund_flow_daily``。这是选股器资金类
+        条件（main_net_inflow 等）能选出票的前提。返回写入行数。
+        """
+        try:
+            frame = self.gateway.fetch_fund_flow_today_batch()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("fetch_fund_flow_today_batch failed: %s", exc)
+            return 0
+        if frame is None or frame.empty:
+            logger.warning("fetch_fund_flow_today_batch empty, skip")
+            return 0
+        td = self.now_provider().date()
+        rows: list[dict[str, Any]] = []
+        for _, row in frame.iterrows():
+            code = str(row.get("股票代码") or "").zfill(6)
+            if not code:
+                continue
+            main_net = _safe_float(row.get("主力净额"))
+            super_large = _safe_float(row.get("超大单净额"))
+            large = _safe_float(row.get("大单净额"))
+            # 全 None（停牌/无数据）跳过，避免空行污染唯一约束
+            if main_net is None and super_large is None and large is None:
+                continue
+            rows.append({
+                "stock_code": code,
+                "trading_date": td,
+                "main_net_amount": main_net,
+                "main_net_ratio": _safe_float(row.get("主力净占比")),
+                "super_large_net": super_large,
+                "large_net": large,
+            })
+        if not rows:
+            return 0
+        # 200 行一 commit（2026-07-21 DB 截断事故硬约定）
+        inserted = 0
+        for start in range(0, len(rows), 200):
+            chunk = rows[start:start + 200]
+            insert_rows(session, StockFundFlowDaily, chunk, key_cols=("stock_code", "trading_date"))
+            session.commit()
+            inserted += len(chunk)
+        logger.info("fund_flow_today %s: +%d 行 (批量 clist)", td, inserted)
+        return inserted
+
     def _safe_fetch_fund_flow(self, code: str, market: str) -> pd.DataFrame:
         """拉单只资金流，吞掉异常返回空 DataFrame。"""
         try:

@@ -631,20 +631,23 @@ def _ensure_home_summary_ready(
     collector.collect_snapshot(session, captured_at=now.replace(second=0, microsecond=0))
 
 
-def _run_screener_incremental_backfill(
+def _run_screener_bars_incremental(
     session: Session,
     daily_bars: DailyBarsService,
 ) -> None:
-    """收盘增量：日线 + 资金流 + prune + 持久化层 prune。"""
-    from app.models import StockDailyBar
+    """15:40 收盘增量：日线增量 + prune + 持久化层 prune。
 
+    资金流已拆到独立的 ``_run_screener_fundflow_today``（批量 clist，秒级），
+    不再在此逐只拉，避免慢任务把资金流回补拖到被 misfire 杀掉。
+    """
     universe = daily_bars.get_universe(session, min_amount=50_000_000.0)
     if universe.empty:
+        logger.warning("screener bars incremental: universe 为空，跳过")
         return
     codes = universe["code"].astype(str).str.zfill(6).tolist()
+    logger.info("screener bars incremental: universe=%d, 开始补最近 10 日日线", len(codes))
     daily_bars.ensure_recent_bars(session, codes, days=10)
-    # 资金流当下没 upsert 增量接口，复用 _backfill_fund_flow 已封装的幂等
-    daily_bars._backfill_fund_flow(session, codes)  # noqa: SLF001 （同进程内服务调用）
+    logger.info("screener bars incremental: 日线补完，开始 prune")
     try:
         daily_bars.prune_old_bars(session)
         daily_bars.prune_old_fund_flow(session)
@@ -652,6 +655,19 @@ def _run_screener_incremental_backfill(
         logger.exception("screener incremental prune failed")
     # 持久化层 prune (2026-07-21)：4 张新表各保留 250 交易日
     _prune_persistence_tables(session)
+
+
+def _run_screener_fundflow_today(
+    session: Session,
+    daily_bars: DailyBarsService,
+) -> None:
+    """15:40 收盘增量：全市场"今日"资金流批量入库（1 次 clist，秒级）。
+
+    替代旧的逐只 ``_backfill_fund_flow``（5000 次 HTTP，常被 misfire 杀到只剩 1 只）。
+    这是选股器资金类条件（放量突破/主力抢筹/缩量回踩）能选出票的前提。
+    """
+    inserted = daily_bars.backfill_fund_flow_today(session)
+    logger.info("screener fundflow today: 写入 %d 行", inserted)
 
 
 def _prune_persistence_tables(session: Session) -> None:
@@ -675,6 +691,40 @@ def _prune_persistence_tables(session: Session) -> None:
             logger.exception("prune %s failed", name)
 
 
+def _persistence_freshness(session: Session) -> dict[str, dict]:
+    """选股器 status 用：5 张关键表的最新日期/行数/当日股票数，直接暴露哪张表断了。
+
+    单表查询失败不阻塞其他（表可能尚未建）。资金流表额外给"最新日股票数"，
+    这是 2026-07-22 事故的关键指标（曾出现最新日仅 1 只 -> 选股器全空）。
+    """
+    from sqlalchemy import text as _text
+
+    specs = [
+        ("stock_fund_flow_daily", True),    # 额外查当日股票数
+        ("stock_realtime_eod", False),
+        ("stock_indicators_daily", False),
+        ("stock_limit_up_history", False),
+        ("stock_limit_up_indicators", False),
+    ]
+    out: dict[str, dict] = {}
+    for table, with_day_count in specs:
+        try:
+            row_count = session.execute(_text(f"SELECT COUNT(*) FROM {table}")).scalar() or 0
+            latest = session.execute(_text(f"SELECT MAX(trading_date) FROM {table}")).scalar()
+            entry: dict = {"row_count": int(row_count), "latest_date": str(latest) if latest else None}
+            if with_day_count and latest is not None:
+                day_count = session.execute(
+                    _text(f"SELECT COUNT(DISTINCT stock_code) FROM {table} WHERE trading_date=:d"),
+                    {"d": latest},
+                ).scalar() or 0
+                entry["latest_day_stocks"] = int(day_count)
+            out[table] = entry
+        except Exception:
+            logger.exception("persistence_freshness %s failed", table)
+            out[table] = {"row_count": 0, "latest_date": None, "error": True}
+    return out
+
+
 # ---------------- 持久化层 cron workers (2026-07-21) ----------------
 
 
@@ -682,30 +732,34 @@ def _run_eod_aggregate(session: Session, gateway: Any, now_provider: Callable[[]
     """15:50 — 把 intraday snapshot 聚合到 stock_realtime_eod。"""
     from app.services.daily_eod import DailyEodService
     today = now_provider().date()
-    DailyEodService(gateway=gateway).aggregate_from_snapshots(session, today)
+    n = DailyEodService(gateway=gateway).aggregate_from_snapshots(session, today)
+    logger.info("cron eod-aggregate %s: 写入 %s 行 -> stock_realtime_eod", today, n)
 
 
 def _run_limit_up_history(session: Session, gateway: Any, now_provider: Callable[[], datetime]) -> None:
     """16:00 — 4 池涨停入库。force=True 跳过时间门（cron 自己就是收盘后）。"""
     from app.services.limit_up_history import LimitUpHistoryService
     today = now_provider().date()
-    LimitUpHistoryService(gateway=gateway, now_provider=now_provider).refresh_for_date(
+    res = LimitUpHistoryService(gateway=gateway, now_provider=now_provider).refresh_for_date(
         session, today, force=True,
     )
+    logger.info("cron limit-up-history %s: %s -> stock_limit_up_history", today, res)
 
 
 def _run_limit_up_indicators_rebuild(session: Session, now_provider: Callable[[], datetime]) -> None:
     """16:10 — 涨停指标聚合。"""
     from app.services.limit_up_indicators import LimitUpIndicatorsService
     today = now_provider().date()
-    LimitUpIndicatorsService().rebuild_for_date(session, today)
+    n = LimitUpIndicatorsService().rebuild_for_date(session, today)
+    logger.info("cron limit-up-indicators %s: 写入 %s 行 -> stock_limit_up_indicators", today, n)
 
 
 def _run_indicators_daily(session: Session, now_provider: Callable[[], datetime]) -> None:
     """16:30 — bars/fundflow 派生指标快照。"""
     from app.services.indicators_daily import IndicatorsDailyService
     today = now_provider().date()
-    IndicatorsDailyService(now_provider=now_provider).compute_for_date(session, today)
+    res = IndicatorsDailyService(now_provider=now_provider).compute_for_date(session, today)
+    logger.info("cron indicators-daily %s: %s -> stock_indicators_daily", today, res)
 
 
 def _run_vacuum(session: Session) -> None:
@@ -942,15 +996,30 @@ def create_app(
             # Screener 收盘增量 — 15:40（hx_A 股收盘后约 10 分钟）
             scheduler.add_job(
                 lambda: _run_scheduled_job(
-                    "screener-incremental-backfill",
+                    "screener-fundflow-today",
                     session_factory,
-                    lambda session: _run_screener_incremental_backfill(session, daily_bars),
+                    lambda session: _run_screener_fundflow_today(session, daily_bars),
                 ),
                 "cron",
                 minute="40",
                 hour="15",
                 day_of_week="mon-fri",
-                id="screener-incremental-backfill",
+                id="screener-fundflow-today",
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=3600,
+            )
+            scheduler.add_job(
+                lambda: _run_scheduled_job(
+                    "screener-bars-incremental",
+                    session_factory,
+                    lambda session: _run_screener_bars_incremental(session, daily_bars),
+                ),
+                "cron",
+                minute="40",
+                hour="15",
+                day_of_week="mon-fri",
+                id="screener-bars-incremental",
                 max_instances=1,
                 coalesce=True,
                 misfire_grace_time=3600,
@@ -2417,6 +2486,8 @@ def create_app(
             source = gateway.get_source_snapshot("stock_fund_flow_history")
         except Exception:
             source = {"source_label": "akshare"}
+        # 持久化层各表新鲜度（2026-07-22 选股器重构）：直接暴露哪张表断了
+        persistence = _persistence_freshness(session)
         return {
             "coverage": coverage,
             "cache": cache,
@@ -2424,6 +2495,7 @@ def create_app(
                 "fund_flow": source.get("source_label"),
                 "fallback_used": bool(source.get("fallback_used")),
             },
+            "persistence": persistence,
             "progress": daily_bars._snapshot(),  # noqa: SLF001 (内部诊断)
         }
 

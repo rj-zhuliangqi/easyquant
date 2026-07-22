@@ -367,6 +367,49 @@ class AkshareGateway:
         )
         return frame
 
+    def fetch_fund_flow_today_batch(self) -> pd.DataFrame:
+        """全市场"今日"主力资金流，一次 clist 批量拉取（替代 5000 次逐只调用）。
+
+        东财 clist fields：f12=代码 / f3=涨跌幅 / f62=主力净额 / f184=主力净占比 /
+        f66=超大单净额 / f72=大单净额。收盘后 15:40 cron 用它把当日资金流一次性
+        upsert 进 ``stock_fund_flow_daily``，是选股器资金类条件能选出票的前提。
+
+        返回列：股票代码 / 涨跌幅 / 主力净额 / 主力净占比 / 超大单净额 / 大单净额。
+        """
+        items = self._fetch_eastmoney_clist(
+            fields="f12,f3,f62,f184,f66,f72",
+            fid="f62",
+            po=1,
+            pz=10000,
+        )
+        if not items:
+            return pd.DataFrame(
+                columns=["股票代码", "涨跌幅", "主力净额", "主力净占比", "超大单净额", "大单净额"]
+            )
+        rows = [
+            {
+                "股票代码": str(item.get("f12") or ""),
+                "涨跌幅": self._to_float(item.get("f3")),
+                "主力净额": self._to_float(item.get("f62")),
+                "主力净占比": self._to_float(item.get("f184")),
+                "超大单净额": self._to_float(item.get("f66")),
+                "大单净额": self._to_float(item.get("f72")),
+            }
+            for item in items
+            if item.get("f12")
+        ]
+        frame = pd.DataFrame(
+            rows, columns=["股票代码", "涨跌幅", "主力净额", "主力净占比", "超大单净额", "大单净额"]
+        )
+        self._set_source_snapshot(
+            "fund_flow_today_batch",
+            source_label="eastmoney" if not frame.empty else "none",
+            fallback_used=False,
+            updated_at=now_cn().isoformat(),
+            degraded_fields=[] if not frame.empty else ["fund_flow_today"],
+        )
+        return frame
+
     def fetch_market_index_spot(self) -> pd.DataFrame:
         frame = self._fetch_market_index_spot_tencent_primary()
         if not frame.empty:
