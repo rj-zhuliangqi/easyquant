@@ -532,6 +532,10 @@ class ScreenerPreset(Base):
     order_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
     order: Mapped[str] = mapped_column(String(10), default="desc")
     is_builtin: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 2026-07-22 选股器重构：策略分类 + 评分模式（match_mode: all/any/score）
+    category: Mapped[str] = mapped_column(String(40), default="量价突破")
+    match_mode: Mapped[str] = mapped_column(String(10), default="all")
+    min_score: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
 

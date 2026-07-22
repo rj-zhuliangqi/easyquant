@@ -274,6 +274,12 @@ def ensure_ai_center_schema(engine: Engine) -> None:
         "entry_hint": "ALTER TABLE ai_picks ADD COLUMN entry_hint VARCHAR(500)",
         "theme_tags_json": "ALTER TABLE ai_picks ADD COLUMN theme_tags_json TEXT",
     })
+    # screener_presets 增量列（2026-07-22 选股器重构：策略分类 + 评分模式）
+    _add_missing_columns(engine, "screener_presets", {
+        "category": "ALTER TABLE screener_presets ADD COLUMN category VARCHAR(40) DEFAULT '量价突破'",
+        "match_mode": "ALTER TABLE screener_presets ADD COLUMN match_mode VARCHAR(10) DEFAULT 'all'",
+        "min_score": "ALTER TABLE screener_presets ADD COLUMN min_score INTEGER DEFAULT 0",
+    })
     # users 表加 is_admin 后：把最早一个用户升为管理员（首次部署兜底）
     with engine.connect() as conn:
         row = conn.execute(text("SELECT COUNT(*) FROM users WHERE is_admin = 1")).scalar()
@@ -2410,6 +2416,9 @@ def create_app(
                 universe=dict(payload.get("universe") or {}),
                 order_by=payload.get("order_by"),
                 order=str(payload.get("order") or "desc"),
+                category=str(payload.get("category") or "量价突破"),
+                match_mode=str(payload.get("match_mode") or "all"),
+                min_score=int(payload.get("min_score") or 0),
             )
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc))

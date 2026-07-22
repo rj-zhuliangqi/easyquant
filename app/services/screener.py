@@ -42,33 +42,42 @@ BUILTIN_PRESETS: list[dict[str, Any]] = [
     {
         "name": "放量突破",
         "description": "量价资金三重确认的平台突破，不追涨停",
+        "category": "量价突破",
+        # 评分模式 min_score=5：6 条满足 5 条即命中，容忍资金流缺失（push2 不通时仍可筛）
+        "match_mode": "score",
+        "min_score": 5,
         "conditions": [
-            {"indicator": "platform_breakout", "op": "==", "value": 1},
-            {"indicator": "volume_ratio", "op": "between", "value": [2.0, 5.0]},
-            {"indicator": "change_pct", "op": ">=", "value": 3.0},
-            {"indicator": "limit_up_today", "op": "==", "value": 0},
-            {"indicator": "close_vs_ma20", "op": ">=", "value": 0},
-            {"indicator": "main_net_inflow", "op": ">", "value": 0},
+            {"indicator": "platform_breakout", "op": "==", "value": 1, "weight": 2},
+            {"indicator": "volume_ratio", "op": "between", "value": [2.0, 5.0], "weight": 2},
+            {"indicator": "change_pct", "op": ">=", "value": 3.0, "weight": 1},
+            {"indicator": "limit_up_today", "op": "==", "value": 0, "weight": 1},
+            {"indicator": "close_vs_ma20", "op": ">=", "value": 0, "weight": 1},
+            {"indicator": "main_net_inflow", "op": ">", "value": 0, "weight": 1},
         ],
-        "order_by": "main_net_inflow_5d",
+        "order_by": "score",
         "order": "desc",
     },
     {
         "name": "趋势多头",
         "description": "顺势低吸，震荡向上市",
+        "category": "趋势跟踪",
+        # 5 条满足 4 条，容忍资金流缺失
+        "match_mode": "score",
+        "min_score": 4,
         "conditions": [
-            {"indicator": "ma_bullish", "op": "==", "value": 1},
-            {"indicator": "close_vs_ma20", "op": ">=", "value": 0},
-            {"indicator": "change_20d", "op": "between", "value": [5.0, 35.0]},
-            {"indicator": "turnover_rate", "op": "between", "value": [3.0, 15.0]},
-            {"indicator": "main_net_inflow_5d", "op": ">", "value": 0},
+            {"indicator": "ma_bullish", "op": "==", "value": 1, "weight": 2},
+            {"indicator": "close_vs_ma20", "op": ">=", "value": 0, "weight": 1},
+            {"indicator": "change_20d", "op": "between", "value": [5.0, 35.0], "weight": 1},
+            {"indicator": "turnover_rate", "op": "between", "value": [3.0, 15.0], "weight": 1},
+            {"indicator": "main_net_inflow_5d", "op": ">", "value": 0, "weight": 1},
         ],
-        "order_by": "change_20d",
+        "order_by": "score",
         "order": "desc",
     },
     {
         "name": "连续小阳",
         "description": "温和吸筹，回避急涨",
+        "category": "量价突破",
         "conditions": [
             {"indicator": "consecutive_up_days", "op": ">=", "value": 4},
             {"indicator": "change_pct", "op": "<", "value": 5.0},
@@ -82,6 +91,7 @@ BUILTIN_PRESETS: list[dict[str, Any]] = [
     {
         "name": "缩量回踩",
         "description": "上升趋势中的缩量回调买点",
+        "category": "趋势跟踪",
         "conditions": [
             {"indicator": "close_vs_ma20", "op": "between", "value": [-3.0, 3.0]},
             {"indicator": "change_3d", "op": "<", "value": 0},
@@ -94,7 +104,10 @@ BUILTIN_PRESETS: list[dict[str, Any]] = [
     },
     {
         "name": "主力抢筹",
-        "description": "资金先行、价格未充分拉升；市值归一化避免偏大盘",
+        "description": "资金先行、价格未充分拉升；市值归一化避免偏大盘（依赖资金流，需 push2 通）",
+        "category": "资金动向",
+        # 全 AND：本策略核心就是资金流，缺数据时宁可不选不选错
+        "match_mode": "all",
         "conditions": [
             {"indicator": "main_net_inflow_days", "op": ">=", "value": 3},
             {"indicator": "main_net_inflow_5d_pct_mv", "op": ">", "value": 0.5},
@@ -107,6 +120,7 @@ BUILTIN_PRESETS: list[dict[str, Any]] = [
     {
         "name": "超跌反弹",
         "description": "左侧反弹，需配合仓位控制",
+        "category": "趋势跟踪",
         "conditions": [
             {"indicator": "change_20d", "op": "<", "value": -15.0},
             {"indicator": "rsi14", "op": "<", "value": 30.0},
@@ -230,6 +244,9 @@ class ScreenerService:
             "universe": json.loads(row.universe_json or "{}"),
             "order_by": row.order_by,
             "order": row.order,
+            "category": row.category,
+            "match_mode": row.match_mode,
+            "min_score": row.min_score,
             "is_builtin": bool(row.is_builtin),
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         }
@@ -245,6 +262,9 @@ class ScreenerService:
                 "universe": json.loads(row.universe_json or "{}"),
                 "order_by": row.order_by,
                 "order": row.order,
+                "category": row.category,
+                "match_mode": row.match_mode,
+                "min_score": row.min_score,
                 "is_builtin": bool(row.is_builtin),
                 "updated_at": row.updated_at.isoformat() if row.updated_at else None,
             }
@@ -261,6 +281,9 @@ class ScreenerService:
         universe: dict[str, Any] | None = None,
         order_by: str | None = None,
         order: str = "desc",
+        category: str = "量价突破",
+        match_mode: str = "all",
+        min_score: int = 0,
     ) -> dict[str, Any]:
         existing = session.scalar(select(ScreenerPreset).where(ScreenerPreset.name == name))
         if existing is not None and existing.is_builtin:
@@ -273,6 +296,9 @@ class ScreenerService:
                 universe_json=json.dumps(universe or {}, ensure_ascii=False),
                 order_by=order_by,
                 order=order,
+                category=category,
+                match_mode=match_mode,
+                min_score=min_score,
                 is_builtin=False,
             )
             session.add(row)
@@ -282,6 +308,9 @@ class ScreenerService:
             existing.universe_json = json.dumps(universe or {}, ensure_ascii=False)
             existing.order_by = order_by
             existing.order = order
+            existing.category = category
+            existing.match_mode = match_mode
+            existing.min_score = min_score
             row = existing
         session.commit()
         return {"id": row.id, "name": row.name, "is_builtin": False}
@@ -297,7 +326,11 @@ class ScreenerService:
         return True
 
     def seed_builtin_presets(self, session: Session) -> int:
-        """启动时按 name 幂等写入内置预设。返回实际新增数量。"""
+        """启动时按 name 幂等写入内置预设。返回实际新增数量。
+
+        对已存在的内置预设，刷新 category/match_mode/min_score/description/conditions，
+        保证代码侧迭代能同步到库（内置预设不可被用户改，全量覆盖安全）。
+        """
         added = 0
         for preset in BUILTIN_PRESETS:
             existing = session.scalar(
@@ -311,10 +344,22 @@ class ScreenerService:
                     universe_json=json.dumps({}, ensure_ascii=False),
                     order_by=preset.get("order_by"),
                     order=preset.get("order", "desc"),
+                    category=preset.get("category", "量价突破"),
+                    match_mode=preset.get("match_mode", "all"),
+                    min_score=preset.get("min_score", 0),
                     is_builtin=True,
                 )
                 session.add(row)
                 added += 1
+            elif existing.is_builtin:
+                # 内置预设：以代码为准刷新（用户改不了内置，覆盖安全）
+                existing.description = preset.get("description")
+                existing.conditions_json = json.dumps(preset["conditions"], ensure_ascii=False)
+                existing.order_by = preset.get("order_by")
+                existing.order = preset.get("order", "desc")
+                existing.category = preset.get("category", "量价突破")
+                existing.match_mode = preset.get("match_mode", "all")
+                existing.min_score = preset.get("min_score", 0)
         if added:
             session.commit()
         return added
@@ -344,6 +389,8 @@ class ScreenerService:
         # 用户条件优先, preset 只提供 universe 兜底和 order_by 默认。
         # 旧逻辑无条件用 preset conditions -> 用户在 builder 里改条件会被静默覆盖(2026-07-20 reported)
         user_conditions_present = bool(conditions)
+        match_mode = str(request.get("match_mode") or "all")
+        min_score = float(request.get("min_score") or 0)
         if request.get("preset_id"):
             row = session.get(ScreenerPreset, int(request["preset_id"]))
             if row is None:
@@ -353,6 +400,11 @@ class ScreenerService:
                 conditions = preset_conditions
             order_by_default = row.order_by or "change_pct"
             order_default = row.order or "desc"
+            # preset 的 match_mode/min_score 作为默认，request 显式传值则覆盖
+            if not request.get("match_mode"):
+                match_mode = str(row.match_mode or "all")
+            if not request.get("min_score"):
+                min_score = float(row.min_score or 0)
         else:
             order_by_default = "change_pct"
             order_default = "desc"
@@ -373,7 +425,7 @@ class ScreenerService:
         if referenced & _FUNDFLOW_INDICATORS and feature_payload["flow_universe_size"] == 0:
             warnings.append(self.WARN_NO_FUND_FLOW)
 
-        filtered = apply_dsl(df, conditions)
+        filtered = apply_dsl(df, conditions, match_mode=match_mode, min_score=min_score)
         limit = int(request.get("limit") or 100)
         if limit > 0:
             ascending = (order or "desc") == "asc"
@@ -964,33 +1016,54 @@ _FUNDFLOW_INDICATORS = {
 }
 
 
-def apply_dsl(frame: pd.DataFrame, conditions: list[dict[str, Any]]) -> pd.DataFrame:
-    """DSL 过滤。
+def apply_dsl(
+    frame: pd.DataFrame,
+    conditions: list[dict[str, Any]],
+    *,
+    match_mode: str = "all",
+    min_score: float = 0,
+) -> pd.DataFrame:
+    """DSL 过滤，支持 all/any/score 三种匹配模式（2026-07-22 选股器重构）。
 
-    条件形如 ``{"indicator": str, "op": str, "value": number | [lo, hi]}``。
-    仅对 frame 中存在的指标生效；缺失列（资金流未回填）整列视为 NaN，逻辑上
-    不满足（除非 ``== NaN`` 类型——目前不支持）。
+    score 模式：每条满足加 weight（默认 1）计入 score 列，过滤 score>=min_score。
+    资金流缺数据时该条件不计分但其它条件仍可凑分，容忍数据缺失。
     """
+
     if frame.empty or not conditions:
         return frame
-    masks: list[pd.Series] = []
+    mode = (match_mode or "all").lower()
+    weighted_masks: list[tuple[pd.Series, float]] = []
     for condition in conditions:
         indicator = condition.get("indicator")
         op = condition.get("op")
         value = condition.get("value")
+        weight = float(condition.get("weight") or 1)
         if indicator not in INDICATOR_REGISTRY:
             continue
         if indicator not in frame.columns:
-            # 缺失列视为不满足：给一张全 False 的 mask
-            masks.append(pd.Series([False] * len(frame), index=frame.index))
+            weighted_masks.append((pd.Series([False] * len(frame), index=frame.index), weight))
             continue
         col = pd.to_numeric(frame[indicator], errors="coerce")
-        mask = _op_mask(col, op, value)
-        masks.append(mask)
-    if not masks:
+        weighted_masks.append((_op_mask(col, op, value), weight))
+    if not weighted_masks:
         return frame
-    combined = masks[0]
-    for mask in masks[1:]:
+
+    if mode == "score":
+        score = pd.Series([0.0] * len(frame), index=frame.index)
+        for mask, weight in weighted_masks:
+            score = score + mask.astype(float) * weight
+        frame = frame.assign(score=score)
+        return frame[score >= float(min_score)]
+
+    if mode == "any":
+        combined = weighted_masks[0][0]
+        for mask, _ in weighted_masks[1:]:
+            combined = combined | mask
+        return frame[combined]
+
+    # 默认 all：AND
+    combined = weighted_masks[0][0]
+    for mask, _ in weighted_masks[1:]:
         combined = combined & mask
     return frame[combined]
 
@@ -1033,6 +1106,7 @@ def _row_to_result(row: pd.Series) -> dict[str, Any]:
         "amount": _maybe_float(row.get("amount")),
         "main_net_inflow": _maybe_float(row.get("main_net_inflow")),
         "main_net_inflow_5d": _maybe_float(row.get("main_net_inflow_5d")),
+        "score": _maybe_float(row.get("score")),
     }
     # 条件引用到的指标值
     for name in INDICATOR_REGISTRY:
