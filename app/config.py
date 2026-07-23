@@ -56,3 +56,8 @@ def _load_or_create_jwt_secret() -> str:
 
 JWT_SECRET = _load_or_create_jwt_secret()
 JWT_EXPIRE_HOURS = int(os.environ.get("EQ_JWT_EXPIRE_HOURS", "168"))  # 7 days
+
+# TuShare 数据源（2000 积分档，EOD 全市场行情/基本面/资金流/龙虎榜主源）。
+# 优先级：EQ_TUSHARE_TOKEN 环境变量（launchd plist 注入）。token 不落盘、不硬编码。
+# 未配置时 TushareGateway 不可用，CompositeGateway 自动降级到 AkshareGateway。
+TUSHARE_TOKEN = os.environ.get("EQ_TUSHARE_TOKEN", "")

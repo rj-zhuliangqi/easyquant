@@ -23,7 +23,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from app.models import StockDailyBar, StockFundFlowDaily, StockIndicatorDaily
-from app.services.screener import INDICATOR_REGISTRY, compute_features
+from app.services.screener import INDICATOR_REGISTRY, _load_stk_limit, compute_features
 
 logger = logging.getLogger(__name__)
 
@@ -88,9 +88,10 @@ class IndicatorsDailyService:
         # 3) 拉 30 日 fund_flow
         flow_df = self._load_fund_flow(session, codes, trading_date)
 
-        # 4) 算指标（复用 screener.compute_features）
+        # 4) 算指标（复用 screener.compute_features，传 stk_limit 精确判定涨停）
         latest_date_obj = trading_date
-        feature_df = compute_features(bars_df, flow_df, latest_date_obj)
+        limit_df = _load_stk_limit(session, codes, latest_date_obj)
+        feature_df = compute_features(bars_df, flow_df, latest_date_obj, limit_df=limit_df)
         if feature_df.empty:
             return {"rows": 0, "stocks": 0, "data_hashes": 0}
 

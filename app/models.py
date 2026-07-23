@@ -787,3 +787,69 @@ class StockLhbDetail(Base):
     inst_net_count: Mapped[int] = mapped_column(Integer, default=0)
     source_label: Mapped[str | None] = mapped_column(String(20), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+# ====================================================================
+# TuShare 数据源表 (2026-07-23 P0)
+#   - stock_daily_basic : 每日指标（PE/PB/市值/换手率/量比/股息率）
+#   - stk_limit_daily   : 每日涨跌停价（涨停精确判定，替代代码前缀阈值）
+# 由 TushareGateway.fetch_daily_basic_by_date / fetch_stk_limit_by_date 落库，
+# DailyBarsService.backfill_by_date 按日期批量写入。新表由 create_all 创建。
+# ====================================================================
+
+
+class StockDailyBasic(Base):
+    """个股每日指标（TuShare daily_basic：PE/PB/市值/换手率/量比/股息率）。
+
+    选股器基础组指标（pe_dynamic/pb/total_mv/float_mv/turnover_rate）历史回放
+    从 stock_realtime_eod 切换到本表（TuShare EOD 全市场，新鲜度优于盘中快照聚合）。
+    与 stock_daily_bars 通过 (stock_code, trading_date) 关联。
+    """
+
+    __tablename__ = "stock_daily_basic"
+    __table_args__ = (
+        UniqueConstraint("stock_code", "trading_date", name="uq_stock_daily_basic_code_date"),
+        Index("ix_stock_daily_basic_code_date", "stock_code", "trading_date"),
+        Index("ix_stock_daily_basic_date", "trading_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    stock_code: Mapped[str] = mapped_column(String(20), index=True)
+    trading_date: Mapped[date] = mapped_column(Date, index=True)
+    close: Mapped[float | None] = mapped_column(Float, nullable=True)
+    turnover_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    turnover_rate_f: Mapped[float | None] = mapped_column(Float, nullable=True)
+    volume_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pe: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pe_ttm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pb: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ps: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ps_ttm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    dv_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    dv_ttm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    total_mv: Mapped[float | None] = mapped_column(Float, nullable=True)  # 元
+    circ_mv: Mapped[float | None] = mapped_column(Float, nullable=True)  # 元
+    total_share: Mapped[float | None] = mapped_column(Float, nullable=True)
+    float_share: Mapped[float | None] = mapped_column(Float, nullable=True)
+    free_share: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class StkLimitDaily(Base):
+    """个股每日涨跌停价（TuShare stk_limit：精确涨停判定）。
+
+    选股器 limit_up_today / consecutive_limit_up_days 改用 close >= up_limit 判定
+    （替代 change_pct >= 9.8/19.8 阈值，ST 5% / 创业板科创板 20% 全板块精确）。
+    """
+
+    __tablename__ = "stk_limit_daily"
+    __table_args__ = (
+        UniqueConstraint("stock_code", "trading_date", name="uq_stk_limit_daily_code_date"),
+        Index("ix_stk_limit_daily_code_date", "stock_code", "trading_date"),
+        Index("ix_stk_limit_daily_date", "trading_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    stock_code: Mapped[str] = mapped_column(String(20), index=True)
+    trading_date: Mapped[date] = mapped_column(Date, index=True)
+    up_limit: Mapped[float | None] = mapped_column(Float, nullable=True)
+    down_limit: Mapped[float | None] = mapped_column(Float, nullable=True)

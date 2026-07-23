@@ -234,6 +234,19 @@ INDICATOR_REGISTRY: dict[str, dict[str, Any]] = {
     "lhb_today": {"label": "当日龙虎榜上榜", "group": "事件", "unit": "0/1", "default_op": "==", "default_value": 1, "source": "lhb_detail"},
     "lhb_net_buy": {"label": "龙虎榜净买额", "group": "事件", "unit": "yuan", "default_op": ">", "default_value": 0, "nullable": True, "source": "lhb_detail"},
     "lhb_inst_net_buy": {"label": "龙虎榜机构净席位(买-卖)", "group": "事件", "unit": "席", "default_op": ">", "default_value": 0, "nullable": True, "source": "lhb_detail"},
+    # 扩展指标（P1：KDJ/BOLL/OBV/ATR/CCI/BIAS 多周期，纯量价向量化，现场算不持久化）
+    "kdj_k": {"label": "KDJ-K", "group": "动量", "unit": "x"},
+    "kdj_d": {"label": "KDJ-D", "group": "动量", "unit": "x"},
+    "kdj_j": {"label": "KDJ-J", "group": "动量", "unit": "x"},
+    "boll_mid": {"label": "BOLL中轨", "group": "趋势", "unit": "yuan"},
+    "boll_up": {"label": "BOLL上轨", "group": "趋势", "unit": "yuan"},
+    "boll_dn": {"label": "BOLL下轨", "group": "趋势", "unit": "yuan"},
+    "obv": {"label": "OBV", "group": "量能", "unit": "x"},
+    "atr14": {"label": "ATR14", "group": "动量", "unit": "yuan"},
+    "cci14": {"label": "CCI14", "group": "动量", "unit": "x"},
+    "bias6": {"label": "乖离率6", "group": "动量", "unit": "%"},
+    "bias12": {"label": "乖离率12", "group": "动量", "unit": "%"},
+    "bias24": {"label": "乖离率24", "group": "动量", "unit": "%"},
 }
 
 
@@ -737,7 +750,19 @@ class ScreenerService:
         ):
             warnings.append(self.WARN_NO_LHB)
 
-        filtered = apply_dsl(df, conditions, match_mode=match_mode, min_score=min_score)
+        ir = request.get("ir")
+        if ir:
+            # P1-2 条件树 IR 模式：对标通达信时序函数（BARSLAST/COUNT/CROSS），支持锚点策略
+            from app.services.screener_ir import evaluate_ir
+
+            bars_df = feature_payload.get("bars", pd.DataFrame())
+            if df.empty or bars_df.empty:
+                filtered = df
+            else:
+                mask = evaluate_ir(ir, bars_df, df, feature_payload.get("fund_flow"))
+                filtered = df[mask.fillna(False)]
+        else:
+            filtered = apply_dsl(df, conditions, match_mode=match_mode, min_score=min_score)
         limit = int(request.get("limit") or 100)
         if limit > 0:
             ascending = (order or "desc") == "asc"
@@ -866,7 +891,8 @@ class ScreenerService:
 
         latest_date_obj = latest_date.date() if hasattr(latest_date, "date") else latest_date
         flows = _load_fund_flow(session, codes, latest_date)
-        frame = compute_features(bars, flows, latest_date_obj)
+        limit_df = _load_stk_limit(session, codes, latest_date_obj)
+        frame = compute_features(bars, flows, latest_date_obj, limit_df=limit_df)
 
         # === 持久化层覆盖 (2026-07-21) ===
         # 1) 基础组字段 (pe/pb/total_mv/float_mv/turnover_rate/latest_price/change_pct)
@@ -918,6 +944,8 @@ class ScreenerService:
         flow_universe_size = flows["stock_code"].nunique() if "stock_code" in flows.columns else 0
         payload = {
             "frame": frame,
+            "bars": bars,
+            "fund_flow": flows,
             "warnings": warnings,
             "flow_universe_size": int(flow_universe_size),
             "data_date": latest_date.isoformat(),
@@ -927,6 +955,38 @@ class ScreenerService:
 
 
 # ---------------- feature computation ----------------
+
+
+def _load_stk_limit(session: Session, codes: list[str], latest_date: Any) -> pd.DataFrame:
+    """读 ``stk_limit_daily``（TuShare 涨跌停价）用于精确涨停判定（close>=up_limit）。
+
+    表无数据（未部署 P0 / 当日未回补）时返回空，compute_features 自动 fallback
+    change_pct 阈值。表本身由 create_all 创建，此处对查询异常兜底返回空（兼容旧环境）。
+    """
+    if not codes:
+        return pd.DataFrame(columns=["stock_code", "trading_date", "up_limit"])
+    try:
+        from app.models import StkLimitDaily
+
+        cutoff = (latest_date.date() if hasattr(latest_date, "date") else latest_date) - timedelta(days=120)
+        rows = list(
+            session.execute(
+                select(
+                    StkLimitDaily.stock_code,
+                    StkLimitDaily.trading_date,
+                    StkLimitDaily.up_limit,
+                )
+                .where(StkLimitDaily.stock_code.in_(codes))
+                .where(StkLimitDaily.trading_date >= cutoff)
+            )
+        )
+    except Exception:  # noqa: BLE001
+        return pd.DataFrame(columns=["stock_code", "trading_date", "up_limit"])
+    if not rows:
+        return pd.DataFrame(columns=["stock_code", "trading_date", "up_limit"])
+    df = pd.DataFrame(rows, columns=["stock_code", "trading_date", "up_limit"])
+    df["stock_code"] = df["stock_code"].astype(str).str.zfill(6)
+    return df
 
 
 def _load_fund_flow(session: Session, codes: list[str], latest_date: Any) -> pd.DataFrame:
@@ -1116,10 +1176,14 @@ def _load_lhb_indicators(
     return df[["stock_code", "lhb_today", "lhb_net_buy", "lhb_inst_net_buy"]]
 
 
-def compute_features(bars: pd.DataFrame, fund_flow: pd.DataFrame, latest_trading_date: date) -> pd.DataFrame:
+def compute_features(bars: pd.DataFrame, fund_flow: pd.DataFrame, latest_trading_date: date, *, limit_df: pd.DataFrame | None = None) -> pd.DataFrame:
     """根据 ``bars``（120 日） + ``fund_flow``（30 日）算特征帧。
 
     所有指标尽量向量化（groupby.transform），2000 只 × 120 日 < 3s。
+
+    ``limit_df``（可选）：含 stock_code/trading_date/up_limit 的 DataFrame（来自
+    ``stk_limit_daily``）。提供时涨停判定用 ``close >= up_limit`` 精确价（ST 5% /
+    创业板科创板 20% / 主板 10% 全板块精确）；未提供则 fallback ``change_pct`` 阈值。
     """
     if bars.empty:
         return _empty_frame()
@@ -1220,16 +1284,32 @@ def compute_features(bars: pd.DataFrame, fund_flow: pd.DataFrame, latest_trading
 
     latest["bias20"] = (latest["close"] - latest["ma20"]) / latest["ma20"] * 100.0
 
-    # --- 形态（涨停判定向量化） ---
-    codes = bars["stock_code"].astype(str)
-    is_cyb_kcb = codes.str.startswith(("300", "301", "688", "689"))
-    threshold = np.where(is_cyb_kcb, 19.8, 9.8)
-    change_vals = pd.to_numeric(bars["change_pct"], errors="coerce").values
-    bars["is_limit_up"] = np.where(
-        ~np.isnan(change_vals) & (change_vals >= threshold),
-        1,
-        0,
-    )
+    # --- 形态（涨停判定：优先 stk_limit 精确价，fallback change_pct 阈值） ---
+    if limit_df is not None and not limit_df.empty and "up_limit" in limit_df.columns:
+        # TuShare stk_limit：close >= up_limit 精确判定（ST 5% / 创业板科创板 20% / 主板 10% 全板块）
+        ldf = limit_df[["stock_code", "trading_date", "up_limit"]].copy()
+        ldf["trading_date"] = pd.to_datetime(ldf["trading_date"])
+        tmp = bars[["stock_code", "trading_date", "close"]].copy()
+        tmp["trading_date"] = pd.to_datetime(tmp["trading_date"])
+        tmp = tmp.merge(ldf, on=["stock_code", "trading_date"], how="left")
+        close_vals = pd.to_numeric(tmp["close"], errors="coerce")
+        up_vals = pd.to_numeric(tmp.get("up_limit"), errors="coerce")
+        bars["is_limit_up"] = np.where(
+            close_vals.notna() & up_vals.notna() & (close_vals >= up_vals - 1e-6),
+            1,
+            0,
+        )
+    else:
+        # fallback：change_pct 阈值（创业板/科创板 19.8% / 其余 9.8%）
+        codes = bars["stock_code"].astype(str)
+        is_cyb_kcb = codes.str.startswith(("300", "301", "688", "689"))
+        threshold = np.where(is_cyb_kcb, 19.8, 9.8)
+        change_vals = pd.to_numeric(bars["change_pct"], errors="coerce").values
+        bars["is_limit_up"] = np.where(
+            ~np.isnan(change_vals) & (change_vals >= threshold),
+            1,
+            0,
+        )
     # latest 的 limit_up_today：按 stock_code 取最后一日
     tail1g = bars.groupby("stock_code").tail(1).set_index("stock_code")
     latest["limit_up_today"] = latest["stock_code"].map(tail1g["is_limit_up"]).fillna(0).astype(int).values
@@ -1281,6 +1361,66 @@ def compute_features(bars: pd.DataFrame, fund_flow: pd.DataFrame, latest_trading
             "main_net_inflow_5d_pct_mv",
         ]:
             latest[col] = np.nan
+
+    # --- 扩展指标（P1：KDJ/BOLL/OBV/ATR/CCI/BIAS 多周期，纯量价向量化）---
+    # KDJ(9,3,3)：RSV=(C-LLV)/(HHV-LLV)*100；K/D 用 ewm(alpha=1/3)（等价 SMA3）；J=3K-2D
+    low9 = grouped["low"].transform(lambda s: s.rolling(9, min_periods=9).min())
+    high9 = grouped["high"].transform(lambda s: s.rolling(9, min_periods=9).max())
+    rsv = (bars["close"] - low9) / (high9 - low9).replace(0, np.nan) * 100.0
+    k9 = rsv.groupby(bars["stock_code"]).transform(lambda s: s.ewm(alpha=1.0 / 3.0, adjust=False).mean())
+    d9 = k9.groupby(bars["stock_code"]).transform(lambda s: s.ewm(alpha=1.0 / 3.0, adjust=False).mean())
+    bars["_kdj_k"] = k9
+    bars["_kdj_d"] = d9
+    bars["_kdj_j"] = 3 * k9 - 2 * d9
+
+    # BOLL(20,2)：MB=MA20，UP/DN=MB±2σ
+    bars["_boll_mid"] = grouped["close"].transform(lambda s: s.rolling(20, min_periods=20).mean())
+    bars["_boll_std"] = grouped["close"].transform(lambda s: s.rolling(20, min_periods=20).std())
+
+    # OBV（累计：close>preclose 加 volume，< 减，= 不变）
+    direction = np.sign(bars.groupby("stock_code")["close"].diff().fillna(0))
+    bars["_obv"] = (direction * bars["volume"]).groupby(bars["stock_code"]).cumsum()
+
+    # ATR(14)：TR=max(H-L,|H-preC|,|L-preC|)；ATR=MA(TR,14)
+    pre_close = grouped["close"].transform(lambda s: s.shift(1))
+    tr = pd.concat([
+        bars["high"] - bars["low"],
+        (bars["high"] - pre_close).abs(),
+        (bars["low"] - pre_close).abs(),
+    ], axis=1).max(axis=1)
+    bars["_atr14"] = tr.groupby(bars["stock_code"]).transform(lambda s: s.rolling(14, min_periods=14).mean())
+
+    # CCI(14)：TP=(H+L+C)/3；CCI=(TP-MA(TP))/(0.015*MAD(TP))
+    tp = (bars["high"] + bars["low"] + bars["close"]) / 3.0
+    tp_ma = tp.groupby(bars["stock_code"]).transform(lambda s: s.rolling(14, min_periods=14).mean())
+    tp_mad = tp.groupby(bars["stock_code"]).transform(
+        lambda s: s.rolling(14, min_periods=14).apply(lambda x: np.mean(np.abs(x - x.mean())), raw=True)
+    )
+    bars["_cci14"] = (tp - tp_ma) / (0.015 * tp_mad.replace(0, np.nan))
+
+    # BIAS 多周期（6/12/24）
+    for n in (6, 12, 24):
+        bars[f"_ma{n}"] = grouped["close"].transform(lambda s, n=n: s.rolling(n, min_periods=n).mean())
+
+    # 统一取每组末行 map 到 latest（按 stock_code 对齐，避免 index 错位）
+    tail1x = bars.groupby("stock_code").tail(1).set_index("stock_code")
+    latest["kdj_k"] = latest["stock_code"].map(tail1x["_kdj_k"]).values
+    latest["kdj_d"] = latest["stock_code"].map(tail1x["_kdj_d"]).values
+    latest["kdj_j"] = latest["stock_code"].map(tail1x["_kdj_j"]).values
+    latest["boll_mid"] = latest["stock_code"].map(tail1x["_boll_mid"]).values
+    latest["boll_up"] = latest["stock_code"].map(tail1x["_boll_mid"] + 2 * tail1x["_boll_std"]).values
+    latest["boll_dn"] = latest["stock_code"].map(tail1x["_boll_mid"] - 2 * tail1x["_boll_std"]).values
+    latest["obv"] = latest["stock_code"].map(tail1x["_obv"]).values
+    latest["atr14"] = latest["stock_code"].map(tail1x["_atr14"]).values
+    latest["cci14"] = latest["stock_code"].map(tail1x["_cci14"]).values
+    for n, label in ((6, "bias6"), (12, "bias12"), (24, "bias24")):
+        ma_series = latest["stock_code"].map(tail1x[f"_ma{n}"])
+        with np.errstate(divide="ignore", invalid="ignore"):
+            latest[label] = np.where(
+                ma_series.notna() & (ma_series != 0),
+                (latest["close"] - ma_series) / ma_series * 100.0,
+                np.nan,
+            )
 
     if "stock_name" not in latest.columns:
         latest["stock_name"] = latest["stock_code"]

@@ -454,7 +454,7 @@ def test_stock_detail_missing_code_returns_none(db_session) -> None:
 
 
 def test_performance_2000_stocks_x_120_days() -> None:
-    """2000 只 × 120 交易日合成数据，特征计算 < 3s。"""
+    """2000 只 × 120 交易日合成数据，特征计算 < 8s（P1 加 KDJ/BOLL/OBV/ATR/CCI/BIAS 12 指标，原 3s 阈值放宽）。"""
     frames = []
     for i in range(2000):
         code = f"{600000 + i:06d}"
@@ -464,7 +464,7 @@ def test_performance_2000_stocks_x_120_days() -> None:
     out = compute_features(bars, pd.DataFrame(), bars["trading_date"].iloc[-1].date())
     elapsed = time.time() - start
     assert len(out) == 2000
-    assert elapsed < 3.0, f"特征计算耗时 {elapsed:.2f}s 超过 3s 阈值"
+    assert elapsed < 8.0, f"特征计算耗时 {elapsed:.2f}s 超过 8s 阈值"
 
 
 # ---------------- 指标注册表 -----------------

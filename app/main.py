@@ -676,6 +676,41 @@ def _run_screener_fundflow_today(
     logger.info("screener fundflow today: 写入 %d 行", inserted)
 
 
+def _run_screener_eod_backfill(
+    session: Session,
+    daily_bars: DailyBarsService,
+    now_provider: Callable[[], datetime],
+) -> None:
+    """15:40 EOD 回补：TuShare 按日期批量优先（~10 秒），失败降级逐只 + clist 资金流。
+
+    TuShare 可用时一次拉全市场日线/daily_basic/资金流/涨跌停（替代逐只 90 分钟）；
+    TuShare 挂或 bars=0 时降级到原 ``_run_screener_bars_incremental`` +
+    ``_run_screener_fundflow_today``（逐只 + clist 批量）。
+    """
+    today = now_provider().date()
+    if daily_bars.tushare_gateway is not None:
+        try:
+            stats = daily_bars.backfill_by_date(session, today)
+            if stats.get("bars", 0) > 0:
+                logger.info(
+                    "screener eod: tushare 批量成功 bars=%d basic=%d flow=%d limit=%d, 跳过逐只",
+                    stats["bars"], stats["basic"], stats["flow"], stats["limit"],
+                )
+                try:
+                    daily_bars.prune_old_bars(session)
+                    daily_bars.prune_old_fund_flow(session)
+                except Exception:  # noqa: BLE001
+                    logger.exception("screener eod prune failed")
+                _prune_persistence_tables(session)
+                return
+            logger.warning("screener eod: tushare 批量 bars=0，降级逐只")
+        except Exception:  # noqa: BLE001
+            logger.exception("screener eod: tushare backfill_by_date 失败，降级逐只")
+    # 降级：逐只日线 + 批量资金流（原 15:40 路径）
+    _run_screener_bars_incremental(session, daily_bars)
+    _run_screener_fundflow_today(session, daily_bars)
+
+
 def _prune_persistence_tables(session: Session) -> None:
     """对 5 张新表执行 prune_old(keep_days=250)。单表失败不阻塞其他。"""
     from app.services.daily_eod import DailyEodService
@@ -915,8 +950,24 @@ def create_app(
     logger.info("NO_PROXY 已生效 (env 清空 + getproxies monkey-patch): 选股器数据源直连, 不依赖 Clash")
 
     session_factory = session_factory or create_session_factory()
-    gateway = gateway or AkshareGateway()
     now_provider = now_provider or datetime.now
+    # TuShare 2000 档 EOD 主源 + AKShare 备（盘中实时/涨停池细分/逐只 fallback）。
+    # token 未配置或初始化失败时降级纯 AKShare，不影响现有功能。
+    tushare_gw: Any = None
+    if gateway is None:
+        try:
+            from app.tushare_client import TushareGateway
+            tushare_gw = TushareGateway()
+        except Exception:  # noqa: BLE001
+            logger.warning("TushareGateway 初始化失败，降级纯 AKShare", exc_info=True)
+        akshare_gw = AkshareGateway()
+        if tushare_gw is not None:
+            from app.gateway_composite import CompositeGateway
+            gateway = CompositeGateway(primary=tushare_gw, fallback=akshare_gw)
+            logger.info("gateway: CompositeGateway(tushare + akshare)")
+        else:
+            gateway = akshare_gw
+            logger.info("gateway: AkshareGateway（tushare 未配置）")
     collector = FundFlowCollector(gateway=gateway)
     dashboard = DashboardService(gateway=gateway)
     history_cache = HistoryCacheService(gateway=gateway)
@@ -950,7 +1001,7 @@ def create_app(
     ai_center = AiCenterService(gateway=gateway, now_provider=now_provider)
     auth_service = AuthService()
     news_service = NewsService()
-    daily_bars = DailyBarsService(gateway=gateway, now_provider=now_provider)
+    daily_bars = DailyBarsService(gateway=gateway, now_provider=now_provider, tushare_gateway=tushare_gw)
     screener = ScreenerService(daily_bars_service=daily_bars)
     with session_factory() as bootstrap_session:
         try:
@@ -1022,30 +1073,15 @@ def create_app(
             # Screener 收盘增量 — 15:40（hx_A 股收盘后约 10 分钟）
             scheduler.add_job(
                 lambda: _run_scheduled_job(
-                    "screener-fundflow-today",
+                    "screener-eod-backfill",
                     session_factory,
-                    lambda session: _run_screener_fundflow_today(session, daily_bars),
+                    lambda session: _run_screener_eod_backfill(session, daily_bars, now_provider),
                 ),
                 "cron",
                 minute="40",
                 hour="15",
                 day_of_week="mon-fri",
-                id="screener-fundflow-today",
-                max_instances=1,
-                coalesce=True,
-                misfire_grace_time=3600,
-            )
-            scheduler.add_job(
-                lambda: _run_scheduled_job(
-                    "screener-bars-incremental",
-                    session_factory,
-                    lambda session: _run_screener_bars_incremental(session, daily_bars),
-                ),
-                "cron",
-                minute="40",
-                hour="15",
-                day_of_week="mon-fri",
-                id="screener-bars-incremental",
+                id="screener-eod-backfill",
                 max_instances=1,
                 coalesce=True,
                 misfire_grace_time=3600,

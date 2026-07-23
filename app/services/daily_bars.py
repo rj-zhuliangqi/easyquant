@@ -29,7 +29,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
-from app.models import IndividualStockSnapshot, StockDailyBar, StockFundFlowDaily
+from app.models import IndividualStockSnapshot, StockDailyBasic, StkLimitDaily, StockDailyBar, StockFundFlowDaily
 
 
 logger = logging.getLogger(__name__)
@@ -66,9 +66,11 @@ BoardPrefixes = {
 class DailyBarsService:
     """个股日线 + 资金流回补与查询。"""
 
-    def __init__(self, gateway: Any, now_provider: Callable[[], datetime] | None = None) -> None:
+    def __init__(self, gateway: Any, now_provider: Callable[[], datetime] | None = None, tushare_gateway: Any | None = None) -> None:
         self.gateway = gateway
         self.now_provider = now_provider or datetime.now
+        # TuShare 网关（按日期批量回补主路径）；None 时 backfill_by_date 不可用，降级逐只
+        self.tushare_gateway = tushare_gateway
         self._lock = threading.Lock()
         self.progress = DailyBarsProgress()
         # fire-and-forget worker 状态（524 修复）
@@ -463,6 +465,173 @@ class DailyBarsService:
             inserted += len(chunk)
         logger.info("fund_flow_today %s: +%d 行 (批量 clist)", td, inserted)
         return inserted
+
+    def backfill_by_date(
+        self,
+        session: Session,
+        trade_date: date,
+        *,
+        tushare_gateway: Any | None = None,
+    ) -> dict[str, Any]:
+        """按日期批量回补全市场（TuShare 主路径，~10 秒 vs 逐只 90 分钟）。
+
+        一次拉全市场当日：daily + adj_factor + daily_basic + moneyflow + stk_limit，
+        入库 stock_daily_bars / stock_daily_basic / stock_fund_flow_daily / stk_limit_daily。
+        200 行 chunk commit（[[incident-2026-07-21-screener-backfill-truncated-db]] 硬约定）。
+
+        trade_date 为最新交易日时 qfq=raw（当日前复权=原始价，直接存即 qfq 口径）；
+        历史日回补应传 qfq_baseline_adj（调用方拉最新 adj_factor 提供，P0 主场景是最新日）。
+
+        ``tushare_gateway`` 未传时用 ``self.tushare_gateway``；两者都无则 raise
+        （调用方应降级到 ensure_recent_bars 逐只）。
+        """
+        gw = tushare_gateway or self.tushare_gateway
+        if gw is None:
+            raise RuntimeError("backfill_by_date 需要 TushareGateway，未注入则用 ensure_recent_bars 逐只")
+        td_str = trade_date.strftime("%Y%m%d")
+        stats: dict[str, Any] = {"date": td_str, "bars": 0, "basic": 0, "flow": 0, "limit": 0}
+
+        # 1. 日线（含 adj_factor + up_limit/down_limit）
+        daily_df = gw.fetch_daily_by_date(trade_date)
+        amount_map: dict[str, float] = {}
+        if not daily_df.empty:
+            rows: list[dict[str, Any]] = []
+            for _, r in daily_df.iterrows():
+                code = str(r.get("code") or "").zfill(6)
+                if not code:
+                    continue
+                amt = _safe_float(r.get("amount"))
+                if amt is not None:
+                    amount_map[code] = amt
+                rows.append({
+                    "stock_code": code,
+                    "trading_date": trade_date,
+                    "open": _safe_float(r.get("open")),
+                    "close": _safe_float(r.get("close")),
+                    "high": _safe_float(r.get("high")),
+                    "low": _safe_float(r.get("low")),
+                    "volume": _safe_float(r.get("volume")),
+                    "amount": amt,
+                    "change_pct": _safe_float(r.get("change_pct")),
+                    "turnover_rate": None,  # daily 无换手率，从 daily_basic 回填
+                })
+            stats["bars"] = self._chunk_upsert(session, StockDailyBar, rows, ("stock_code", "trading_date"))
+
+        # 2. daily_basic（换手率/PE/PB/市值/量比/股息率）
+        basic_df = gw.fetch_daily_basic_by_date(trade_date)
+        turnover_map: dict[str, float] = {}
+        if not basic_df.empty:
+            rows = []
+            for _, r in basic_df.iterrows():
+                code = str(r.get("code") or "").zfill(6)
+                if not code:
+                    continue
+                tr = _safe_float(r.get("turnover_rate"))
+                if tr is not None:
+                    turnover_map[code] = tr
+                rows.append({
+                    "stock_code": code,
+                    "trading_date": trade_date,
+                    "close": _safe_float(r.get("close")),
+                    "turnover_rate": tr,
+                    "turnover_rate_f": _safe_float(r.get("turnover_rate_f")),
+                    "volume_ratio": _safe_float(r.get("volume_ratio")),
+                    "pe": _safe_float(r.get("pe")),
+                    "pe_ttm": _safe_float(r.get("pe_ttm")),
+                    "pb": _safe_float(r.get("pb")),
+                    "ps": _safe_float(r.get("ps")),
+                    "ps_ttm": _safe_float(r.get("ps_ttm")),
+                    "dv_ratio": _safe_float(r.get("dv_ratio")),
+                    "dv_ttm": _safe_float(r.get("dv_ttm")),
+                    "total_mv": _safe_float(r.get("total_mv")),
+                    "circ_mv": _safe_float(r.get("circ_mv")),
+                    "total_share": _safe_float(r.get("total_share")),
+                    "float_share": _safe_float(r.get("float_share")),
+                    "free_share": _safe_float(r.get("free_share")),
+                })
+            stats["basic"] = self._chunk_upsert(session, StockDailyBasic, rows, ("stock_code", "trading_date"))
+
+        # 回填 stock_daily_bars.turnover_rate（daily 接口无换手率，从 daily_basic 补）
+        if turnover_map:
+            self._backfill_turnover(session, trade_date, turnover_map)
+
+        # 3. 资金流（main_net_ratio 用 main_net/amount*100 自算，TuShare 不直接给占比）
+        flow_df = gw.fetch_fund_flow_by_date(trade_date)
+        if not flow_df.empty:
+            rows = []
+            for _, r in flow_df.iterrows():
+                code = str(r.get("code") or "").zfill(6)
+                if not code:
+                    continue
+                main_net = _safe_float(r.get("main_net_amount"))
+                amt = amount_map.get(code)
+                ratio = (main_net / amt * 100.0) if (main_net is not None and amt) else None
+                rows.append({
+                    "stock_code": code,
+                    "trading_date": trade_date,
+                    "main_net_amount": main_net,
+                    "main_net_ratio": ratio,
+                    "super_large_net": _safe_float(r.get("super_large_net")),
+                    "large_net": _safe_float(r.get("large_net")),
+                })
+            stats["flow"] = self._chunk_upsert(session, StockFundFlowDaily, rows, ("stock_code", "trading_date"))
+
+        # 4. 涨跌停价（daily_by_date 已含 up_limit/down_limit）
+        if not daily_df.empty:
+            rows = []
+            for _, r in daily_df.iterrows():
+                up = _safe_float(r.get("up_limit"))
+                if up is None:
+                    continue
+                code = str(r.get("code") or "").zfill(6)
+                rows.append({
+                    "stock_code": code,
+                    "trading_date": trade_date,
+                    "up_limit": up,
+                    "down_limit": _safe_float(r.get("down_limit")),
+                })
+            stats["limit"] = self._chunk_upsert(session, StkLimitDaily, rows, ("stock_code", "trading_date"))
+
+        logger.info(
+            "backfill_by_date %s: bars=%d basic=%d flow=%d limit=%d",
+            td_str, stats["bars"], stats["basic"], stats["flow"], stats["limit"],
+        )
+        return stats
+
+    def _chunk_upsert(
+        self,
+        session: Session,
+        model: type,
+        rows: list[dict[str, Any]],
+        key_cols: tuple[str, ...],
+        chunk_size: int = 200,
+    ) -> int:
+        """200 行 chunk upsert（DB 截断事故硬约定：长事务曾导致 DB 0 字节）。"""
+        inserted = 0
+        for start in range(0, len(rows), chunk_size):
+            chunk = rows[start:start + chunk_size]
+            insert_rows(session, model, chunk, key_cols=key_cols)
+            session.commit()
+            inserted += len(chunk)
+        return inserted
+
+    def _backfill_turnover(self, session: Session, trade_date: date, turnover_map: dict[str, float]) -> None:
+        """用 daily_basic.turnover_rate 回填 stock_daily_bars.turnover_rate（daily 接口无换手率）。"""
+        if not turnover_map:
+            return
+        rows = [
+            {"stock_code": code, "trading_date": trade_date, "turnover_rate": tr}
+            for code, tr in turnover_map.items()
+        ]
+        for start in range(0, len(rows), 200):
+            chunk = rows[start:start + 200]
+            stmt = sqlite_insert(StockDailyBar.__table__).values(chunk)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=("stock_code", "trading_date"),
+                set_={"turnover_rate": stmt.excluded.turnover_rate},
+            )
+            session.execute(stmt)
+            session.commit()
 
     def _safe_fetch_fund_flow(self, code: str, market: str) -> pd.DataFrame:
         """拉单只资金流，吞掉异常返回空 DataFrame。"""
