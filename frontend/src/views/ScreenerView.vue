@@ -8,7 +8,7 @@ import StrategyGallery from "../components/screener/StrategyGallery.vue";
 import ConditionBuilder from "../components/screener/ConditionBuilder.vue";
 import ResultTable from "../components/screener/ResultTable.vue";
 import StockDrawer from "../components/screener/StockDrawer.vue";
-import { fetchJson, fetchScreenerStrategies, runScreener, runScreenerBacktest, saveStockPool, listStockPools, deleteScreenerPreset } from "../lib/api";
+import { fetchJson, fetchScreenerStrategies, runScreener, runScreenerBacktest, saveStockPool, listStockPools, saveAlertRule, listAlertEvents, deleteScreenerPreset } from "../lib/api";
 
 defineOptions({ name: "screener" });
 const queryClient = useQueryClient();
@@ -181,6 +181,30 @@ async function saveCurrentAsPool() {
     alert(`已存为板块「${name}」，${results.length} 只`);
   } catch (e) {
     alert(`存板块失败：${e.message || e}`);
+  }
+}
+const alertEvents = ref([]);
+async function fetchAlertEvents() {
+  try {
+    const res = await listAlertEvents(7);
+    alertEvents.value = res.events || [];
+  } catch (e) {
+    alert(`预警事件加载失败：${e.message || e}`);
+  }
+}
+async function saveCurrentAsAlert() {
+  if (!tdxFormula.value.trim()) {
+    alert("请先在通达信公式框输入公式");
+    return;
+  }
+  const name = prompt("预警规则名称", `预警_${new Date().toLocaleDateString()}`);
+  if (!name) return;
+  try {
+    await saveAlertRule({ name, tdx: tdxFormula.value });
+    alert(`已存为预警规则「${name}」，盘中 9:00-15:00 每 5 分钟自动检查`);
+    await fetchAlertEvents();
+  } catch (e) {
+    alert(`存预警失败：${e.message || e}`);
   }
 }
 function runPreset(p) {
@@ -444,6 +468,16 @@ function slotView(slot) {
             <button class="tb-btn" type="button" :disabled="multifactorLoading" @click="fetchMultifactor" style="margin-left:auto">
               {{ multifactorLoading ? "计算中…" : "多因子 TopN" }}
             </button>
+            <button class="tb-btn" type="button" :disabled="!tdxFormula.trim()" @click="saveCurrentAsAlert">存为预警</button>
+            <button class="tb-btn" type="button" @click="fetchAlertEvents">预警事件</button>
+          </div>
+          <div v-if="alertEvents.length" class="alert-box">
+            <div class="alert-head">预警触发（近 7 日 {{ alertEvents.length }} 条）</div>
+            <div v-for="e in alertEvents.slice(0, 30)" :key="e.id" class="alert-row">
+              <span class="alert-code" @click="openStock(e.stock_code)">{{ e.stock_code }}</span>
+              <span class="alert-time">{{ (e.triggered_at || "").slice(5, 16) }}</span>
+              <span class="alert-data">{{ e.data ? Object.entries(e.data).map(([k, v]) => `${k}=${v}`).join(" ") : "" }}</span>
+            </div>
           </div>
           <div v-if="multifactorResult?.results?.length" class="mf-box">
             <table class="mf-table">
@@ -621,6 +655,12 @@ function slotView(slot) {
 .tdx-actions { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
 .pool-list { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 .pool-chip { font-size: 11px; padding: 3px 10px; border-radius: 999px; background: rgba(168, 85, 247, 0.12); border: 1px solid rgba(168, 85, 247, 0.3); color: #c084fc; cursor: default; }
+.alert-box { margin-top: 10px; padding: 10px; background: rgba(248, 113, 113, 0.05); border: 1px solid rgba(248, 113, 113, 0.2); border-radius: 8px; }
+.alert-head { font-size: 12px; font-weight: 600; color: var(--danger, #f87171); margin-bottom: 6px; }
+.alert-row { display: flex; gap: 10px; font-size: 11px; padding: 3px 0; border-bottom: 1px solid rgba(255,255,255,0.04); }
+.alert-code { color: var(--accent, #06b6d4); cursor: pointer; min-width: 60px; }
+.alert-time { color: var(--text-muted, #64748b); }
+.alert-data { color: var(--text-muted, #94a3b8); }
 .mf-box { margin-top: 10px; overflow-x: auto; }
 .mf-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .mf-table th, .mf-table td { padding: 5px 8px; text-align: right; border-bottom: 1px solid rgba(255,255,255,0.06); }

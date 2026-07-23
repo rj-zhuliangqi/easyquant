@@ -712,6 +712,13 @@ def _run_screener_eod_backfill(
     _run_screener_fundflow_today(session, daily_bars)
 
 
+def _run_alert_check(session: Session, alert: Any) -> None:
+    """盘中预警轮询（P2-4）：对启用 IR 规则执行，命中记 AlertEvent。"""
+    res = alert.check_rules(session)
+    if res.get("events_added"):
+        logger.info("alert check: %s", res)
+
+
 def _prune_persistence_tables(session: Session) -> None:
     """对 5 张新表执行 prune_old(keep_days=250)。单表失败不阻塞其他。"""
     from app.services.daily_eod import DailyEodService
@@ -1010,6 +1017,8 @@ def create_app(
     multifactor = MultiFactorService()
     from app.services.stock_pool import StockPoolService
     stock_pool = StockPoolService()
+    from app.services.alert_service import AlertService
+    alert = AlertService(screener=screener, now_provider=now_provider)
     with session_factory() as bootstrap_session:
         try:
             ai_center.ensure_builtin_registry(bootstrap_session)
@@ -1092,6 +1101,22 @@ def create_app(
                 max_instances=1,
                 coalesce=True,
                 misfire_grace_time=3600,
+            )
+            # P2-4 盘中预警：9:00-14:55 每 5 分钟轮询 IR 规则（命中记 AlertEvent）
+            scheduler.add_job(
+                lambda: _run_scheduled_job(
+                    "alert-check",
+                    session_factory,
+                    lambda session: _run_alert_check(session, alert),
+                ),
+                "cron",
+                minute="*/5",
+                hour="9-14",
+                day_of_week="mon-fri",
+                id="alert-check",
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=120,
             )
             # === 持久化层 (2026-07-21) ===
             # 15:50 — intraday snapshot → stock_realtime_eod
@@ -2699,6 +2724,43 @@ def create_app(
         if not stock_pool.delete_pool(session, pool_id):
             raise HTTPException(status_code=404, detail="板块不存在")
         return {"deleted": True}
+
+    # ===== P2-4 盘中预警 =====
+    @app.get("/api/screener/alerts/rules")
+    def api_alert_rules_list(session: Session = Depends(get_db)):
+        return {"rules": alert.list_rules(session)}
+
+    @app.post("/api/screener/alerts/rules")
+    def api_alert_rules_create(payload: dict = Body(...), session: Session = Depends(get_db)):
+        name = (payload.get("name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="name 必填")
+        ir = payload.get("ir")
+        tdx = payload.get("tdx")
+        if tdx:
+            from app.services.tdx_parser import TdxError, parse_tdx
+            try:
+                ir = parse_tdx(tdx)
+            except TdxError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+        if not ir:
+            raise HTTPException(status_code=400, detail="ir 或 tdx 必填")
+        return alert.define_rule(session, name, ir, enabled=payload.get("enabled", True))
+
+    @app.delete("/api/screener/alerts/rules/{rule_id}")
+    def api_alert_rules_delete(rule_id: int, session: Session = Depends(get_db)):
+        if not alert.delete_rule(session, rule_id):
+            raise HTTPException(status_code=404, detail="规则不存在")
+        return {"deleted": True}
+
+    @app.get("/api/screener/alerts/events")
+    def api_alert_events(rule_id: int | None = None, days: int = 7, session: Session = Depends(get_db)):
+        return {"events": alert.list_events(session, rule_id=rule_id, days=days)}
+
+    @app.post("/api/screener/alerts/check")
+    def api_alert_check(session: Session = Depends(get_db)):
+        """手动触发一次预警检查（不等盘中 cron）。"""
+        return alert.check_rules(session)
 
     # ===== 持久化层 (2026-07-21) =====
     # 手动回补 stock_realtime_eod / stock_indicators_daily / stock_limit_up_history

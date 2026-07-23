@@ -174,6 +174,22 @@ export async function saveStockPool(payload) {
   });
 }
 
+export async function saveAlertRule(payload) {
+  return fetchJson("/api/screener/alerts/rules", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function listAlertEvents(days = 7) {
+  return fetchJson(`/api/screener/alerts/events?days=${days}`);
+}
+
+export async function checkAlerts() {
+  return fetchJson("/api/screener/alerts/check", { method: "POST" });
+}
+
 export async function fetchRealtimeNews({
   limit = 50,
   hours = 48,

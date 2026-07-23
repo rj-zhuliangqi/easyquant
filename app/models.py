@@ -893,3 +893,35 @@ class StockPool(Base):
     source_preset_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class AlertRule(Base):
+    """盘中预警规则（P2-4）：IR 条件 + 启用开关。
+
+    cron 盘中轮询（9:30-15:00 每 5 分钟）对 universe 执行 IR，命中记 AlertEvent。
+    预警中心从"独立功能"变为"选股条件的盘中执行器"。
+    """
+
+    __tablename__ = "alert_rules"
+    __table_args__ = (UniqueConstraint("name", name="uq_alert_rule_name"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(120))
+    ir_json: Mapped[str] = mapped_column(Text)  # IR 条件（可由 TDX 公式转换）
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class AlertEvent(Base):
+    """预警触发记录（P2-4）。"""
+
+    __tablename__ = "alert_events"
+    __table_args__ = (
+        Index("ix_alert_events_rule_triggered", "rule_id", "triggered_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    rule_id: Mapped[int] = mapped_column(Integer, index=True)
+    stock_code: Mapped[str] = mapped_column(String(20), index=True)
+    triggered_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    data_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # 命中时数据快照
