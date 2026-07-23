@@ -749,3 +749,30 @@ def test_refresh_daily_basic_upserts(db_session) -> None:
     # bars.turnover_rate 被回填
     bar = db_session.query(StockDailyBar).filter_by(stock_code=code, trading_date=td).one()
     assert bar.turnover_rate == 0.53
+
+
+def test_main_net_inflow_3d_computed(db_session) -> None:
+    """compute_features 算出 3日主力净流入 = 近3日 main_net_amount 之和。"""
+    code = "000001"
+    df_bars = _make_bars(code, n_days=20, trend=0.1, seed=7)
+    _seed_bars(db_session, df_bars)
+    latest = df_bars["trading_date"].iloc[-1].date()
+    # 近3日资金流：100, 200, 300 -> 3d 合计 600
+    _seed_flow(db_session, code, [latest - timedelta(days=i) for i in range(2, -1, -1)], [100.0, 200.0, 300.0])
+    db_session.commit()
+
+    from app.services.screener import compute_features
+    from sqlalchemy import select
+    from app.models import StockFundFlowDaily
+    flows = list(db_session.execute(
+        select(StockFundFlowDaily).where(StockFundFlowDaily.stock_code == code)
+    ).scalars())
+    flow_df = pd.DataFrame([{
+        "stock_code": f.stock_code, "trading_date": f.trading_date,
+        "main_net_amount": f.main_net_amount, "main_net_ratio": f.main_net_ratio,
+        "super_large_net": f.super_large_net,
+    } for f in flows])
+    frame = compute_features(df_bars, flow_df, latest)
+    row = frame[frame["stock_code"] == code].iloc[0]
+    assert row["main_net_inflow_3d"] == 600.0
+    assert row["main_net_inflow"] == 300.0  # 当日

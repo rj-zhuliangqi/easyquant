@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 _FUTURE_FUNCTIONS = {"BACKSET", "ZIG", "PEAKA", "PEAK", "TROUGHA", "TROUGH", "REFX"}
 
 # 支持的时序函数
-_SUPPORTED_FUNCS = {"REF", "MA", "EMA", "SMA", "HHV", "LLV", "COUNT", "BARSLAST", "CROSS", "EVERY", "EXIST", "LAST"}
+_SUPPORTED_FUNCS = {"REF", "MA", "EMA", "SMA", "HHV", "LLV", "COUNT", "BARSLAST", "CROSS", "EVERY", "EXIST", "LAST", "IF", "FILTER", "MACD", "OBV"}
 
 
 class IRError(Exception):
@@ -127,6 +127,9 @@ class IREvaluator:
         raise IRError(f"未知表达式类型: {t}")
 
     def _eval_func(self, name: str, args: list[dict]) -> pd.Series:
+        # DRAW* 画图函数：筛选无意义，静默返回 0（不报错，避免公式含 DRAWICON 等解析失败）
+        if name.startswith("DRAW"):
+            return pd.Series(0.0, index=self.frame.index)
         if name not in _SUPPORTED_FUNCS:
             raise IRError(f"不支持的函数: {name}")
         if name == "CROSS":
@@ -147,12 +150,15 @@ class IREvaluator:
         # SMA(X,N,M)：通达信递推加权均线（KDJ 的 K/D 即 SMA(RSV,3,1)）
         if name == "SMA":
             x = self._series(args[0])
-            n = int(self._const_value(args[1]))
-            m = int(self._const_value(args[2])) if len(args) > 2 else 1
+            n = self._window_n(args[1])
+            m = self._window_n(args[2]) if len(args) > 2 else 1
             return self._latest_of(self._sma_series(x, n, m))
-        # MA/EMA/HHV/LLV
+        # IF/FILTER/MACD/OBV：序列求值后取 latest
+        if name in ("IF", "FILTER", "MACD", "OBV"):
+            return self._latest_of(self._func_series(name, args))
+        # MA/EMA/HHV/LLV（N 支持 const 与 var，如 N:=60; HHV(H,N)）
         x = self._series(args[0])
-        n = int(self._const_value(args[1]))
+        n = self._window_n(args[1])
         return self._latest_of(self._apply_window_func(name, x, n))
 
     # ---------------- 序列（bars 完整时序，用于时序函数参数） ----------------
@@ -171,6 +177,9 @@ class IREvaluator:
             left = self._series(expr["left"])
             right = self._series(expr["right"])
             return self._binop(left, expr["op"], right)
+        if t in ("compare", "and", "or", "not"):
+            # 布尔表达式作为序列（如 平台:=...<1.35 存为 var）：取 bars 时序布尔
+            return self._eval_condition_bars(expr).astype(float)
         if t == "const":
             return pd.Series(float(expr["value"]), index=self.bars.index)
         if t == "var":
@@ -191,14 +200,16 @@ class IREvaluator:
         raise IRError(f"indicator '{name}' 无历史序列实现（REF/MA 仅支持 bars 字段 + ma5/10/20/60）")
 
     def _func_series(self, name: str, args: list[dict]) -> pd.Series:
+        if name.startswith("DRAW"):
+            return pd.Series(0.0, index=self.bars.index)
         if name == "SMA":
             x = self._series(args[0])
-            n = int(self._const_value(args[1]))
-            m = int(self._const_value(args[2])) if len(args) > 2 else 1
+            n = self._window_n(args[1])
+            m = self._window_n(args[2]) if len(args) > 2 else 1
             return self._sma_series(x, n, m)
         if name in ("REF", "MA", "EMA", "HHV", "LLV"):
             x = self._series(args[0])
-            n = int(self._const_value(args[1]))
+            n = self._window_n(args[1])
             return self._apply_window_func(name, x, n)
         if name in ("COUNT", "BARSLAST", "EVERY", "EXIST", "LAST"):
             cond = self._eval_condition_bars(args[0])
@@ -206,6 +217,14 @@ class IREvaluator:
             return self._apply_seq_func(name, cond, n)
         if name == "CROSS":
             return self._cross_series(args)
+        if name == "IF":
+            return self._if_series(args)
+        if name == "FILTER":
+            return self._filter_series(args)
+        if name == "MACD":
+            return self._macd_series(args)
+        if name == "OBV":
+            return self._obv_series(args)
         raise IRError(f"无序列实现的函数: {name}")
 
     def _apply_window_func(self, name: str, x: pd.Series, n: int) -> pd.Series:
@@ -241,6 +260,53 @@ class IREvaluator:
                     res[i] = (m * vals[i] + (n - m) * res[i - 1]) / n if not np.isnan(vals[i]) else np.nan
             return pd.Series(res, index=s.index)
         return x.groupby(g).transform(_sma)
+
+    def _if_series(self, args: list[dict]) -> pd.Series:
+        """IF(cond, a, b)：cond 真取 a，否则 b（按 bars 时序）。"""
+        cond = self._eval_condition_bars(args[0]).astype(bool)
+        a = self._series(args[1])
+        b = self._series(args[2]) if len(args) > 2 else pd.Series(0.0, index=self.bars.index)
+        return a.where(cond, b)
+
+    def _filter_series(self, args: list[dict]) -> pd.Series:
+        """FILTER(cond, N)：TDX 语义，信号间距 <N 则抑制（保留间隔 >=N 的信号）。"""
+        cond = self._eval_condition_bars(args[0]).astype(bool)
+        n = max(1, self._window_n(args[1]))
+        g = self.bars["stock_code"]
+        def _filt(s: pd.Series) -> pd.Series:
+            res = np.zeros(len(s), dtype=float)
+            last = -(n + 1)
+            for i in range(len(s)):
+                if bool(s.iloc[i]) and (i - last) >= n:
+                    res[i] = 1.0
+                    last = i
+            return pd.Series(res, index=s.index)
+        return cond.groupby(g).transform(_filt)
+
+    def _macd_series(self, args: list[dict]) -> pd.Series:
+        """MACD(short, long, signal)：DIF=EMA(C,short)-EMA(C,long); DEA=EMA(DIF,signal); 返回 2*(DIF-DEA)。"""
+        short = self._window_n(args[0]) if len(args) > 0 else 12
+        long = self._window_n(args[1]) if len(args) > 1 else 26
+        signal = self._window_n(args[2]) if len(args) > 2 else 9
+        c = self._series({"type": "field", "name": "close"})
+        dif = self._apply_window_func("EMA", c, short) - self._apply_window_func("EMA", c, long)
+        dea = dif.groupby(self.bars["stock_code"]).transform(lambda s: s.ewm(span=signal, adjust=False).mean())
+        return 2 * (dif - dea)
+
+    def _obv_series(self, args: list[dict]) -> pd.Series:
+        """OBV()：递推 OBV[t]=OBV[t-1]+sign(close-close_prev)*volume，按 stock_code 分组。"""
+        c = self._series({"type": "field", "name": "close"})
+        v = self._series({"type": "field", "name": "volume"})
+        g = self.bars["stock_code"]
+        def _obv(s_c: pd.Series) -> pd.Series:
+            cv = s_c.to_numpy(dtype=float)
+            vv = v.reindex(s_c.index).to_numpy(dtype=float)
+            res = np.zeros(len(cv), dtype=float)
+            for i in range(1, len(cv)):
+                d = cv[i] - cv[i - 1]
+                res[i] = res[i - 1] + (np.sign(d) * vv[i] if not np.isnan(d) else 0.0)
+            return pd.Series(res, index=s_c.index)
+        return c.groupby(g).transform(_obv)
 
     def _apply_seq_func(self, name: str, cond: pd.Series, n: int) -> pd.Series:
         g = self.bars["stock_code"]
@@ -353,6 +419,28 @@ class IREvaluator:
         if expr.get("type") == "const":
             return float(expr["value"])
         raise IRError(f"期望常量参数，得到 {expr.get('type')}（时序函数 N 必须是常量）")
+
+    def _window_n(self, arg: dict) -> int:
+        """窗口函数 N：支持 const 与 var（如 ``N:=60; HHV(H,N)``）。
+
+        const 直接取；var 取其存储序列末值（const 定义的变量全等，末值即常量）；
+        兜底按 latest 求值取末值。无法解析为整数则抛 IRError。
+        """
+        t = arg.get("type")
+        if t == "const":
+            return int(float(arg["value"]))
+        if t == "var":
+            s = self.vars.get(arg["name"])
+            if s is not None and len(s):
+                v = s.iloc[-1]
+                if not pd.isna(v):
+                    return int(v)
+        s = self._eval_expr(arg)
+        if len(s):
+            v = s.iloc[0]
+            if not pd.isna(v):
+                return int(v)
+        raise IRError(f"窗口函数 N 无法解析为常量: {arg}")
 
     def _latest_of(self, series: pd.Series) -> pd.Series:
         """bars 序列 -> latest Series（对齐 frame by stock_code）。"""

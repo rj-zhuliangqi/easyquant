@@ -81,7 +81,7 @@ func_call: CNAME "(" [args] ")"
 args: expr ("," expr)*
 field: CNAME
 CMP_OP: ">=" | "<=" | "!=" | ">" | "<" | "="
-CNAME: /[A-Za-z_][A-Za-z0-9_]*/
+CNAME: /[A-Za-z_一-龥][A-Za-z0-9_一-龥]*/
 NUMBER: /[0-9]+(\.[0-9]+)?/
 %import common.WS
 %ignore WS

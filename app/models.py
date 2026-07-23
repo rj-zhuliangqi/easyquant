@@ -681,6 +681,7 @@ class StockIndicatorDaily(Base):
 
     # 资金流（7）
     main_net_inflow: Mapped[float | None] = mapped_column(Float, nullable=True)
+    main_net_inflow_3d: Mapped[float | None] = mapped_column(Float, nullable=True)
     main_net_inflow_5d: Mapped[float | None] = mapped_column(Float, nullable=True)
     main_net_inflow_10d: Mapped[float | None] = mapped_column(Float, nullable=True)
     main_net_inflow_days: Mapped[int | None] = mapped_column(Integer, nullable=True)

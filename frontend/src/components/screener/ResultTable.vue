@@ -26,7 +26,10 @@ const COLUMNS = [
   { key: "total_mv", label: "总市值", sortable: true, format: (v) => formatAmount(v) },
   { key: "volume_ratio", label: "量比", sortable: true, format: (v) => formatNumber(v) },
   { key: "amount", label: "成交额", sortable: true, format: (v) => formatAmount(v) },
+  { key: "main_net_inflow", label: "当日主力", sortable: true, format: (v) => formatAmount(v), cls: true },
+  { key: "main_net_inflow_3d", label: "3日主力", sortable: true, format: (v) => formatAmount(v), cls: true },
   { key: "main_net_inflow_5d", label: "5日主力", sortable: true, format: (v) => formatAmount(v), cls: true },
+  { key: "main_net_inflow_10d", label: "10日主力", sortable: true, format: (v) => formatAmount(v), cls: true },
 ];
 const SCORE_COL = { key: "score", label: "评分", sortable: true, format: (v) => formatNumber(v, 0) };
 const columns = computed(() => (props.showScore ? [...COLUMNS, SCORE_COL] : COLUMNS));
@@ -98,7 +101,10 @@ function changeClass(v) {
         <div class="rcell c-mv">{{ formatAmount(item.total_mv) }}</div>
         <div class="rcell c-vr">{{ formatNumber(item.volume_ratio) }}</div>
         <div class="rcell c-amount">{{ formatAmount(item.amount) }}</div>
-        <div class="rcell c-inflow" :class="changeClass(item.main_net_inflow_5d)">{{ formatAmount(item.main_net_inflow_5d) }}</div>
+        <div class="rcell c-inflow" :class="changeClass(item.main_net_inflow)">{{ formatAmount(item.main_net_inflow) }}</div>
+        <div class="rcell c-inflow3" :class="changeClass(item.main_net_inflow_3d)">{{ formatAmount(item.main_net_inflow_3d) }}</div>
+        <div class="rcell c-inflow5" :class="changeClass(item.main_net_inflow_5d)">{{ formatAmount(item.main_net_inflow_5d) }}</div>
+        <div class="rcell c-inflow10" :class="changeClass(item.main_net_inflow_10d)">{{ formatAmount(item.main_net_inflow_10d) }}</div>
         <div v-if="showScore" class="rcell c-score">{{ formatNumber(item.score, 0) }}</div>
         <div class="rcell c-act">
           <button class="btn btn-ghost btn-sm" type="button" @click="emit('selectStock', item.code)" title="查看详情/K线">详情</button>
@@ -146,14 +152,14 @@ function changeClass(v) {
 }
 .rrow {
   display: grid;
-  /* 11 列：code name change close turnover pe mv vr amount inflow act */
-  grid-template-columns: 70px 1fr 78px 70px 72px 56px 90px 60px 96px 104px 132px;
+  /* 14 列：code name change close turnover pe mv vr amount 当日 3日 5日 10日 act */
+  grid-template-columns: 64px 1fr 64px 60px 60px 72px 84px 48px 80px 72px 72px 72px 72px 108px;
   align-items: center;
   gap: 4px;
 }
 .rrow.show-score {
-  /* 12 列：在 act 前插入 score(56px) */
-  grid-template-columns: 70px 1fr 78px 70px 72px 56px 90px 60px 96px 104px 56px 132px;
+  /* 15 列：在 act 前插入 score(52px) */
+  grid-template-columns: 64px 1fr 64px 60px 60px 72px 84px 48px 80px 72px 72px 72px 72px 52px 108px;
 }
 .rhead {
   background: rgba(255, 255, 255, 0.03);

@@ -153,9 +153,9 @@ def test_idempotent_compute(db_session) -> None:
     assert db_session.query(StockIndicatorDaily).filter_by(stock_code="000001").count() == 1
 
 
-# 8. 列数恒为 43（防御 regression）
-def test_persist_columns_count_is_43() -> None:
-    assert len(_PERSIST_COLUMNS) == 43
+# 8. 列数恒为 44（防御 regression）
+def test_persist_columns_count_is_44() -> None:
+    assert len(_PERSIST_COLUMNS) == 44
     # 检查每个列都在 StockIndicatorDaily 模型中
     from app.models import StockIndicatorDaily
     model_cols = {c.name for c in StockIndicatorDaily.__table__.columns}

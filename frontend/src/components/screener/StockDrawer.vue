@@ -1,5 +1,5 @@
 <script setup>
-import { computed, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import { useQuery } from "@tanstack/vue-query";
 import EChartPanel from "../EChartPanel.vue";
 import EmptyState from "../ui/EmptyState.vue";
@@ -12,6 +12,9 @@ const props = defineProps({
   code: { type: String, default: "" },
 });
 const emit = defineEmits(["close"]);
+
+const fullscreen = ref(false);
+const toggleFullscreen = () => { fullscreen.value = !fullscreen.value; };
 
 const enabled = computed(() => !!props.code);
 const detailQuery = useQuery({
@@ -30,6 +33,11 @@ const klineOption = computed(() => {
   // ECharts candlestick: [open, close, low, high]
   const ohlc = kline.map((k) => [k.open, k.close, k.low, k.high]);
   const vols = kline.map((k) => k.volume);
+  // 成交量柱按阴阳着色：阳(涨)红 / 阴(跌)绿，与 K 线一致
+  const volData = kline.map((k) => ({
+    value: k.volume,
+    itemStyle: { color: k.close >= k.open ? "rgba(248, 113, 113, 0.55)" : "rgba(52, 211, 153, 0.55)" },
+  }));
   return {
     animation: false,
     tooltip: { trigger: "axis", axisPointer: { type: "cross" } },
@@ -64,8 +72,7 @@ const klineOption = computed(() => {
         type: "bar",
         xAxisIndex: 1,
         yAxisIndex: 1,
-        data: vols,
-        itemStyle: { color: "rgba(148, 163, 184, 0.35)" },
+        data: volData,
       },
     ],
   };
@@ -125,7 +132,7 @@ watch(
   <Teleport to="body">
     <transition name="drawer">
       <div v-if="code" class="drawer-mask" @click.self="emit('close')">
-        <aside class="drawer" role="dialog" aria-modal="true">
+        <aside class="drawer" :class="{ fullscreen }" role="dialog" aria-modal="true">
           <header class="drawer-head">
             <div class="dh-title">
               <code>{{ detail?.code || code }}</code>
@@ -134,6 +141,7 @@ watch(
                 {{ formatPercent(detail.basics.change_pct) }}
               </StatusBadge>
             </div>
+            <button class="dh-close" type="button" @click="toggleFullscreen" :title="fullscreen ? '退出全屏' : '全屏查看'" aria-label="全屏">{{ fullscreen ? "⤡" : "⤢" }}</button>
             <button class="dh-close" type="button" @click="emit('close')" aria-label="关闭">×</button>
           </header>
 
@@ -142,7 +150,7 @@ watch(
 
             <template v-else-if="detail">
               <section class="dsec">
-                <h4>近 60 日 K 线</h4>
+                <h4>近 120 日 K 线</h4>
                 <EChartPanel v-if="klineOption" :option="klineOption" />
                 <EmptyState v-else title="无 K 线数据" description="该股票尚无日线" />
               </section>
@@ -224,6 +232,11 @@ watch(
   display: flex;
   flex-direction: column;
   box-shadow: -8px 0 32px rgba(0, 0, 0, 0.4);
+}
+.drawer.fullscreen {
+  width: 100%;
+  height: 100%;
+  border-left: none;
 }
 .drawer-enter-active, .drawer-leave-active { transition: opacity 0.2s; }
 .drawer-enter-active .drawer, .drawer-leave-active .drawer { transition: transform 0.25s ease; }

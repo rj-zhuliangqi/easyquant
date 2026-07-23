@@ -682,6 +682,45 @@ class DailyBarsService:
         logger.info("refresh_daily_basic %s: 写入 %d 行 -> stock_daily_basic", trade_date, n)
         return n
 
+    def backfill_fund_flow_by_date(self, session: Session, trade_date: date) -> int:
+        """回补单日全市场资金流 -> stock_fund_flow_daily（补历史，详情页近10日资金流）。
+
+        轻量：仅拉 moneyflow + upsert；占比用已存 bars.amount 自算（不重复拉 daily）。
+        tushare_gateway 为 None 时返回 0。
+        """
+        gw = self.tushare_gateway
+        if gw is None:
+            return 0
+        flow_df = gw.fetch_fund_flow_by_date(trade_date)
+        if flow_df.empty:
+            logger.warning("backfill_fund_flow_by_date %s: moneyflow 为空", trade_date)
+            return 0
+        # 从已存 bars 取 amount 算主力净占比（TuShare moneyflow 不直接给占比）
+        amt_rows = session.execute(
+            select(StockDailyBar.stock_code, StockDailyBar.amount)
+            .where(StockDailyBar.trading_date == trade_date)
+        ).all()
+        amount_map = {str(r[0]): r[1] for r in amt_rows if r[1]}
+        rows: list[dict[str, Any]] = []
+        for _, r in flow_df.iterrows():
+            code = str(r.get("code") or "").zfill(6)
+            if not code:
+                continue
+            main_net = _safe_float(r.get("main_net_amount"))
+            amt = amount_map.get(code)
+            ratio = (main_net / amt * 100.0) if (main_net is not None and amt) else None
+            rows.append({
+                "stock_code": code,
+                "trading_date": trade_date,
+                "main_net_amount": main_net,
+                "main_net_ratio": ratio,
+                "super_large_net": _safe_float(r.get("super_large_net")),
+                "large_net": _safe_float(r.get("large_net")),
+            })
+        n = self._chunk_upsert(session, StockFundFlowDaily, rows, ("stock_code", "trading_date"))
+        logger.info("backfill_fund_flow_by_date %s: 写入 %d 行 -> stock_fund_flow_daily", trade_date, n)
+        return n
+
     def _safe_fetch_fund_flow(self, code: str, market: str) -> pd.DataFrame:
         """拉单只资金流，吞掉异常返回空 DataFrame。"""
         try:

@@ -296,6 +296,7 @@ INDICATOR_REGISTRY: dict[str, dict[str, Any]] = {
     "lower_shadow_ratio": {"label": "下影线占比", "group": "形态", "unit": "%"},
     # fundflow
     "main_net_inflow": {"label": "主力净流入(今日)", "group": "资金流", "unit": "yuan", "default_op": ">", "default_value": 0},
+    "main_net_inflow_3d": {"label": "3日主力净流入", "group": "资金流", "unit": "yuan", "default_op": ">", "default_value": 0},
     "main_net_inflow_5d": {"label": "5日主力净流入", "group": "资金流", "unit": "yuan", "default_op": ">", "default_value": 0},
     "main_net_inflow_10d": {"label": "10日主力净流入", "group": "资金流", "unit": "yuan"},
     "main_net_inflow_days": {"label": "连续净流入天数", "group": "资金流", "unit": "天", "default_op": ">=", "default_value": 3},
@@ -640,7 +641,7 @@ class ScreenerService:
                 )
                 .where(StockDailyBar.stock_code == code)
                 .order_by(StockDailyBar.trading_date.desc())
-                .limit(60)
+                .limit(120)
             )
         )
         if not bar_rows:
@@ -1269,6 +1270,7 @@ def _load_precomputed_indicators(
             "platform_breakout": r.platform_breakout,
             "gap_up_pct": r.gap_up_pct, "lower_shadow_ratio": r.lower_shadow_ratio,
             "main_net_inflow": r.main_net_inflow,
+            "main_net_inflow_3d": r.main_net_inflow_3d,
             "main_net_inflow_5d": r.main_net_inflow_5d,
             "main_net_inflow_10d": r.main_net_inflow_10d,
             "main_net_inflow_days": r.main_net_inflow_days,
@@ -1501,7 +1503,7 @@ def compute_features(bars: pd.DataFrame, fund_flow: pd.DataFrame, latest_trading
         fund_flow = fund_flow.copy()
         fund_flow.sort_values(["stock_code", "trading_date"], inplace=True)
         fund_grouped = fund_flow.groupby("stock_code", sort=False)
-        for n, col in [(1, "main_net_inflow"), (5, "main_net_inflow_5d"), (10, "main_net_inflow_10d")]:
+        for n, col in [(1, "main_net_inflow"), (3, "main_net_inflow_3d"), (5, "main_net_inflow_5d"), (10, "main_net_inflow_10d")]:
             tail = fund_grouped.tail(n).groupby("stock_code")["main_net_amount"].sum(min_count=1)
             latest[col] = latest["stock_code"].map(tail)
         latest["main_net_inflow_days"] = latest["stock_code"].map(_consecutive_inflow_days(fund_flow))
@@ -1765,7 +1767,9 @@ def _row_to_result(row: pd.Series) -> dict[str, Any]:
         "volume_ratio": _maybe_float(row.get("volume_ratio")),
         "amount": _maybe_float(row.get("amount")),
         "main_net_inflow": _maybe_float(row.get("main_net_inflow")),
+        "main_net_inflow_3d": _maybe_float(row.get("main_net_inflow_3d")),
         "main_net_inflow_5d": _maybe_float(row.get("main_net_inflow_5d")),
+        "main_net_inflow_10d": _maybe_float(row.get("main_net_inflow_10d")),
         "score": _maybe_float(row.get("score")),
     }
     # 条件引用到的指标值

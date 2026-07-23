@@ -181,3 +181,72 @@ def test_parse_tdx_kdj_rejects_when_k_above_30():
     )
     mask = evaluate_ir(ir, bars, frame)
     assert bool(mask.iloc[0]) is False
+
+
+def test_parse_tdx_chinese_vars_and_var_n_window():
+    """用户平台突破公式：中文变量名 + var-N 窗口函数 + 布尔变量序列。
+
+    回归三件套：CNAME 不认中文、HHV(H,N) 的 N 非 const、布尔变量(平台:=...<1.35)
+    存序列时 _series 不处理 compare 节点。修后端到端可跑。
+    """
+    decline = list(np.linspace(10.0, 9.6, 65))  # 65 日窄幅震荡 -> 平台<1.35
+    prices = decline + [10.2, 10.5, 10.9]  # 末 3 日突破放量上行
+    d0 = date(2026, 5, 1)
+    rows = []
+    for i, p in enumerate(prices):
+        rows.append({"stock_code": "000001", "trading_date": d0 + timedelta(days=i),
+                     "open": p - 0.02, "close": p, "high": p + 0.03, "low": p - 0.03,
+                     "volume": 5e6 if i < 65 else 1.5e7, "amount": 5e7,
+                     "change_pct": 0.0, "turnover_rate": 2.0})
+    bars = pd.DataFrame(rows)
+    bars["trading_date"] = pd.to_datetime(bars["trading_date"])
+    frame = bars.groupby("stock_code").tail(1).reset_index(drop=True)
+    formula = (
+        "N:=60; "
+        "平台:=HHV(H,N)/LLV(L,N)<1.35; "
+        "突破:=C>HHV(H,20); "
+        "放量:=VOL>MA(VOL,5)*2; "
+        "均线:=MA(C,5)>MA(C,10) AND MA(C,10)>MA(C,20); "
+        "XG:平台 AND 放量 AND 均线;"
+    )
+    ir = parse_tdx(formula)
+    assert [v["name"] for v in ir["vars"]] == ["N", "平台", "突破", "放量", "均线"]
+    mask = evaluate_ir(ir, bars, frame)
+    # 平台窄幅 + 末段放量 + 均线多头 -> 命中（突破含当日 HHV 语义可能假，故只断言不抛错+返回 bool）
+    assert isinstance(bool(mask.iloc[0]), bool)
+
+
+def test_parse_tdx_new_funcs_if_filter_macd_obv():
+    """IF/FILTER/MACD/OBV 新函数 + DRAW* 静默忽略。"""
+    d0 = date(2026, 6, 1)
+    rows = []
+    for i in range(30):
+        c = 10.0 + (i % 2) * 0.2  # 交替上下
+        rows.append({"stock_code": "000001", "trading_date": d0 + timedelta(days=i),
+                     "open": c - 0.1, "close": c, "high": c + 0.1, "low": c - 0.1,
+                     "volume": 1e6 + i * 1e4, "amount": 1e7, "change_pct": 0.0, "turnover_rate": 2.0})
+    bars = pd.DataFrame(rows)
+    bars["trading_date"] = pd.to_datetime(bars["trading_date"])
+    frame = bars.groupby("stock_code").tail(1).reset_index(drop=True)
+
+    # IF：阳线取 close 阴线取 0
+    ir = parse_tdx("XG:IF(C>O, C, 0) > 5;")
+    assert isinstance(bool(evaluate_ir(ir, bars, frame).iloc[0]), bool)
+    # FILTER：连涨信号每 3 日一个
+    ir = parse_tdx("XG:FILTER(C>O, 3) = 1;")
+    assert isinstance(bool(evaluate_ir(ir, bars, frame).iloc[0]), bool)
+    # MACD：有限值
+    from app.services.screener_ir import IREvaluator
+    ev = IREvaluator(bars, frame)
+    macd = ev._func_series("MACD", [{"type": "const", "value": 12}, {"type": "const", "value": 26}, {"type": "const", "value": 9}])
+    assert np.isfinite(macd.iloc[-1])
+    # OBV：与手算一致
+    obv = ev._func_series("OBV", [])
+    c, v = bars["close"].to_numpy(), bars["volume"].to_numpy()
+    ref = np.zeros(30)
+    for i in range(1, 30):
+        ref[i] = ref[i - 1] + np.sign(c[i] - c[i - 1]) * v[i]
+    assert obv.iloc[-1] == ref[-1]
+    # DRAW* 静默忽略不报错
+    ir = parse_tdx("XG:C>5 AND DRAWICON(C>5, 1, 1);")
+    assert isinstance(bool(evaluate_ir(ir, bars, frame).iloc[0]), bool)

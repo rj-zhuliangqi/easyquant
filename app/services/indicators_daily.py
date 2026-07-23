@@ -49,11 +49,11 @@ _PERSIST_COLUMNS: list[str] = [
     "limit_up_today", "limit_up_count_5d", "platform_breakout",
     "gap_up_pct", "lower_shadow_ratio",
     # 资金流
-    "main_net_inflow", "main_net_inflow_5d", "main_net_inflow_10d",
+    "main_net_inflow", "main_net_inflow_3d", "main_net_inflow_5d", "main_net_inflow_10d",
     "main_net_inflow_days", "main_net_ratio", "super_large_net",
     "main_net_inflow_5d_pct_mv",
 ]
-assert len(_PERSIST_COLUMNS) == 43, f"expected 43 columns, got {len(_PERSIST_COLUMNS)}"
+assert len(_PERSIST_COLUMNS) == 44, f"expected 44 columns, got {len(_PERSIST_COLUMNS)}"
 
 
 class IndicatorsDailyService:

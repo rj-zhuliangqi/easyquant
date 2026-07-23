@@ -281,6 +281,10 @@ def ensure_ai_center_schema(engine: Engine) -> None:
         "min_score": "ALTER TABLE screener_presets ADD COLUMN min_score INTEGER DEFAULT 0",
         "ir_json": "ALTER TABLE screener_presets ADD COLUMN ir_json TEXT",
     })
+    # stock_indicators_daily 增量列（2026-07-23：3日主力净流入）
+    _add_missing_columns(engine, "stock_indicators_daily", {
+        "main_net_inflow_3d": "ALTER TABLE stock_indicators_daily ADD COLUMN main_net_inflow_3d FLOAT",
+    })
     # users 表加 is_admin 后：把最早一个用户升为管理员（首次部署兜底）
     with engine.connect() as conn:
         row = conn.execute(text("SELECT COUNT(*) FROM users WHERE is_admin = 1")).scalar()
