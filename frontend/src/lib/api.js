@@ -162,6 +162,18 @@ export async function runScreenerBacktest(payload) {
   });
 }
 
+export async function listStockPools() {
+  return fetchJson("/api/screener/pools");
+}
+
+export async function saveStockPool(payload) {
+  return fetchJson("/api/screener/pools", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function fetchRealtimeNews({
   limit = 50,
   hours = 48,

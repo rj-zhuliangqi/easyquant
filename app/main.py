@@ -1008,6 +1008,8 @@ def create_app(
     backtest = BacktestService(screener=screener, now_provider=now_provider)
     from app.services.multifactor import MultiFactorService
     multifactor = MultiFactorService()
+    from app.services.stock_pool import StockPoolService
+    stock_pool = StockPoolService()
     with session_factory() as bootstrap_session:
         try:
             ai_center.ensure_builtin_registry(bootstrap_session)
@@ -2671,6 +2673,32 @@ def create_app(
         from app.services.multifactor import DEFAULT_FACTORS
         results = multifactor.compute_scores(session, topn=topn)
         return {"results": results, "factors": list(DEFAULT_FACTORS.keys())}
+
+    # ===== P2-3 选股流水线：板块管理 =====
+    @app.get("/api/screener/pools")
+    def api_screener_pools_list(session: Session = Depends(get_db)):
+        return {"pools": stock_pool.list_pools(session)}
+
+    @app.post("/api/screener/pools")
+    def api_screener_pools_create(payload: dict = Body(...), session: Session = Depends(get_db)):
+        name = (payload.get("name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="name 必填")
+        codes = payload.get("codes") or []
+        return stock_pool.save_pool(session, name, codes, source_preset_id=payload.get("source_preset_id"))
+
+    @app.get("/api/screener/pools/{pool_id}")
+    def api_screener_pools_get(pool_id: int, session: Session = Depends(get_db)):
+        p = stock_pool.get_pool(session, pool_id)
+        if p is None:
+            raise HTTPException(status_code=404, detail="板块不存在")
+        return p
+
+    @app.delete("/api/screener/pools/{pool_id}")
+    def api_screener_pools_delete(pool_id: int, session: Session = Depends(get_db)):
+        if not stock_pool.delete_pool(session, pool_id):
+            raise HTTPException(status_code=404, detail="板块不存在")
+        return {"deleted": True}
 
     # ===== 持久化层 (2026-07-21) =====
     # 手动回补 stock_realtime_eod / stock_indicators_daily / stock_limit_up_history

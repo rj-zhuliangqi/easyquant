@@ -876,3 +876,20 @@ class ScreenRun(Base):
     run_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     signal_count: Mapped[int] = mapped_column(Integer, default=0)
     win_rates: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON {T+N: {win_rate, avg_return, count}}
+
+
+class StockPool(Base):
+    """选股结果板块（P2-3 选股流水线）。
+
+    选股结果可存为板块，板块可作为下游筛选/预警的输入池（对标通达信 tpool 策略股票池）。
+    """
+
+    __tablename__ = "stock_pools"
+    __table_args__ = (UniqueConstraint("name", name="uq_stock_pool_name"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(120))
+    codes_json: Mapped[str] = mapped_column(Text, default="[]")  # JSON list of stock_code
+    source_preset_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)

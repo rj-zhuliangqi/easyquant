@@ -8,7 +8,7 @@ import StrategyGallery from "../components/screener/StrategyGallery.vue";
 import ConditionBuilder from "../components/screener/ConditionBuilder.vue";
 import ResultTable from "../components/screener/ResultTable.vue";
 import StockDrawer from "../components/screener/StockDrawer.vue";
-import { fetchJson, fetchScreenerStrategies, runScreener, runScreenerBacktest, deleteScreenerPreset } from "../lib/api";
+import { fetchJson, fetchScreenerStrategies, runScreener, runScreenerBacktest, saveStockPool, listStockPools, deleteScreenerPreset } from "../lib/api";
 
 defineOptions({ name: "screener" });
 const queryClient = useQueryClient();
@@ -156,6 +156,31 @@ async function fetchMultifactor() {
     alert(`多因子打分失败：${e.message || e}`);
   } finally {
     multifactorLoading.value = false;
+  }
+}
+const pools = ref([]);
+async function fetchPools() {
+  try {
+    const res = await listStockPools();
+    pools.value = res.pools || [];
+  } catch (e) {
+    alert(`板块加载失败：${e.message || e}`);
+  }
+}
+async function saveCurrentAsPool() {
+  const results = gallerySlot.result.value?.results || [];
+  if (!results.length) {
+    alert("当前无选股结果，无法存为板块");
+    return;
+  }
+  const name = prompt("板块名称", `板块_${new Date().toLocaleDateString()}`);
+  if (!name) return;
+  try {
+    await saveStockPool({ name, codes: results.map((r) => r.code) });
+    await fetchPools();
+    alert(`已存为板块「${name}」，${results.length} 只`);
+  } catch (e) {
+    alert(`存板块失败：${e.message || e}`);
   }
 }
 function runPreset(p) {
@@ -386,6 +411,13 @@ function slotView(slot) {
               {{ backtestInFlight ? "回测中…" : "刷新 T+N 胜率" }}
             </button>
             <span class="tb-hint">对最近 30 日执行策略，统计 T+1/3/5/10/20 胜率（后台跑，约 1-2 分钟后刷新）</span>
+            <button class="tb-btn" type="button" :disabled="!gallerySlot.result.value?.results?.length" @click="saveCurrentAsPool" style="margin-left:auto">存为板块</button>
+            <button class="tb-btn" type="button" @click="fetchPools">板块</button>
+          </div>
+          <div v-if="pools.length" class="pool-list">
+            <span v-for="p in pools" :key="p.id" class="pool-chip" :title="p.codes.join(', ')">
+              {{ p.name }} ({{ p.count }})
+            </span>
           </div>
           <p v-if="gallerySlot.error.value" class="inline-error">筛选失败：{{ gallerySlot.error.value }}</p>
           <ResultTable
@@ -587,6 +619,8 @@ function slotView(slot) {
 .tdx-input { width: 100%; font: inherit; font-size: 12px; font-family: ui-monospace, monospace; padding: 8px; border-radius: 6px; background: rgba(0,0,0,0.2); border: 1px solid var(--border, rgba(255,255,255,0.1)); color: var(--text, #e2e8f0); resize: vertical; box-sizing: border-box; }
 .tdx-input:focus { outline: none; border-color: var(--accent, #06b6d4); }
 .tdx-actions { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.pool-list { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.pool-chip { font-size: 11px; padding: 3px 10px; border-radius: 999px; background: rgba(168, 85, 247, 0.12); border: 1px solid rgba(168, 85, 247, 0.3); color: #c084fc; cursor: default; }
 .mf-box { margin-top: 10px; overflow-x: auto; }
 .mf-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .mf-table th, .mf-table td { padding: 5px 8px; text-align: right; border-bottom: 1px solid rgba(255,255,255,0.06); }
