@@ -146,6 +146,18 @@ function runTdx() {
   if (!tdxFormula.value.trim()) return;
   builderSlot.run({ tdx: tdxFormula.value, limit: 100 });
 }
+const multifactorResult = ref(null);
+const multifactorLoading = ref(false);
+async function fetchMultifactor() {
+  multifactorLoading.value = true;
+  try {
+    multifactorResult.value = await fetchJson("/api/screener/multifactor?topn=20");
+  } catch (e) {
+    alert(`多因子打分失败：${e.message || e}`);
+  } finally {
+    multifactorLoading.value = false;
+  }
+}
 function runPreset(p) {
   activePresetId.value = p.id;
   mineSlot.run({ preset_id: p.id, limit: 100 });
@@ -397,6 +409,20 @@ function slotView(slot) {
             <button class="tb-btn" type="button" :disabled="!tdxFormula.trim() || builderSlot.running.value" @click="runTdx">
               {{ builderSlot.running.value ? "运行中…" : "运行公式" }}
             </button>
+            <button class="tb-btn" type="button" :disabled="multifactorLoading" @click="fetchMultifactor" style="margin-left:auto">
+              {{ multifactorLoading ? "计算中…" : "多因子 TopN" }}
+            </button>
+          </div>
+          <div v-if="multifactorResult?.results?.length" class="mf-box">
+            <table class="mf-table">
+              <thead><tr><th>代码</th><th>得分</th><th v-for="f in multifactorResult.factors" :key="f">{{ f }}</th></tr></thead>
+              <tbody>
+                <tr v-for="r in multifactorResult.results" :key="r.stock_code" @click="openStock(r.stock_code)">
+                  <td>{{ r.stock_code }}</td><td class="mf-score">{{ r.score }}</td>
+                  <td v-for="f in multifactorResult.factors" :key="f">{{ r[f] ?? "-" }}</td>
+                </tr>
+              </tbody>
+            </table>
           </div>
         </div>
         <ConditionBuilder
@@ -561,6 +587,12 @@ function slotView(slot) {
 .tdx-input { width: 100%; font: inherit; font-size: 12px; font-family: ui-monospace, monospace; padding: 8px; border-radius: 6px; background: rgba(0,0,0,0.2); border: 1px solid var(--border, rgba(255,255,255,0.1)); color: var(--text, #e2e8f0); resize: vertical; box-sizing: border-box; }
 .tdx-input:focus { outline: none; border-color: var(--accent, #06b6d4); }
 .tdx-actions { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.mf-box { margin-top: 10px; overflow-x: auto; }
+.mf-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.mf-table th, .mf-table td { padding: 5px 8px; text-align: right; border-bottom: 1px solid rgba(255,255,255,0.06); }
+.mf-table th { color: var(--text-muted, #64748b); font-weight: 600; text-align: right; }
+.mf-table td:first-child, .mf-table th:first-child { text-align: left; cursor: pointer; color: var(--accent, #06b6d4); }
+.mf-score { font-weight: 700; color: #4ade80; }
 
 /* ---------- 自由构建 ---------- */
 .builder-layout { display: flex; flex-direction: column; gap: 16px; }

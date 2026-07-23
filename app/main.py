@@ -1006,6 +1006,8 @@ def create_app(
     screener = ScreenerService(daily_bars_service=daily_bars)
     from app.services.backtest import BacktestService
     backtest = BacktestService(screener=screener, now_provider=now_provider)
+    from app.services.multifactor import MultiFactorService
+    multifactor = MultiFactorService()
     with session_factory() as bootstrap_session:
         try:
             ai_center.ensure_builtin_registry(bootstrap_session)
@@ -2662,6 +2664,13 @@ def create_app(
         t = threading.Thread(target=_worker, name=f"screener-backtest-{job_id}", daemon=True)
         t.start()
         return {"started": True, "job_id": job_id, "preset_id": preset_id, "days": days}
+
+    @app.get("/api/screener/multifactor")
+    def api_screener_multifactor(topn: int = 20, session: Session = Depends(get_db)):
+        """多因子等权打分 TopN（P2-2：估值+动量+量能+规模 Z-score 等权合成）。"""
+        from app.services.multifactor import DEFAULT_FACTORS
+        results = multifactor.compute_scores(session, topn=topn)
+        return {"results": results, "factors": list(DEFAULT_FACTORS.keys())}
 
     # ===== 持久化层 (2026-07-21) =====
     # 手动回补 stock_realtime_eod / stock_indicators_daily / stock_limit_up_history
