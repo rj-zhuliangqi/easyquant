@@ -163,6 +163,80 @@ BUILTIN_PRESETS: list[dict[str, Any]] = [
         "order_by": "consecutive_limit_up_days",
         "order": "desc",
     },
+    # === P1-3 IR 策略（条件树，对标通达信时序函数 BARSLAST/COUNT/CROSS/REF）===
+    {
+        "name": "涨停后缩量回踩",
+        "description": "涨停后3-10天内缩量回踩到涨停日收盘价92%以下，MA5>MA10（通达信公式）",
+        "category": "形态",
+        "ir": {
+            "vars": [{"name": "T", "expr": {"type": "func", "name": "BARSLAST", "args": [
+                {"type": "compare", "left": {"type": "field", "name": "change_pct"}, "op": ">=", "right": {"type": "const", "value": 9.8}}
+            ]}}],
+            "root": {"type": "and", "children": [
+                {"type": "compare", "left": {"type": "var", "name": "T"}, "op": ">=", "right": {"type": "const", "value": 3}},
+                {"type": "compare", "left": {"type": "var", "name": "T"}, "op": "<=", "right": {"type": "const", "value": 10}},
+                {"type": "compare", "left": {"type": "field", "name": "volume"}, "op": "<",
+                 "right": {"type": "binop", "op": "*", "left": {"type": "func", "name": "REF", "args": [{"type": "field", "name": "volume"}, {"type": "var", "name": "T"}]}, "right": {"type": "const", "value": 0.5}}},
+                {"type": "compare", "left": {"type": "field", "name": "low"}, "op": "<=",
+                 "right": {"type": "binop", "op": "*", "left": {"type": "func", "name": "REF", "args": [{"type": "field", "name": "close"}, {"type": "var", "name": "T"}]}, "right": {"type": "const", "value": 0.92}}},
+                {"type": "compare", "left": {"type": "func", "name": "MA", "args": [{"type": "field", "name": "close"}, {"type": "const", "value": 5}]}, "op": ">",
+                 "right": {"type": "func", "name": "MA", "args": [{"type": "field", "name": "close"}, {"type": "const", "value": 10}]}},
+            ]},
+        },
+        "order_by": "change_pct",
+        "order": "asc",
+    },
+    {
+        "name": "回踩20日线不破",
+        "description": "近3日上穿20日线后缩量回踩不破（通达信公式）",
+        "category": "趋势",
+        "ir": {"root": {"type": "and", "children": [
+            {"type": "func", "name": "EXIST", "args": [
+                {"type": "func", "name": "CROSS", "args": [{"type": "field", "name": "close"}, {"type": "func", "name": "MA", "args": [{"type": "field", "name": "close"}, {"type": "const", "value": 20}]}]},
+                {"type": "const", "value": 3}
+            ]},
+            {"type": "compare", "left": {"type": "func", "name": "COUNT", "args": [
+                {"type": "compare", "left": {"type": "field", "name": "volume"}, "op": "<", "right": {"type": "func", "name": "REF", "args": [{"type": "field", "name": "volume"}, {"type": "const", "value": 1}]}},
+                {"type": "const", "value": 2}
+            ]}, "op": ">=", "right": {"type": "const", "value": 1}},
+            {"type": "compare", "left": {"type": "field", "name": "close"}, "op": ">", "right": {"type": "func", "name": "MA", "args": [{"type": "field", "name": "close"}, {"type": "const", "value": 20}]}}
+        ]}},
+        "order_by": "change_pct",
+        "order": "desc",
+    },
+    {
+        "name": "放量突破加强版",
+        "description": "突破20日新高+倍量+阳线（通达信公式加强）",
+        "category": "量价突破",
+        "ir": {"root": {"type": "and", "children": [
+            {"type": "compare", "left": {"type": "field", "name": "close"}, "op": ">=",
+             "right": {"type": "func", "name": "HHV", "args": [{"type": "func", "name": "REF", "args": [{"type": "field", "name": "close"}, {"type": "const", "value": 1}]}, {"type": "const", "value": 20}]}},
+            {"type": "compare", "left": {"type": "binop", "op": "/",
+                "left": {"type": "field", "name": "volume"},
+                "right": {"type": "func", "name": "REF", "args": [{"type": "func", "name": "MA", "args": [{"type": "field", "name": "volume"}, {"type": "const", "value": 5}]}, {"type": "const", "value": 1}]}}
+             , "op": ">=", "right": {"type": "const", "value": 2}},
+            {"type": "compare", "left": {"type": "field", "name": "close"}, "op": ">", "right": {"type": "field", "name": "open"}}
+        ]}},
+        "order_by": "volume_ratio",
+        "order": "desc",
+    },
+    {
+        "name": "均线多头排列加强",
+        "description": "MA5>MA10>MA20>MA60 且 MA5 向上发散（通达信公式）",
+        "category": "趋势",
+        "ir": {"root": {"type": "and", "children": [
+            {"type": "compare", "left": {"type": "func", "name": "MA", "args": [{"type": "field", "name": "close"}, {"type": "const", "value": 5}]}, "op": ">",
+             "right": {"type": "func", "name": "MA", "args": [{"type": "field", "name": "close"}, {"type": "const", "value": 10}]}},
+            {"type": "compare", "left": {"type": "func", "name": "MA", "args": [{"type": "field", "name": "close"}, {"type": "const", "value": 10}]}, "op": ">",
+             "right": {"type": "func", "name": "MA", "args": [{"type": "field", "name": "close"}, {"type": "const", "value": 20}]}},
+            {"type": "compare", "left": {"type": "func", "name": "MA", "args": [{"type": "field", "name": "close"}, {"type": "const", "value": 20}]}, "op": ">",
+             "right": {"type": "func", "name": "MA", "args": [{"type": "field", "name": "close"}, {"type": "const", "value": 60}]}},
+            {"type": "compare", "left": {"type": "func", "name": "MA", "args": [{"type": "field", "name": "close"}, {"type": "const", "value": 5}]}, "op": ">",
+             "right": {"type": "func", "name": "REF", "args": [{"type": "func", "name": "MA", "args": [{"type": "field", "name": "close"}, {"type": "const", "value": 5}]}, {"type": "const", "value": 1}]}}
+        ]}},
+        "order_by": "change_20d",
+        "order": "desc",
+    },
 ]
 
 
@@ -384,6 +458,8 @@ class ScreenerService:
         """
         added = 0
         for preset in BUILTIN_PRESETS:
+            ir = preset.get("ir")
+            conditions = preset.get("conditions", [])
             existing = session.scalar(
                 select(ScreenerPreset).where(ScreenerPreset.name == preset["name"])
             )
@@ -391,7 +467,8 @@ class ScreenerService:
                 row = ScreenerPreset(
                     name=preset["name"],
                     description=preset.get("description"),
-                    conditions_json=json.dumps(preset["conditions"], ensure_ascii=False),
+                    conditions_json=json.dumps(conditions, ensure_ascii=False),
+                    ir_json=json.dumps(ir, ensure_ascii=False) if ir else None,
                     universe_json=json.dumps({}, ensure_ascii=False),
                     order_by=preset.get("order_by"),
                     order=preset.get("order", "desc"),
@@ -405,7 +482,8 @@ class ScreenerService:
             elif existing.is_builtin:
                 # 内置预设：以代码为准刷新（用户改不了内置，覆盖安全）
                 existing.description = preset.get("description")
-                existing.conditions_json = json.dumps(preset["conditions"], ensure_ascii=False)
+                existing.conditions_json = json.dumps(conditions, ensure_ascii=False)
+                existing.ir_json = json.dumps(ir, ensure_ascii=False) if ir else None
                 existing.order_by = preset.get("order_by")
                 existing.order = preset.get("order", "desc")
                 existing.category = preset.get("category", "量价突破")
@@ -518,6 +596,10 @@ class ScreenerService:
                 conditions = json.loads(row.conditions_json or "[]")
             except Exception:  # noqa: BLE001
                 conditions = []
+            try:
+                ir = json.loads(row.ir_json) if row.ir_json else None
+            except Exception:  # noqa: BLE001
+                ir = None
             catalog.append({
                 "id": row.id,
                 "name": row.name,
@@ -526,6 +608,8 @@ class ScreenerService:
                 "match_mode": row.match_mode,
                 "min_score": row.min_score,
                 "conditions": conditions,
+                "ir": ir,
+                "has_ir": ir is not None,
                 "is_builtin": row.is_builtin,
                 "order_by": row.order_by,
                 "order": row.order,
@@ -715,7 +799,13 @@ class ScreenerService:
             if row is None:
                 raise KeyError(f"preset_id {request['preset_id']} 不存在")
             preset_conditions = json.loads(row.conditions_json or "[]")
-            if not user_conditions_present:
+            # P1-3 IR 策略：preset 有 ir_json 时用 IR 引擎，conditions 留空
+            if row.ir_json and not user_conditions_present and not request.get("ir"):
+                try:
+                    request["ir"] = json.loads(row.ir_json)
+                except Exception:  # noqa: BLE001
+                    pass
+            if not user_conditions_present and not request.get("ir"):
                 conditions = preset_conditions
             order_by_default = row.order_by or "change_pct"
             order_default = row.order or "desc"
@@ -846,10 +936,12 @@ class ScreenerService:
         if cached and now_ts - cached[0] < self.CACHE_TTL_SECONDS:
             return cached[1]
 
-        latest_date = session.scalar(
-            select(func.max(StockDailyBar.trading_date))
-            .where(StockDailyBar.stock_code.in_(codes))
-        )
+        # as_of_date 限制 latest_date <= as_of（P1-4 PIT 历史回放，防未来数据泄漏）
+        latest_q = select(func.max(StockDailyBar.trading_date)).where(StockDailyBar.stock_code.in_(codes))
+        if as_of:
+            as_of_date = pd.to_datetime(as_of).date() if isinstance(as_of, str) else as_of
+            latest_q = latest_q.where(StockDailyBar.trading_date <= as_of_date)
+        latest_date = session.scalar(latest_q)
         if latest_date is None:
             empty = _empty_frame()
             empty["data_date"] = None

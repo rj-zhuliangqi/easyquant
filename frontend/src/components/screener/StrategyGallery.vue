@@ -40,6 +40,15 @@ function hitText(s) {
   if (!s.hit_5d?.length) return "近5日 0";
   return `近5日 ${s.total_5d} · 均${s.avg_5d}`;
 }
+function winRateText(s) {
+  if (!s.win_rates) return "";
+  const t1 = s.win_rates["T+1"];
+  const t5 = s.win_rates["T+5"];
+  const parts = [];
+  if (t1) parts.push(`T+1 ${Math.round(t1.win_rate * 100)}%`);
+  if (t5) parts.push(`T+5 ${Math.round(t5.win_rate * 100)}%`);
+  return parts.join(" · ");
+}
 </script>
 
 <template>
@@ -71,8 +80,10 @@ function hitText(s) {
         <p class="sc-desc">{{ s.description || "（无说明）" }}</p>
         <div class="sc-foot">
           <span class="sc-mode" :data-mode="s.match_mode">{{ MODE_LABEL[s.match_mode] || s.match_mode }}</span>
-          <span v-if="s.match_mode === 'score' && s.min_score" class="sc-minscore">≥{{ s.min_score }}分</span>
-          <span class="sc-conds">{{ s.conditions?.length || 0 }} 条</span>
+          <span v-if="s.has_ir" class="sc-ir" title="条件树 IR 策略（对标通达信时序函数）">IR 策略</span>
+          <span v-else-if="s.match_mode === 'score' && s.min_score" class="sc-minscore">≥{{ s.min_score }}分</span>
+          <span v-if="!s.has_ir" class="sc-conds">{{ s.conditions?.length || 0 }} 条</span>
+          <span v-if="winRateText(s)" class="sc-winrate" title="信号统计法 T+N 胜率（策略库页回测按钮刷新）">{{ winRateText(s) }}</span>
           <span v-if="!s.is_builtin" class="sc-custom">自定义</span>
         </div>
       </div>
@@ -126,6 +137,8 @@ function hitText(s) {
 .sc-mode[data-mode="score"] { background: rgba(168, 85, 247, 0.15); color: #c084fc; }
 .sc-mode[data-mode="any"] { background: rgba(245, 158, 11, 0.15); color: #fbbf24; }
 .sc-minscore { color: #c084fc; }
+.sc-ir { padding: 1px 7px; border-radius: 4px; background: rgba(6, 182, 212, 0.15); color: #22d3ee; font-weight: 600; }
+.sc-winrate { color: #4ade80; font-weight: 600; }
 .sc-custom { margin-left: auto; padding: 1px 6px; border-radius: 4px; background: rgba(34, 197, 94, 0.12); color: #4ade80; }
 .empty-hint { color: var(--text-muted, #64748b); font-size: 13px; padding: 12px; text-align: center; }
 </style>

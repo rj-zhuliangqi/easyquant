@@ -279,6 +279,7 @@ def ensure_ai_center_schema(engine: Engine) -> None:
         "category": "ALTER TABLE screener_presets ADD COLUMN category VARCHAR(40) DEFAULT '量价突破'",
         "match_mode": "ALTER TABLE screener_presets ADD COLUMN match_mode VARCHAR(10) DEFAULT 'all'",
         "min_score": "ALTER TABLE screener_presets ADD COLUMN min_score INTEGER DEFAULT 0",
+        "ir_json": "ALTER TABLE screener_presets ADD COLUMN ir_json TEXT",
     })
     # users 表加 is_admin 后：把最早一个用户升为管理员（首次部署兜底）
     with engine.connect() as conn:
@@ -1003,6 +1004,8 @@ def create_app(
     news_service = NewsService()
     daily_bars = DailyBarsService(gateway=gateway, now_provider=now_provider, tushare_gateway=tushare_gw)
     screener = ScreenerService(daily_bars_service=daily_bars)
+    from app.services.backtest import BacktestService
+    backtest = BacktestService(screener=screener, now_provider=now_provider)
     with session_factory() as bootstrap_session:
         try:
             ai_center.ensure_builtin_registry(bootstrap_session)
@@ -2533,8 +2536,11 @@ def create_app(
 
     @app.get("/api/screener/strategies")
     def api_screener_strategies(session: Session = Depends(get_db)):
-        """策略商城目录：preset 列表 + 近 5 日命中数。"""
-        return screener.strategies_catalog(session)
+        """策略商城目录：preset 列表 + 近 5 日命中数 + T+N 胜率（P1-4）。"""
+        catalog = screener.strategies_catalog(session)
+        for c in catalog:
+            c["win_rates"] = backtest.latest_win_rates(session, c["id"])
+        return catalog
 
     @app.get("/api/screener/stocks/{code}")
     def api_screener_stock_detail(code: str, session: Session = Depends(get_db)):
@@ -2629,6 +2635,31 @@ def create_app(
         if result.get("started"):
             screener.invalidate_cache()
         return result
+
+    @app.post("/api/screener/backtest")
+    def api_screener_backtest(payload: dict = Body(...)):
+        """触发策略信号统计回测（P1-4）：对最近 N 日执行策略算 T+N 胜率。
+
+        Body: {"preset_id": int, "days": int=30}。后台 daemon 线程跑（30日×run 慢），
+        立即返回 {started, job_id}，避免 Cloudflare 100s 超时。完成后 GET /strategies 查 win_rates。
+        """
+        try:
+            preset_id = int(payload.get("preset_id"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="preset_id 必填")
+        days = int(payload.get("days") or 30)
+        job_id = f"bt-{int(time.time())}"
+
+        def _worker() -> None:
+            try:
+                with session_factory() as s:
+                    backtest.run_backtest(s, preset_id, days=days)
+            except Exception:  # noqa: BLE001
+                logger.exception("backtest job %s crashed", job_id)
+
+        t = threading.Thread(target=_worker, name=f"screener-backtest-{job_id}", daemon=True)
+        t.start()
+        return {"started": True, "job_id": job_id, "preset_id": preset_id, "days": days}
 
     # ===== 持久化层 (2026-07-21) =====
     # 手动回补 stock_realtime_eod / stock_indicators_daily / stock_limit_up_history

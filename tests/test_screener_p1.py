@@ -109,3 +109,19 @@ def test_new_indicators_in_registry():
     for name in ("kdj_k", "kdj_d", "kdj_j", "boll_mid", "boll_up", "boll_dn",
                  "obv", "atr14", "cci14", "bias6", "bias12", "bias24"):
         assert name in INDICATOR_REGISTRY, f"{name} 未注册到 INDICATOR_REGISTRY"
+
+
+def test_ir_preset_seed_and_catalog(db_session):
+    """P1-3：IR 策略 seed 写 ir_json，catalog 返回 has_ir + ir。"""
+    from app.services.screener import ScreenerService
+
+    screener = ScreenerService()
+    screener.seed_builtin_presets(db_session)
+    catalog = screener.strategies_catalog(db_session)
+    ir_presets = [c for c in catalog if c["has_ir"]]
+    assert len(ir_presets) >= 4  # 涨停后缩量回踩/回踩20日线/放量突破加强/均线多头排列加强
+    zt = next(c for c in ir_presets if c["name"] == "涨停后缩量回踩")
+    assert zt["ir"] is not None
+    assert "vars" in zt["ir"]  # BARSLAST 锚点变量
+    assert zt["conditions"] == []  # IR 策略无 conditions
+

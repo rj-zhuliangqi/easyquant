@@ -283,9 +283,11 @@ def test_run_warns_when_fund_flow_empty(db_session) -> None:
 
 
 def test_all_builtin_presets_runnable(db_session) -> None:
-    """6 套预设 conditions 全部能被 apply_dsl 处理（不抛错）。"""
+    """预设 conditions 全部能被 apply_dsl 处理（不抛错）。IR 策略用 evaluate_ir，跳过。"""
     df = _sample_frame()
     for preset in BUILTIN_PRESETS:
+        if preset.get("ir"):
+            continue  # IR 策略走 evaluate_ir，不测 apply_dsl
         out = apply_dsl(df, preset["conditions"])
         assert isinstance(out, pd.DataFrame)  # 不抛错即通过
 

@@ -8,7 +8,7 @@ import StrategyGallery from "../components/screener/StrategyGallery.vue";
 import ConditionBuilder from "../components/screener/ConditionBuilder.vue";
 import ResultTable from "../components/screener/ResultTable.vue";
 import StockDrawer from "../components/screener/StockDrawer.vue";
-import { fetchJson, fetchScreenerStrategies, runScreener, deleteScreenerPreset } from "../lib/api";
+import { fetchJson, fetchScreenerStrategies, runScreener, runScreenerBacktest, deleteScreenerPreset } from "../lib/api";
 
 defineOptions({ name: "screener" });
 const queryClient = useQueryClient();
@@ -76,6 +76,22 @@ async function triggerBackfill(codeLimit = null) {
     backfillError.value = e.message || String(e);
   } finally {
     backfillInFlight.value = false;
+  }
+}
+
+// ---------- 回测（P1-4 信号统计法 T+N 胜率）----------
+const backtestInFlight = ref(false);
+async function triggerBacktest() {
+  if (!activeStrategyId.value) return;
+  backtestInFlight.value = true;
+  try {
+    await runScreenerBacktest({ preset_id: activeStrategyId.value, days: 30 });
+    // 后台 daemon 线程跑（30日×run 约 1-2 分钟），延迟刷新 strategies 拉 win_rates
+    setTimeout(() => queryClient.invalidateQueries({ queryKey: ["screener-strategies"] }), 6000);
+  } catch (e) {
+    alert(`回测失败：${e.message || e}`);
+  } finally {
+    backtestInFlight.value = false;
   }
 }
 
@@ -348,6 +364,12 @@ function slotView(slot) {
           />
         </aside>
         <div class="detail-pane">
+          <div class="detail-toolbar">
+            <button class="tb-btn" type="button" :disabled="!activeStrategyId || backtestInFlight" @click="triggerBacktest">
+              {{ backtestInFlight ? "回测中…" : "刷新 T+N 胜率" }}
+            </button>
+            <span class="tb-hint">对最近 30 日执行策略，统计 T+1/3/5/10/20 胜率（后台跑，约 1-2 分钟后刷新）</span>
+          </div>
           <p v-if="gallerySlot.error.value" class="inline-error">筛选失败：{{ gallerySlot.error.value }}</p>
           <ResultTable
             v-bind="slotView(gallerySlot)"
@@ -505,6 +527,17 @@ function slotView(slot) {
 .gallery-layout { display: grid; grid-template-columns: 320px 1fr; gap: 16px; align-items: start; }
 .gallery-pane { position: sticky; top: 12px; max-height: calc(100vh - 140px); overflow-y: auto; }
 .detail-pane { min-width: 0; }
+.detail-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
+.tb-btn {
+  font: inherit; font-size: 12px; cursor: pointer;
+  padding: 5px 12px; border-radius: 6px;
+  background: rgba(6, 182, 212, 0.12);
+  border: 1px solid rgba(6, 182, 212, 0.4);
+  color: var(--accent, #06b6d4);
+}
+.tb-btn:hover:not(:disabled) { background: rgba(6, 182, 212, 0.2); }
+.tb-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.tb-hint { font-size: 11px; color: var(--text-muted, #64748b); }
 
 /* ---------- 自由构建 ---------- */
 .builder-layout { display: flex; flex-direction: column; gap: 16px; }

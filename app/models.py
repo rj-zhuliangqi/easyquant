@@ -536,6 +536,9 @@ class ScreenerPreset(Base):
     category: Mapped[str] = mapped_column(String(40), default="量价突破")
     match_mode: Mapped[str] = mapped_column(String(10), default="all")
     min_score: Mapped[int] = mapped_column(Integer, default=0)
+    # P1-3 条件树 IR（对标通达信时序函数 BARSLAST/COUNT/CROSS），与 conditions_json 二选一；
+    # 有 ir_json 时 run 用 IR 引擎求值，conditions 留空
+    ir_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
 
@@ -853,3 +856,23 @@ class StkLimitDaily(Base):
     trading_date: Mapped[date] = mapped_column(Date, index=True)
     up_limit: Mapped[float | None] = mapped_column(Float, nullable=True)
     down_limit: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class ScreenRun(Base):
+    """选股策略回测结果（P1-4 信号统计法）。
+
+    对历史交易日执行策略，统计入选股 T+1/3/5/10/20 收益分布与胜率，存 win_rates JSON。
+    策略卡片展示 T+N 胜率，替代"近5日命中数"。
+    """
+
+    __tablename__ = "screen_runs"
+    __table_args__ = (Index("ix_screen_runs_preset", "preset_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    preset_id: Mapped[int] = mapped_column(Integer, index=True)
+    ir_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)  # IR/conditions 快照
+    start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    run_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    signal_count: Mapped[int] = mapped_column(Integer, default=0)
+    win_rates: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON {T+N: {win_rate, avg_return, count}}

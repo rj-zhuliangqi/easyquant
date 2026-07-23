@@ -154,6 +154,14 @@ export async function deleteScreenerPreset(id) {
   return fetchJson(`/api/screener/presets/${id}`, { method: "DELETE" });
 }
 
+export async function runScreenerBacktest(payload) {
+  return fetchJson("/api/screener/backtest", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function fetchRealtimeNews({
   limit = 50,
   hours = 48,
