@@ -1,7 +1,11 @@
-"""一次性回填 stock_lhb_detail (2026-07-22)。
+"""一次性回填 stock_lhb_detail。
 
 拉近 N 个交易日的东财龙虎榜明细，写入 stock_lhb_detail。龙虎榜走 datacenter-web
 （非 push2），Clash 封 push2 不影响。每日 ~100 行，单日 1 次调用，速度较快。
+
+安全：自建 engine（不 import app.main，避免触发模块级 `app = create_app()` 跑 prod
+schema/recovery —— 见 [[incident-2026-07-19-prod-db-truncated]]）；schema 已由服务启动
+迁移好，此处不重复 create_all。写库走 LhbHistoryService（200 行 chunk commit）。
 
 用法:
     uv run python scripts/experiments/backfill_lhb_history.py --start 2026-06-15 --end 2026-07-22
@@ -17,13 +21,35 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from sqlalchemy import create_engine, event  # noqa: E402
+from sqlalchemy.orm import Session, sessionmaker  # noqa: E402
+
 from app.akshare_client import AkshareGateway  # noqa: E402
-from app.database import Base  # noqa: E402
-from app.main import create_session_factory  # noqa: E402
 from app.services.lhb_history import LhbHistoryService  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("backfill_lhb_history")
+
+DEFAULT_DB = "sqlite:///data/sector_fund_monitor.db"
+
+
+def _make_session_factory() -> sessionmaker[Session]:
+    """自建写 engine：WAL + busy_timeout=30s，不跑 schema 迁移/recovery。"""
+    engine = create_engine(
+        DEFAULT_DB,
+        connect_args={"check_same_thread": False, "timeout": 30},
+        future=True,
+    )
+
+    @event.listens_for(engine, "connect")
+    def _set_pragmas(dbapi_conn, _rec):  # noqa: ANN001
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA journal_mode=WAL")
+        cur.execute("PRAGMA busy_timeout=30000")
+        cur.execute("PRAGMA synchronous=NORMAL")
+        cur.close()
+
+    return sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
 
 def _enumerate_trading_days(start: date, end: date) -> list[date]:
@@ -58,8 +84,7 @@ def main() -> int:
             print(d.isoformat())
         return 0
 
-    session_factory = create_session_factory()
-    Base.metadata.create_all(session_factory().get_bind())
+    session_factory = _make_session_factory()
     gateway = AkshareGateway()
     svc = LhbHistoryService(gateway=gateway)
 
