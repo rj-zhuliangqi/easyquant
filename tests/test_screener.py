@@ -514,6 +514,47 @@ def test_run_returns_results_with_data_date(db_session) -> None:
     assert all("code" in r for r in result["results"])
 
 
+def test_run_uses_precomputed_indicators_without_attr_error(db_session) -> None:
+    """stock_indicators_daily 有数据时，_load_precomputed_indicators 遍历 Row 不应
+    抛 AttributeError（回归：select(Entity) 漏 .scalars()，r.stock_code 取值炸）。
+
+    旧实现 ``session.execute(select(StockIndicatorDaily)...)`` 返回 Row，循环里
+    ``r.stock_code`` 抛 ``AttributeError: stock_code`` -> /api/screener/run 500。
+    表空时在 ``if not rows: return`` 提前返回掩盖了 bug；表有数据（TuShare 回补后）即炸。
+    """
+    from app.models import StockIndicatorDaily
+
+    code = "000001"
+    df = _make_bars(code, n_days=30, trend=0.2, seed=21)
+    _seed_bars(db_session, df)
+    latest = df["trading_date"].iloc[-1].date()
+    # 预计算行：volume_ratio=9.5 作为哨兵，live compute 不会产出此值（合成数据 ~1.0）
+    db_session.add(StockIndicatorDaily(
+        stock_code=code, trading_date=latest,
+        compute_version="bars.v2.indicators.v1", data_hash="regress", bar_count=30,
+        volume_ratio=9.5, rsi14=13.5, close_vs_ma20=2.0,
+    ))
+    db_session.add(IndividualStockSnapshot(
+        trading_date=latest, captured_at=datetime(2026, 5, 14, 15, 0, 0),
+        stock_code=code, stock_name="测试",
+        latest_price=10.0, change_percent=1.0, net_amount=200_000_000.0,
+    ))
+    db_session.commit()
+
+    daily_bars = DailyBarsService(gateway=None, now_provider=lambda: datetime(2026, 5, 14, 16, 0, 0))
+    screener = ScreenerService(daily_bars_service=daily_bars)
+    result = screener.run(db_session, {
+        "conditions": [{"indicator": "change_pct", "op": ">=", "value": -100}],
+        "universe": {"boards": ["main"]},
+        "order_by": "change_pct",
+        "order": "desc",
+        "limit": 10,
+    })
+    assert result["total"] >= 1
+    # 哨兵值穿透到结果 -> 预计算覆盖路径完整执行（循环体跑了 + map 覆盖生效）
+    assert result["results"][0]["volume_ratio"] == 9.5
+
+
 def test_realtime_lookup_callable_does_not_raise(db_session) -> None:
     """修 _realtime_lookup 用 callable() 后，传 callable 不再 TypeError。"""
     df = _make_bars("000001", n_days=30, trend=0.0, seed=42)

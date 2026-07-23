@@ -1169,7 +1169,7 @@ def _load_precomputed_indicators(
                 StockIndicatorDaily.trading_date == td,
                 StockIndicatorDaily.stock_code.in_(codes),
             )
-        )
+        ).scalars()
     )
     if not rows:
         return pd.DataFrame()
