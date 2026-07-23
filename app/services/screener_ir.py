@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 _FUTURE_FUNCTIONS = {"BACKSET", "ZIG", "PEAKA", "PEAK", "TROUGHA", "TROUGH", "REFX"}
 
 # 支持的时序函数
-_SUPPORTED_FUNCS = {"REF", "MA", "EMA", "HHV", "LLV", "COUNT", "BARSLAST", "CROSS", "EVERY", "EXIST", "LAST"}
+_SUPPORTED_FUNCS = {"REF", "MA", "EMA", "SMA", "HHV", "LLV", "COUNT", "BARSLAST", "CROSS", "EVERY", "EXIST", "LAST"}
 
 
 class IRError(Exception):
@@ -79,7 +79,7 @@ class IREvaluator:
     def __init__(self, bars: pd.DataFrame, frame: pd.DataFrame, fund_flow: pd.DataFrame | None = None) -> None:
         self.bars = bars
         self.frame = frame
-        self.fund_flow = fund_flow or pd.DataFrame()
+        self.fund_flow = fund_flow if fund_flow is not None else pd.DataFrame()
         self.vars: dict[str, pd.Series] = {}
         if not bars.empty:
             self._grouped = bars.groupby("stock_code", sort=False)
@@ -94,7 +94,8 @@ class IREvaluator:
         if future:
             raise IRError(f"IR 含未来函数 {future}，拒绝求值（回测会系统性高估）")
         for var in ir.get("vars", []):
-            self.vars[var["name"]] = self._eval_expr(var["expr"])
+            # 变量按完整时序求值并存储（KDJ 的 RSV/K/D 需序列递推，非 latest 标量）
+            self.vars[var["name"]] = self._series(var["expr"])
         return self._eval_condition(ir["root"])
 
     # ---------------- 表达式（latest Series，对齐 frame） ----------------
@@ -115,7 +116,7 @@ class IREvaluator:
             raise IRError(f"field '{name}' 不在 bars 列中")
         if t == "var":
             if expr["name"] in self.vars:
-                return self.vars[expr["name"]]
+                return self._latest_of(self.vars[expr["name"]])
             raise IRError(f"未定义变量 '{expr['name']}'")
         if t == "func":
             return self._eval_func(expr.get("name", "").upper(), expr.get("args", []))
@@ -143,6 +144,12 @@ class IREvaluator:
             # var/expr N：每股取其 N 天前的值（BARSLAST 锚点回溯）
             n_series = self._eval_expr(n_expr)
             return self._ref_var(x, n_series)
+        # SMA(X,N,M)：通达信递推加权均线（KDJ 的 K/D 即 SMA(RSV,3,1)）
+        if name == "SMA":
+            x = self._series(args[0])
+            n = int(self._const_value(args[1]))
+            m = int(self._const_value(args[2])) if len(args) > 2 else 1
+            return self._latest_of(self._sma_series(x, n, m))
         # MA/EMA/HHV/LLV
         x = self._series(args[0])
         n = int(self._const_value(args[1]))
@@ -167,9 +174,10 @@ class IREvaluator:
         if t == "const":
             return pd.Series(float(expr["value"]), index=self.bars.index)
         if t == "var":
-            # var 是 latest Series，广播到 bars（每组 latest 值填到该组所有行）
-            latest = self.vars[expr["name"]]
-            return self.bars["stock_code"].map(latest.set_index(self.frame["stock_code"])).astype(float)
+            # var 存的是完整时序（_series 求值），直接返回
+            if expr["name"] in self.vars:
+                return self.vars[expr["name"]]
+            raise IRError(f"未定义变量 '{expr['name']}'")
         raise IRError(f"无法取序列: {t}")
 
     def _indicator_series(self, name: str) -> pd.Series:
@@ -183,6 +191,11 @@ class IREvaluator:
         raise IRError(f"indicator '{name}' 无历史序列实现（REF/MA 仅支持 bars 字段 + ma5/10/20/60）")
 
     def _func_series(self, name: str, args: list[dict]) -> pd.Series:
+        if name == "SMA":
+            x = self._series(args[0])
+            n = int(self._const_value(args[1]))
+            m = int(self._const_value(args[2])) if len(args) > 2 else 1
+            return self._sma_series(x, n, m)
         if name in ("REF", "MA", "EMA", "HHV", "LLV"):
             x = self._series(args[0])
             n = int(self._const_value(args[1]))
@@ -208,6 +221,26 @@ class IREvaluator:
         if name == "LLV":
             return x.groupby(g).transform(lambda s: s.rolling(n, min_periods=n).min())
         raise IRError(f"未知窗口函数: {name}")
+
+    def _sma_series(self, x: pd.Series, n: int, m: int) -> pd.Series:
+        """通达信 SMA(X,N,M)：Y[t]=(M*X[t]+(N-M)*Y[t-1])/N，从首个非 NaN 起递推，按 stock_code 分组。
+
+        KDJ 的 K=SMA(RSV,3,1)、D=SMA(K,3,1) 即此函数。前导 NaN（如 RSV 因 HHV/LLV
+        需 9 期才有值）不进入递推，从首个有效值起算，符合通达信语义。
+        """
+        g = self.bars["stock_code"]
+        def _sma(s: pd.Series) -> pd.Series:
+            vals = s.to_numpy(dtype=float)
+            res = np.full(len(vals), np.nan)
+            start = 0
+            while start < len(vals) and np.isnan(vals[start]):
+                start += 1
+            if start < len(vals):
+                res[start] = vals[start]
+                for i in range(start + 1, len(vals)):
+                    res[i] = (m * vals[i] + (n - m) * res[i - 1]) / n if not np.isnan(vals[i]) else np.nan
+            return pd.Series(res, index=s.index)
+        return x.groupby(g).transform(_sma)
 
     def _apply_seq_func(self, name: str, cond: pd.Series, n: int) -> pd.Series:
         g = self.bars["stock_code"]

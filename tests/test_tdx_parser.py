@@ -95,7 +95,7 @@ def test_parse_tdx_cross_macd():
 
 
 def test_parse_tdx_no_output_error():
-    with pytest.raises(TdxError, match="无 XG"):
+    with pytest.raises(TdxError, match="无输出语句"):
         parse_tdx("T:=BARSLAST(CHANGE_PCT>=9.8);")
 
 
@@ -112,3 +112,72 @@ def test_parse_tdx_syntax_error():
 def test_parse_tdx_empty():
     with pytest.raises(TdxError, match="为空"):
         parse_tdx("   ")
+
+
+def test_sma_series_matches_tdx_definition():
+    """SMA(X,N,M) 递推 Y[t]=(M*X[t]+(N-M)*Y[t-1])/N，Y[0]=X[0]，对照手算。
+
+    KDJ 的 K=SMA(RSV,3,1)、D=SMA(K,3,1) 即此函数；前导 NaN 不进入递推。
+    """
+    from app.services.screener_ir import IREvaluator
+
+    bars = pd.DataFrame({"stock_code": ["000001"] * 6,
+                         "trading_date": pd.date_range("2026-06-01", periods=6, freq="B")})
+    x_vals = [10.0, 11.0, 12.0, 11.0, 10.0, 9.0]
+    x = pd.Series(x_vals, index=bars.index)
+    ev = IREvaluator(bars, pd.DataFrame({"stock_code": ["000001"]}))
+    got = ev._sma_series(x, 3, 1).to_numpy()
+    ref = np.full(6, np.nan)
+    ref[0] = x_vals[0]
+    for i in range(1, 6):
+        ref[i] = (x_vals[i] + 2 * ref[i - 1]) / 3  # M=1,N=3
+    assert np.allclose(got, ref, equal_nan=True)
+
+
+def test_parse_tdx_kdj_bare_output_end_to_end():
+    """用户 KDJ 公式（裸输出 ``CROSS(K,D) AND K<30;``）解析 + 求值端到端。
+
+    回归：旧 grammar 不支持裸表达式语句 -> ``Unexpected token '('`` 400；旧 IR 引擎
+    无 SMA 且变量按 latest 标量存 -> KDJ 退化为常数、CROSS 永不触发。修后变量按完整
+    时序递推，SMA 正确实现。
+    """
+    decline = list(np.linspace(10.0, 7.5, 10))  # 10 日下跌 -> K<D 低位
+    prices = decline + [8.0]  # 末日反弹 -> K 上穿 D 且 K<30
+    d0 = date(2026, 6, 1)
+    rows = []
+    for i, p in enumerate(prices):
+        rows.append({"stock_code": "000001", "trading_date": d0 + timedelta(days=i),
+                     "open": p, "close": p, "high": p + 0.2, "low": p - 0.2,
+                     "volume": 5e6, "amount": 5e7, "change_pct": 0.0, "turnover_rate": 2.0})
+    bars = pd.DataFrame(rows)
+    bars["trading_date"] = pd.to_datetime(bars["trading_date"])
+    frame = bars.groupby("stock_code").tail(1).reset_index(drop=True)
+    formula = (
+        "RSV:=(CLOSE-LLV(LOW,9))/(HHV(HIGH,9)-LLV(LOW,9))*100; "
+        "K:=SMA(RSV,3,1); D:=SMA(K,3,1); J:=3*K-2*D; "
+        "CROSS(K,D) AND K<30;"
+    )
+    ir = parse_tdx(formula)
+    mask = evaluate_ir(ir, bars, frame)
+    assert bool(mask.iloc[0]) is True  # 末日 K 上穿 D 且 K<30
+
+
+def test_parse_tdx_kdj_rejects_when_k_above_30():
+    """KDJ 反弹过猛 K>=30 时 ``K<30`` 过滤掉 -> 不命中（验证 K<30 真生效）。"""
+    decline = list(np.linspace(10.0, 7.5, 10))
+    prices = decline + [9.5]  # 末日大涨 -> K 远超 30
+    d0 = date(2026, 6, 1)
+    rows = []
+    for i, p in enumerate(prices):
+        rows.append({"stock_code": "000001", "trading_date": d0 + timedelta(days=i),
+                     "open": p, "close": p, "high": p + 0.2, "low": p - 0.2,
+                     "volume": 5e6, "amount": 5e7, "change_pct": 0.0, "turnover_rate": 2.0})
+    bars = pd.DataFrame(rows)
+    bars["trading_date"] = pd.to_datetime(bars["trading_date"])
+    frame = bars.groupby("stock_code").tail(1).reset_index(drop=True)
+    ir = parse_tdx(
+        "RSV:=(CLOSE-LLV(LOW,9))/(HHV(HIGH,9)-LLV(LOW,9))*100; "
+        "K:=SMA(RSV,3,1); D:=SMA(K,3,1); CROSS(K,D) AND K<30;"
+    )
+    mask = evaluate_ir(ir, bars, frame)
+    assert bool(mask.iloc[0]) is False

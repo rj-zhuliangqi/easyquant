@@ -11,7 +11,7 @@ P1-2 的 ``screener_ir.IREvaluator`` 求值，与 IR 策略共用同一套时序
   ``NOT``/``!``      -> not
   ``> >= < <= = !=`` -> compare（``=`` 转 ``==``）
   ``+ - * /``        -> binop
-  ``REF/MA/EMA/HHV/LLV/COUNT/BARSLAST/CROSS/EVERY/EXIST`` -> func
+  ``REF/MA/EMA/SMA/HHV/LLV/COUNT/BARSLAST/CROSS/EVERY/EXIST`` -> func
   ``BETWEEN(X,a,b)`` -> X>=a AND X<=b
   ``C/O/H/L/V/AMOUNT/CHANGE_PCT/TURNOVER`` -> field（close/open/high/low/volume/...）
 
@@ -52,9 +52,10 @@ FIELD_MAP = {
 
 GRAMMAR = r"""
 start: stmt+
-?stmt: assign | output
+?stmt: assign | output | bare_output
 assign: CNAME ":=" expr ";"
 output: CNAME ":" expr ";"
+bare_output: expr ";"
 ?expr: or_expr
 ?or_expr: or_expr ("OR"|"or"|"|") and_expr -> or_
         | and_expr
@@ -99,7 +100,7 @@ class TdxToIR(Transformer):
             else:  # output
                 root = stmt["expr"]
         if root is None:
-            raise TdxError("通达信公式无 XG: 输出语句（需至少一个 NAME:expr; 输出）")
+            raise TdxError("通达信公式无输出语句（需 NAME:expr; 或裸 expr; 输出）")
         return {"vars": vars_, "root": root}
 
     def assign(self, items):
@@ -107,6 +108,10 @@ class TdxToIR(Transformer):
 
     def output(self, items):
         return {"type": "output", "name": str(items[0]), "expr": items[1]}
+
+    def bare_output(self, items):
+        # 裸表达式输出（无 NAME: 前缀，如 ``CROSS(K,D) AND K<30;``）-> 隐式 XG 输出
+        return {"type": "output", "name": "XG", "expr": items[0]}
 
     def or_(self, items):
         left, right = items[0], items[1]

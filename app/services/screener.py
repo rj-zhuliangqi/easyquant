@@ -1001,6 +1001,10 @@ class ScreenerService:
         rt_eod_df = _load_realtime_eod(session, codes, latest_date_obj)
         if not rt_eod_df.empty:
             frame = frame.merge(rt_eod_df, on="stock_code", how="left", suffixes=("", "_eod"))
+            # stock_name：compute_features 兜底为 stock_code，此处用 realtime_eod 真名覆盖
+            if "stock_name_eod" in frame.columns:
+                frame["stock_name"] = frame["stock_name_eod"].fillna(frame["stock_name"])
+                frame = frame.drop(columns=["stock_name_eod"])
 
         # 2) bars/fundflow 派生 43 指标：优先 stock_indicators_daily 预计算，缺则保留 live
         precomp_df = _load_precomputed_indicators(session, codes, latest_date_obj)
@@ -1134,6 +1138,7 @@ def _load_realtime_eod(
         session.execute(
             select(
                 StockRealtimeEod.stock_code,
+                StockRealtimeEod.stock_name,
                 StockRealtimeEod.close,  # close → latest_price（指标用 latest_price 命名）
                 StockRealtimeEod.change_pct,
                 StockRealtimeEod.turnover_rate,
@@ -1149,7 +1154,7 @@ def _load_realtime_eod(
     if not rows:
         return pd.DataFrame()
     df = pd.DataFrame(rows, columns=[
-        "stock_code", "latest_price", "change_pct", "turnover_rate",
+        "stock_code", "stock_name", "latest_price", "change_pct", "turnover_rate",
         "pe_dynamic", "pb", "total_mv", "float_mv",
     ])
     df["stock_code"] = df["stock_code"].astype(str).str.zfill(6)
