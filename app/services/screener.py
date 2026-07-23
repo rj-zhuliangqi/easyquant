@@ -840,6 +840,15 @@ class ScreenerService:
         ):
             warnings.append(self.WARN_NO_LHB)
 
+        tdx = request.get("tdx")
+        if tdx and not request.get("ir"):
+            # P2-1 TDX DSL：粘贴通达信公式直接选股，parse_tdx -> IR 复用 IR 引擎
+            from app.services.tdx_parser import TdxError, parse_tdx
+
+            try:
+                request["ir"] = parse_tdx(tdx)
+            except TdxError as e:
+                raise ValueError(f"通达信公式错误：{e}") from e
         ir = request.get("ir")
         if ir:
             # P1-2 条件树 IR 模式：对标通达信时序函数（BARSLAST/COUNT/CROSS），支持锚点策略

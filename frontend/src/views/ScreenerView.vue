@@ -141,6 +141,11 @@ function selectStrategy(s) {
 function runCustom(payload) {
   builderSlot.run(payload);
 }
+const tdxFormula = ref("");
+function runTdx() {
+  if (!tdxFormula.value.trim()) return;
+  builderSlot.run({ tdx: tdxFormula.value, limit: 100 });
+}
 function runPreset(p) {
   activePresetId.value = p.id;
   mineSlot.run({ preset_id: p.id, limit: 100 });
@@ -382,6 +387,18 @@ function slotView(slot) {
 
       <!-- Tab 2: 自由构建 -->
       <section v-show="activeTab === 'builder'" class="builder-layout">
+        <div class="tdx-box">
+          <div class="tdx-head">
+            <span class="tdx-title">📐 通达信公式选股</span>
+            <span class="tdx-hint">粘贴公式直接选股：C/O/H/L/V/CHANGE_PCT + REF/MA/CROSS/BARSLAST/COUNT/BETWEEN</span>
+          </div>
+          <textarea v-model="tdxFormula" class="tdx-input" rows="3" placeholder="T:=BARSLAST(CHANGE_PCT>=9.8); XG:T>=3 AND T<=10 AND V<REF(V,T)*0.5 AND L<=REF(C,T)*0.92;"></textarea>
+          <div class="tdx-actions">
+            <button class="tb-btn" type="button" :disabled="!tdxFormula.trim() || builderSlot.running.value" @click="runTdx">
+              {{ builderSlot.running.value ? "运行中…" : "运行公式" }}
+            </button>
+          </div>
+        </div>
         <ConditionBuilder
           :indicator-groups="indicatorGroups"
           :has-data="hasData"
@@ -538,6 +555,12 @@ function slotView(slot) {
 .tb-btn:hover:not(:disabled) { background: rgba(6, 182, 212, 0.2); }
 .tb-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .tb-hint { font-size: 11px; color: var(--text-muted, #64748b); }
+.tdx-box { margin-bottom: 14px; padding: 12px; background: rgba(6, 182, 212, 0.04); border: 1px solid rgba(6, 182, 212, 0.15); border-radius: 10px; }
+.tdx-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+.tdx-title { font-size: 13px; font-weight: 600; color: var(--accent, #06b6d4); }
+.tdx-input { width: 100%; font: inherit; font-size: 12px; font-family: ui-monospace, monospace; padding: 8px; border-radius: 6px; background: rgba(0,0,0,0.2); border: 1px solid var(--border, rgba(255,255,255,0.1)); color: var(--text, #e2e8f0); resize: vertical; box-sizing: border-box; }
+.tdx-input:focus { outline: none; border-color: var(--accent, #06b6d4); }
+.tdx-actions { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
 
 /* ---------- 自由构建 ---------- */
 .builder-layout { display: flex; flex-direction: column; gap: 16px; }

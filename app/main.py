@@ -2533,6 +2533,8 @@ def create_app(
             return screener.run(session, payload)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
     @app.get("/api/screener/strategies")
     def api_screener_strategies(session: Session = Depends(get_db)):
