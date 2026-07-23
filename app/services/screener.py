@@ -25,6 +25,7 @@ from app.models import (
     ScreenerPreset,
     ScreenerPresetHit,
     StockDailyBar,
+    StockDailyBasic,
     StockFundFlowDaily,
     StockIndicatorDaily,
     StockLhbDetail,
@@ -671,27 +672,28 @@ class ScreenerService:
         ).scalar_one_or_none()
         indicators = self._indicator_row_to_dict(ind) if ind else {}
 
-        # 最新 EOD 基础组
+        # 最新 EOD 基础组：latest_price/涨跌幅取 realtime_eod（今日实时）
         eod = session.execute(
             select(
                 StockRealtimeEod.close, StockRealtimeEod.change_pct,
-                StockRealtimeEod.turnover_rate, StockRealtimeEod.pe_dynamic,
-                StockRealtimeEod.pb, StockRealtimeEod.total_mv, StockRealtimeEod.float_mv,
                 StockRealtimeEod.trading_date,
             )
             .where(StockRealtimeEod.stock_code == code)
             .order_by(StockRealtimeEod.trading_date.desc())
             .limit(1)
         ).first()
+        # 估值/换手率取 stock_daily_basic（realtime_eod 这几列全 NULL、turnover_rate 为盘中快照错值）
+        basic_df = _load_daily_basic(session, [code], eod[2]) if eod and eod[2] else pd.DataFrame()
+        basic_row = basic_df.iloc[0].to_dict() if not basic_df.empty else {}
         basics = {
             "latest_price": _maybe_float(eod[0]) if eod else None,
             "change_pct": _maybe_float(eod[1]) if eod else None,
-            "turnover_rate": _maybe_float(eod[2]) if eod else None,
-            "pe_dynamic": _maybe_float(eod[3]) if eod else None,
-            "pb": _maybe_float(eod[4]) if eod else None,
-            "total_mv": _maybe_float(eod[5]) if eod else None,
-            "float_mv": _maybe_float(eod[6]) if eod else None,
-            "data_date": eod[7].isoformat() if eod and eod[7] else None,
+            "turnover_rate": _maybe_float(basic_row.get("turnover_rate")),
+            "pe_dynamic": _maybe_float(basic_row.get("pe_dynamic")),
+            "pb": _maybe_float(basic_row.get("pb")),
+            "total_mv": _maybe_float(basic_row.get("total_mv")),
+            "float_mv": _maybe_float(basic_row.get("float_mv")),
+            "data_date": eod[2].isoformat() if eod and eod[2] else None,
         } if eod else {}
 
         # 近 10 日资金流
@@ -1006,6 +1008,23 @@ class ScreenerService:
                 frame["stock_name"] = frame["stock_name_eod"].fillna(frame["stock_name"])
                 frame = frame.drop(columns=["stock_name_eod"])
 
+        # 1b) 基础组估值/换手率：stock_daily_basic（TuShare daily_basic，pe/pb/mv 权威源）
+        # realtime_eod 的 pe/pb/mv 全 NULL、turnover_rate 为盘中快照错值，改从本表取。
+        basic_df = _load_daily_basic(session, codes, latest_date_obj)
+        if not basic_df.empty:
+            frame = frame.merge(basic_df, on="stock_code", how="left", suffixes=("", "_basic"))
+            # pe/pb/mv：daily_basic 是唯一来源，直接覆盖（frame 原为 NULL）
+            for col in ("pe_dynamic", "pb", "total_mv", "float_mv"):
+                if f"{col}_basic" in frame.columns:
+                    frame[col] = frame[f"{col}_basic"]
+                    frame = frame.drop(columns=[f"{col}_basic"])
+            # turnover_rate：bars 已有今日值，仅在 frame 缺失时用 daily_basic 补
+            if "turnover_rate_basic" in frame.columns:
+                frame["turnover_rate"] = frame["turnover_rate_basic"].where(
+                    frame["turnover_rate"].isna(), frame["turnover_rate"]
+                )
+                frame = frame.drop(columns=["turnover_rate_basic"])
+
         # 2) bars/fundflow 派生 43 指标：优先 stock_indicators_daily 预计算，缺则保留 live
         precomp_df = _load_precomputed_indicators(session, codes, latest_date_obj)
         if not precomp_df.empty:
@@ -1156,6 +1175,46 @@ def _load_realtime_eod(
     df = pd.DataFrame(rows, columns=[
         "stock_code", "stock_name", "latest_price", "change_pct", "turnover_rate",
         "pe_dynamic", "pb", "total_mv", "float_mv",
+    ])
+    df["stock_code"] = df["stock_code"].astype(str).str.zfill(6)
+    return df
+
+
+def _load_daily_basic(
+    session: Session, codes: list[str], trading_date: Any
+) -> pd.DataFrame:
+    """从 ``stock_daily_basic``（TuShare daily_basic）拉基础组估值/换手率。
+
+    pe_dynamic/pb/total_mv/float_mv 的权威源（realtime_eod 这几列全 NULL）。
+    取最近可用日：当日 daily_basic 未发布（15:40 太早）则回退到 <= td 的最近一日；
+    PE/PB/市值 几无日间变化可接受，turnover_rate 由 bars 今日值优先、本表仅补缺。
+    """
+    if not codes:
+        return pd.DataFrame()
+    td = trading_date.date() if hasattr(trading_date, "date") else trading_date
+    rows = list(
+        session.execute(
+            select(
+                StockDailyBasic.stock_code,
+                StockDailyBasic.pe_ttm,
+                StockDailyBasic.pb,
+                StockDailyBasic.total_mv,
+                StockDailyBasic.circ_mv,
+                StockDailyBasic.turnover_rate,
+            ).where(
+                StockDailyBasic.stock_code.in_(codes),
+                StockDailyBasic.trading_date == (
+                    select(func.max(StockDailyBasic.trading_date))
+                    .where(StockDailyBasic.trading_date <= td)
+                    .scalar_subquery()
+                ),
+            )
+        )
+    )
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows, columns=[
+        "stock_code", "pe_dynamic", "pb", "total_mv", "float_mv", "turnover_rate",
     ])
     df["stock_code"] = df["stock_code"].astype(str).str.zfill(6)
     return df
@@ -1700,7 +1759,7 @@ def _row_to_result(row: pd.Series) -> dict[str, Any]:
     payload = {
         "code": str(row.get("stock_code") or ""),
         "name": str(row.get("stock_name") or ""),
-        "close": _maybe_float(row.get("close")),
+        "close": _maybe_float(row.get("latest_price")) or _maybe_float(row.get("close")),
         "change_pct": _maybe_float(row.get("change_pct")),
         "turnover_rate": _maybe_float(row.get("turnover_rate")),
         "volume_ratio": _maybe_float(row.get("volume_ratio")),

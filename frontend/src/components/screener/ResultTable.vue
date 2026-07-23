@@ -22,6 +22,8 @@ const COLUMNS = [
   { key: "change_pct", label: "涨跌幅", sortable: true, format: (v) => formatPercent(v), cls: true },
   { key: "close", label: "现价", sortable: true, format: (v) => formatNumber(v) },
   { key: "turnover_rate", label: "换手率", sortable: true, format: (v) => `${formatNumber(v)}%` },
+  { key: "pe_dynamic", label: "PE", sortable: true, format: (v) => formatNumber(v) },
+  { key: "total_mv", label: "总市值", sortable: true, format: (v) => formatAmount(v) },
   { key: "volume_ratio", label: "量比", sortable: true, format: (v) => formatNumber(v) },
   { key: "amount", label: "成交额", sortable: true, format: (v) => formatAmount(v) },
   { key: "main_net_inflow_5d", label: "5日主力", sortable: true, format: (v) => formatAmount(v), cls: true },
@@ -92,6 +94,8 @@ function changeClass(v) {
         <div class="rcell c-change" :class="changeClass(item.change_pct)">{{ formatPercent(item.change_pct) }}</div>
         <div class="rcell c-close">{{ formatNumber(item.close) }}</div>
         <div class="rcell c-turnover">{{ formatNumber(item.turnover_rate) }}%</div>
+        <div class="rcell c-pe">{{ formatNumber(item.pe_dynamic) }}</div>
+        <div class="rcell c-mv">{{ formatAmount(item.total_mv) }}</div>
         <div class="rcell c-vr">{{ formatNumber(item.volume_ratio) }}</div>
         <div class="rcell c-amount">{{ formatAmount(item.amount) }}</div>
         <div class="rcell c-inflow" :class="changeClass(item.main_net_inflow_5d)">{{ formatAmount(item.main_net_inflow_5d) }}</div>
@@ -142,14 +146,14 @@ function changeClass(v) {
 }
 .rrow {
   display: grid;
-  /* 9 列：code name change close turnover vr amount inflow act */
-  grid-template-columns: 70px 1fr 78px 70px 72px 60px 96px 104px 132px;
+  /* 11 列：code name change close turnover pe mv vr amount inflow act */
+  grid-template-columns: 70px 1fr 78px 70px 72px 56px 90px 60px 96px 104px 132px;
   align-items: center;
   gap: 4px;
 }
 .rrow.show-score {
-  /* 10 列：在 act 前插入 score(56px) */
-  grid-template-columns: 70px 1fr 78px 70px 72px 60px 96px 104px 56px 132px;
+  /* 12 列：在 act 前插入 score(56px) */
+  grid-template-columns: 70px 1fr 78px 70px 72px 56px 90px 60px 96px 104px 56px 132px;
 }
 .rhead {
   background: rgba(255, 255, 255, 0.03);

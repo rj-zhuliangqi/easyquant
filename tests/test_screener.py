@@ -410,7 +410,7 @@ def test_strategies_catalog_merges_hits(db_session) -> None:
 
 
 def test_stock_detail_aggregates_sources(db_session) -> None:
-    from app.models import StockIndicatorDaily, StockLhbDetail, StockRealtimeEod
+    from app.models import StockDailyBasic, StockIndicatorDaily, StockLhbDetail, StockRealtimeEod
 
     code = "000001"
     _seed_bars(db_session, _make_bars(code, n_days=10, start=date(2026, 7, 1), seed=2))
@@ -418,6 +418,11 @@ def test_stock_detail_aggregates_sources(db_session) -> None:
         stock_code=code, stock_name="平安", trading_date=date(2026, 7, 10),
         close=11.0, change_pct=1.2, turnover_rate=2.0, pe_dynamic=8.0,
         pb=0.9, total_mv=2e11, float_mv=1.5e11,
+    ))
+    # 估值/换手率权威源：stock_daily_basic（stock_detail 改从本表读 pe/pb/mv/turnover）
+    db_session.add(StockDailyBasic(
+        stock_code=code, trading_date=date(2026, 7, 10),
+        pe_ttm=8.0, pb=0.9, total_mv=2e11, circ_mv=1.5e11, turnover_rate=2.0,
     ))
     db_session.add(StockIndicatorDaily(
         stock_code=code, trading_date=date(2026, 7, 10),
@@ -583,3 +588,164 @@ def test_realtime_lookup_callable_does_not_raise(db_session) -> None:
         "_realtime_lookup": my_lookup,
     })
     assert result["total"] >= 1
+
+
+# ---------------- daily_basic 基础组（PE/PB/市值/换手率） ----------------
+
+
+def test_load_daily_basic_fallback_to_recent(db_session) -> None:
+    """当日 daily_basic 未发布时，_load_daily_basic 回退到 <= td 的最近一日。"""
+    from app.models import StockDailyBasic
+    from app.services.screener import _load_daily_basic
+
+    code = "000001"
+    # 只种 0722，不种 0723
+    db_session.add(StockDailyBasic(
+        stock_code=code, trading_date=date(2026, 7, 22),
+        pe_ttm=4.95, pb=0.46, total_mv=2.13e11, circ_mv=2.13e11, turnover_rate=0.53,
+    ))
+    db_session.commit()
+    df = _load_daily_basic(db_session, [code], date(2026, 7, 23))
+    assert not df.empty
+    row = df.iloc[0]
+    assert row["pe_dynamic"] == 4.95  # pe_ttm -> pe_dynamic
+    assert row["float_mv"] == 2.13e11  # circ_mv -> float_mv
+    assert row["turnover_rate"] == 0.53
+
+
+def test_run_surfaces_pe_mv_close_from_daily_basic(db_session) -> None:
+    """screener.run 结果含 close(=latest_price)/pe/总市值，turnover 缺失时由 daily_basic 补。"""
+    from app.models import StockDailyBasic, StockRealtimeEod
+
+    code = "000001"
+    df_bars = _make_bars(code, n_days=30, trend=0.2, seed=33)
+    _seed_bars(db_session, df_bars)
+    latest = df_bars["trading_date"].iloc[-1].date()
+    db_session.add(StockRealtimeEod(
+        stock_code=code, stock_name="平安银行", trading_date=latest,
+        close=11.09, change_pct=1.29, turnover_rate=None,  # realtime_eod 换手率缺失
+    ))
+    db_session.add(StockDailyBasic(
+        stock_code=code, trading_date=latest,
+        pe_ttm=4.95, pb=0.46, total_mv=2.13e11, circ_mv=2.13e11, turnover_rate=0.53,
+    ))
+    db_session.add(IndividualStockSnapshot(
+        trading_date=latest, captured_at=datetime(2026, 5, 14, 15, 0, 0),
+        stock_code=code, stock_name="平安银行",
+        latest_price=11.0, change_percent=1.0, net_amount=200_000_000.0,
+    ))
+    db_session.commit()
+
+    daily_bars = DailyBarsService(gateway=None, now_provider=lambda: datetime(2026, 5, 14, 16, 0, 0))
+    screener = ScreenerService(daily_bars_service=daily_bars)
+    result = screener.run(db_session, {
+        "conditions": [{"indicator": "change_pct", "op": ">=", "value": -100}],
+        "universe": {"boards": ["main"]},
+        "limit": 10,
+    })
+    assert result["total"] >= 1
+    r = result["results"][0]
+    assert r["close"] == 11.09  # 现价 = latest_price（realtime_eod.close）
+    assert r["pe_dynamic"] == 4.95  # 来自 daily_basic
+    assert r["total_mv"] == 2.13e11
+    assert r["turnover_rate"] == 2.95  # bars 有今日值，优先于 daily_basic（仅补缺）
+
+
+def test_run_fills_turnover_from_daily_basic_when_bars_missing(db_session) -> None:
+    """bars.turnover_rate 缺失时，daily_basic.turnover_rate 补位。"""
+    from app.models import StockDailyBar, StockDailyBasic, StockRealtimeEod
+
+    code = "000002"
+    df_bars = _make_bars(code, n_days=30, trend=0.2, seed=34)
+    _seed_bars(db_session, df_bars)
+    latest = df_bars["trading_date"].iloc[-1].date()
+    # 把最新 bar 的换手率置空（模拟 daily 接口无换手率、_backfill_turnover 未跑）
+    db_session.query(StockDailyBar).filter_by(stock_code=code, trading_date=latest).update({"turnover_rate": None})
+    db_session.add(StockRealtimeEod(
+        stock_code=code, stock_name="万科A", trading_date=latest,
+        close=10.0, change_pct=1.0, turnover_rate=None,
+    ))
+    db_session.add(StockDailyBasic(
+        stock_code=code, trading_date=latest,
+        pe_ttm=8.0, pb=0.9, total_mv=1.2e11, circ_mv=1.2e11, turnover_rate=3.14,
+    ))
+    db_session.add(IndividualStockSnapshot(
+        trading_date=latest, captured_at=datetime(2026, 5, 14, 15, 0, 0),
+        stock_code=code, stock_name="万科A",
+        latest_price=10.0, change_percent=1.0, net_amount=200_000_000.0,
+    ))
+    db_session.commit()
+
+    daily_bars = DailyBarsService(gateway=None, now_provider=lambda: datetime(2026, 5, 14, 16, 0, 0))
+    screener = ScreenerService(daily_bars_service=daily_bars)
+    result = screener.run(db_session, {
+        "conditions": [{"indicator": "change_pct", "op": ">=", "value": -100}],
+        "universe": {"boards": ["main"]},
+        "limit": 10,
+    })
+    r = result["results"][0]
+    assert r["turnover_rate"] == 3.14  # bars 缺失 -> daily_basic 补
+
+
+def test_stock_detail_basics_from_daily_basic(db_session) -> None:
+    """stock_detail 的 pe/pb/mv 取 stock_daily_basic（realtime_eod 这几列 NULL）。"""
+    from app.models import StockDailyBasic, StockRealtimeEod
+
+    code = "600519"
+    _seed_bars(db_session, _make_bars(code, n_days=10, start=date(2026, 7, 1), seed=5))
+    db_session.add(StockRealtimeEod(
+        stock_code=code, stock_name="贵州茅台", trading_date=date(2026, 7, 10),
+        close=1298.44, change_pct=-0.31,  # realtime_eod 不再提供 pe/pb/mv
+    ))
+    db_session.add(StockDailyBasic(
+        stock_code=code, trading_date=date(2026, 7, 10),
+        pe_ttm=19.72, pb=6.02, total_mv=1.63e12, circ_mv=1.63e12, turnover_rate=0.52,
+    ))
+    db_session.commit()
+
+    screener = ScreenerService()
+    detail = screener.stock_detail(db_session, code)
+    b = detail["basics"]
+    assert b["latest_price"] == 1298.44  # 取 realtime_eod 今日
+    assert b["pe_dynamic"] == 19.72  # 取 daily_basic
+    assert b["pb"] == 6.02
+    assert b["total_mv"] == 1.63e12
+    assert b["float_mv"] == 1.63e12
+    assert b["turnover_rate"] == 0.52
+
+
+def test_refresh_daily_basic_upserts(db_session) -> None:
+    """refresh_daily_basic 拉 daily_basic 入库 stock_daily_basic + 回填 bars.turnover_rate。"""
+    from app.models import StockDailyBar, StockDailyBasic
+
+    code = "000001"
+    td = date(2026, 7, 23)
+    # 预置一条当日 bar（turnover_rate 待回填）
+    db_session.add(StockDailyBar(
+        stock_code=code, trading_date=td, open=11.0, close=11.09, high=11.2, low=10.9,
+        volume=1e7, amount=1e8, change_pct=1.29, turnover_rate=None,
+    ))
+    db_session.commit()
+
+    # mock tushare gateway：返回单只 daily_basic
+    basic_df = pd.DataFrame([{
+        "code": code, "close": 11.09, "turnover_rate": 0.53, "turnover_rate_f": 0.53,
+        "volume_ratio": 0.63, "pe": 5.0, "pe_ttm": 4.95, "pb": 0.46,
+        "ps": 1.2, "ps_ttm": 1.1, "dv_ratio": 2.0, "dv_ttm": 2.1,
+        "total_mv": 2.13e11, "circ_mv": 2.13e11,
+        "total_share": 1.9e10, "float_share": 1.9e10, "free_share": 1.9e10,
+    }])
+
+    class _Gw:
+        def fetch_daily_basic_by_date(self, trade_date):
+            return basic_df
+
+    daily_bars = DailyBarsService(gateway=None, tushare_gateway=_Gw())
+    n = daily_bars.refresh_daily_basic(db_session, td)
+    assert n == 1
+    row = db_session.query(StockDailyBasic).filter_by(stock_code=code, trading_date=td).one()
+    assert row.pe_ttm == 4.95
+    assert row.total_mv == 2.13e11
+    # bars.turnover_rate 被回填
+    bar = db_session.query(StockDailyBar).filter_by(stock_code=code, trading_date=td).one()
+    assert bar.turnover_rate == 0.53

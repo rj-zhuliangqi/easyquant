@@ -633,6 +633,55 @@ class DailyBarsService:
             session.execute(stmt)
             session.commit()
 
+    def refresh_daily_basic(self, session: Session, trade_date: date) -> int:
+        """仅刷新当日 ``stock_daily_basic``（TuShare daily_basic 17:00 后才发布，15:40 回补拉空时补刀）。
+
+        轻量：只拉 daily_basic -> upsert StockDailyBasic -> 回填 bars.turnover_rate。
+        不动 daily/flow/limit，规避长事务（[[incident-2026-07-21-screener-backfill-truncated-db]]）。
+        tushare_gateway 为 None 时直接返回 0。
+        """
+        gw = self.tushare_gateway
+        if gw is None:
+            return 0
+        basic_df = gw.fetch_daily_basic_by_date(trade_date)
+        if basic_df.empty:
+            logger.warning("refresh_daily_basic %s: daily_basic 为空（tushare 未发布？）", trade_date)
+            return 0
+        rows: list[dict[str, Any]] = []
+        turnover_map: dict[str, float] = {}
+        for _, r in basic_df.iterrows():
+            code = str(r.get("code") or "").zfill(6)
+            if not code:
+                continue
+            tr = _safe_float(r.get("turnover_rate"))
+            if tr is not None:
+                turnover_map[code] = tr
+            rows.append({
+                "stock_code": code,
+                "trading_date": trade_date,
+                "close": _safe_float(r.get("close")),
+                "turnover_rate": tr,
+                "turnover_rate_f": _safe_float(r.get("turnover_rate_f")),
+                "volume_ratio": _safe_float(r.get("volume_ratio")),
+                "pe": _safe_float(r.get("pe")),
+                "pe_ttm": _safe_float(r.get("pe_ttm")),
+                "pb": _safe_float(r.get("pb")),
+                "ps": _safe_float(r.get("ps")),
+                "ps_ttm": _safe_float(r.get("ps_ttm")),
+                "dv_ratio": _safe_float(r.get("dv_ratio")),
+                "dv_ttm": _safe_float(r.get("dv_ttm")),
+                "total_mv": _safe_float(r.get("total_mv")),
+                "circ_mv": _safe_float(r.get("circ_mv")),
+                "total_share": _safe_float(r.get("total_share")),
+                "float_share": _safe_float(r.get("float_share")),
+                "free_share": _safe_float(r.get("free_share")),
+            })
+        n = self._chunk_upsert(session, StockDailyBasic, rows, ("stock_code", "trading_date"))
+        if turnover_map:
+            self._backfill_turnover(session, trade_date, turnover_map)
+        logger.info("refresh_daily_basic %s: 写入 %d 行 -> stock_daily_basic", trade_date, n)
+        return n
+
     def _safe_fetch_fund_flow(self, code: str, market: str) -> pd.DataFrame:
         """拉单只资金流，吞掉异常返回空 DataFrame。"""
         try:

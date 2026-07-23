@@ -712,6 +712,17 @@ def _run_screener_eod_backfill(
     _run_screener_fundflow_today(session, daily_bars)
 
 
+def _run_screener_daily_basic_refresh(
+    session: Session,
+    daily_bars: DailyBarsService,
+    now_provider: Callable[[], datetime],
+) -> None:
+    """18:10 刷新当日 stock_daily_basic（TuShare daily_basic 17:00 后发布，15:40 回补拉空时补刀）。"""
+    today = now_provider().date()
+    n = daily_bars.refresh_daily_basic(session, today)
+    logger.info("cron screener-daily-basic-refresh %s: %d 行 -> stock_daily_basic", today, n)
+
+
 def _run_alert_check(session: Session, alert: Any) -> None:
     """盘中预警轮询（P2-4）：对启用 IR 规则执行，命中记 AlertEvent。"""
     res = alert.check_rules(session)
@@ -1098,6 +1109,22 @@ def create_app(
                 hour="15",
                 day_of_week="mon-fri",
                 id="screener-eod-backfill",
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=3600,
+            )
+            # Screener 当日 daily_basic 刷新 - 18:10（TuShare daily_basic 17:00 后发布，补 15:40 拉空的 PE/PB/市值/换手率）
+            scheduler.add_job(
+                lambda: _run_scheduled_job(
+                    "screener-daily-basic-refresh",
+                    session_factory,
+                    lambda session: _run_screener_daily_basic_refresh(session, daily_bars, now_provider),
+                ),
+                "cron",
+                minute="10",
+                hour="18",
+                day_of_week="mon-fri",
+                id="screener-daily-basic-refresh",
                 max_instances=1,
                 coalesce=True,
                 misfire_grace_time=3600,
