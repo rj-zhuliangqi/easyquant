@@ -1,8 +1,11 @@
 <script setup>
 import { computed, ref } from "vue";
 import { useQuery } from "@tanstack/vue-query";
+import { RouterLink } from "vue-router";
 import EChartPanel from "../components/EChartPanel.vue";
 import QueryState from "../components/QueryState.vue";
+import MetricCard from "../components/ui/MetricCard.vue";
+import DataPanel from "../components/ui/DataPanel.vue";
 import { fetchJson, pageQueryKey } from "../lib/api";
 import { formatAmount, formatDateTime, formatNumber, formatPercent } from "../lib/formatters";
 
@@ -40,10 +43,19 @@ const chartOption = computed(() => ({
       type: "line",
       smooth: true,
       data: (selectedIndex.value?.points || []).map((item) => item.value),
-      areaStyle: {},
-      lineStyle: { width: 3 },
+      areaStyle: {
+        color: {
+          type: "linear",
+          x: 0, y: 0, x2: 0, y2: 1,
+          colorStops: [
+            { offset: 0, color: "rgba(6, 182, 212, 0.3)" },
+            { offset: 1, color: "rgba(6, 182, 212, 0.02)" },
+          ],
+        },
+      },
+      lineStyle: { width: 2, color: "#06b6d4" },
       showSymbol: false,
-      color: "#0f8b8d",
+      color: "#06b6d4",
     },
   ],
 }));
@@ -53,42 +65,47 @@ const chartOption = computed(() => ({
   <section class="page">
     <header class="page-hero">
       <div>
-        <p class="eyebrow">市场总览</p>
-        <h2>首页脉搏</h2>
-        <p class="hero-copy">保留已有内容，后台刷新，不再每次切页从空白开始。</p>
+        <p class="eyebrow">今日 AI 工作台</p>
+        <h2>盘中脉搏</h2>
+        <p class="hero-copy">一屏掌握市场温度、板块强弱与今日 AI 产出的行动优先级。</p>
       </div>
       <QueryState :is-loading="queryLoading" :is-fetching="queryFetching" :updated-at="queryUpdatedAt" />
     </header>
 
+    <!-- ═══ Market overview ═══ -->
     <section class="card-grid">
-      <article class="metric-card">
-        <span>监控状态</span>
-        <strong>{{ status.market_open ? "盘中运行" : "非交易时段" }}</strong>
-        <small>{{ formatDateTime(status.updated_at) }}</small>
-      </article>
-      <article class="metric-card">
-        <span>最强流入板块</span>
-        <strong>{{ systemSummary.sector_monitor?.strongest_inflow_sector || "--" }}</strong>
-        <small>{{ formatAmount(systemSummary.sector_monitor?.strongest_inflow_amount) }}</small>
-      </article>
-      <article class="metric-card">
-        <span>最高连板</span>
-        <strong>{{ systemSummary.limit_up_ladder?.highest_board ?? "--" }}</strong>
-        <small>晋级率 {{ formatPercent((systemSummary.limit_up_ladder?.promotion_rate || 0) * 100) }}</small>
-      </article>
-      <article class="metric-card">
-        <span>上涨 / 下跌</span>
-        <strong>{{ marketOverview.breadth?.up_count ?? 0 }} / {{ marketOverview.breadth?.down_count ?? 0 }}</strong>
-        <small>活跃度 {{ formatPercent(marketOverview.breadth?.market_activity) }}</small>
-      </article>
+      <MetricCard
+        label="监控状态"
+        :value="status.market_open ? '盘中运行' : '非交易时段'"
+        :sub-value="formatDateTime(status.updated_at)"
+        :loading="queryLoading"
+        trend="neutral"
+      />
+      <MetricCard
+        label="最强流入板块"
+        :value="systemSummary.sector_monitor?.strongest_inflow_sector || '--'"
+        :sub-value="formatAmount(systemSummary.sector_monitor?.strongest_inflow_amount)"
+        :loading="queryLoading"
+        trend="up"
+      />
+      <MetricCard
+        label="最高连板"
+        :value="systemSummary.limit_up_ladder?.highest_board ?? '--'"
+        :sub-value="`晋级率 ${formatPercent((systemSummary.limit_up_ladder?.promotion_rate || 0) * 100)}`"
+        :loading="queryLoading"
+        trend="up"
+      />
+      <MetricCard
+        label="上涨 / 下跌"
+        :value="`${marketOverview.breadth?.up_count ?? 0} / ${marketOverview.breadth?.down_count ?? 0}`"
+        :sub-value="`活跃度 ${formatPercent(marketOverview.breadth?.market_activity)}`"
+        :loading="queryLoading"
+        :trend="(marketOverview.breadth?.up_count || 0) > (marketOverview.breadth?.down_count || 0) ? 'up' : 'down'"
+      />
     </section>
 
-    <section class="panel">
-      <div class="panel-head">
-        <div>
-          <h3>指数趋势</h3>
-          <p>{{ selectedIndex?.name || "等待数据" }}</p>
-        </div>
+    <DataPanel title="指数趋势" :subtitle="selectedIndex?.name || '等待数据'">
+      <template #actions>
         <div class="switch-row">
           <button
             v-for="item in marketOverview.indices || []"
@@ -100,33 +117,56 @@ const chartOption = computed(() => ({
             {{ item.name }}
           </button>
         </div>
-      </div>
+      </template>
       <EChartPanel :option="chartOption" />
-    </section>
+    </DataPanel>
 
     <section class="card-grid two-up">
-      <article class="panel">
-        <div class="panel-head">
-          <h3>指数快照</h3>
-        </div>
+      <DataPanel title="指数快照">
         <div class="list-stack">
           <div v-for="item in marketOverview.indices || []" :key="item.symbol" class="row-card">
             <strong>{{ item.name }}</strong>
             <span>{{ formatNumber(item.price) }}</span>
-            <small>{{ formatPercent(item.change_percent) }}</small>
+            <small :class="{ 'text-up': (item.change_percent || 0) > 0, 'text-down': (item.change_percent || 0) < 0 }">
+              {{ formatPercent(item.change_percent) }}
+            </small>
           </div>
         </div>
-      </article>
-      <article class="panel">
-        <div class="panel-head">
-          <h3>行动优先级</h3>
-        </div>
+      </DataPanel>
+
+      <DataPanel title="行动优先级">
         <div class="detail-block">
           <strong>{{ systemSummary.action_priority?.title || "--" }}</strong>
           <p>{{ systemSummary.action_priority?.reason || "等待数据" }}</p>
           <small>告警 {{ systemSummary.alert_summary?.count ?? 0 }} 条，机会 {{ systemSummary.opportunity_summary?.count ?? 0 }} 个</small>
+          <!-- P4-4: 行动优先级补来源/时间/点击跳详情 -->
+          <small v-if="systemSummary.action_priority?.source" class="priority-meta">
+            来源 {{ systemSummary.action_priority.source }} ·
+            更新于 {{ formatDateTime(systemSummary.action_priority.updated_at) }}
+          </small>
+          <RouterLink
+            v-if="systemSummary.action_priority?.link"
+            class="home-link"
+            :to="systemSummary.action_priority.link"
+          >查看详情 →</RouterLink>
         </div>
-      </article>
+      </DataPanel>
     </section>
   </section>
 </template>
+
+<style scoped>
+.home-link {
+  display: inline-flex;
+  width: fit-content;
+  margin-top: var(--space-2);
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.home-link:hover {
+  text-decoration: underline;
+}
+.priority-meta { display: block; margin-top: 4px; color: var(--text-muted, #94a3b8); font-size: 11px; }
+</style>

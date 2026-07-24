@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import delete, or_, select
@@ -40,11 +40,9 @@ class RealtimeCacheService:
         fallback_reason = None
         attempted_current_refresh = False
 
-        if latest_time is None and not force_refresh and target_date == current_time.date() and background_refresh:
-            source_status = "refreshing"
-            fallback_reason = "background_refresh_pending"
-            attempted_current_refresh = True
-        elif latest_time is None and not force_refresh and target_date == current_time.date():
+        # P5-1d: 原 background_refresh 分支只设 "refreshing" 状态但不实际发起刷新（死参数），
+        # 删除后落到下面的实际刷新逻辑；参数保留以兼容 API 但不再有副作用
+        if latest_time is None and not force_refresh and target_date == current_time.date():
             latest_time = self.refresh_sector_stocks(
                 session,
                 sector_type=sector_type,
@@ -377,8 +375,18 @@ class RealtimeCacheService:
             seen.add(key)
             normalized_items.append({"sector_type": sector_type, "sector_name": canonical_name, "enabled": True})
 
-        session.execute(delete(WatchedSector))
-        session.add_all([WatchedSector(**item) for item in normalized_items])
+        # P5-1f: merge upsert，不再全表 delete+insert
+        incoming_keys = {(item["sector_type"], item["sector_name"]) for item in normalized_items}
+        existing = {(row.sector_type, row.sector_name): row for row in session.scalars(select(WatchedSector))}
+        for item in normalized_items:
+            row = existing.get((item["sector_type"], item["sector_name"]))
+            if row is not None:
+                row.enabled = item["enabled"]
+            else:
+                session.add(WatchedSector(**item))
+        for key, row in existing.items():
+            if key not in incoming_keys:
+                session.delete(row)
         session.commit()
         return normalized_items
 
@@ -736,3 +744,25 @@ class RealtimeCacheService:
         if value is None or value == "":
             return None
         return str(value)
+
+    # ---------------- 分钟级快照归档/清理 (2026-07-21) ----------------
+
+    def prune_old_snapshots(self, session: Session, keep_days: int = 90) -> int:
+        """删除 individual_stock_snapshots 中早于 ``MAX(trading_date) - keep_days`` 的行。
+
+        用于分钟级 NN 训练数据归档后清理主库：主库保留近 ``keep_days`` 日 tick，
+        更早的由 archive_snapshots.py 导出到 CSV 后调用本方法删除。
+
+        注意：``stock_realtime_eod`` 已聚合了 EOD，所以删老 tick 不影响日级指标。
+        删 tick 只影响"分钟级回放"能力 -> 所以要先归档再删。
+        """
+        from sqlalchemy import func
+        latest = session.scalar(select(func.max(IndividualStockSnapshot.trading_date)))
+        if latest is None:
+            return 0
+        cutoff = latest - timedelta(days=keep_days)
+        result = session.execute(
+            delete(IndividualStockSnapshot).where(IndividualStockSnapshot.trading_date < cutoff)
+        )
+        session.commit()
+        return result.rowcount or 0

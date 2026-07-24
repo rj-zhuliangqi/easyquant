@@ -1,18 +1,62 @@
+# Python
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .venv/
 .venv_linux/
+
+# Node
 node_modules/
+
+# 构建产物 / 临时
 artifacts/
-server-*.log
 *.trace.zip
+
+# ── 临时文件（AI 会话产物，零代码引用）──────────────────────────
+# 点前缀 .tmp_* 与无点 tmp_* 都覆盖
+.tmp_*
+tmp_*
+
+# ── 数据库及衍生文件 ──────────────────────────────────────────
+data/*.db
+data/*.db-*
+data/*.db.corrupted.*
+data/*.db.backup
+data/*.manual-backup
+data/sector_fund_monitor_recovered.db*
+data/.jwt_secret
+data/uvicorn.pid
+
+# ── 截图与测试结果 ────────────────────────────────────────────
+# 注意是下划线 test_results/，不是连字符 test-results/
+test_results/
 test-results/
+
+# ── AI 中心运行时产物 ─────────────────────────────────────────
+data/ai_center/*.json
+data/ai_center/*.py
+data/ai_center/_*.py
+data/ai_center/processed/
+data/ai_center/inbox/*.json
+data/ai_center/inbox/*.txt
+data/ai_center/inbox/_failed/
+data/experiments/
+data/*.json
+data/market_data_*.json
+data/playwright-nav-check/
+data/playwright-*.png
+
+# ── 日志 ──────────────────────────────────────────────────────
 data/*.log
 data/*.err.log
 data/*.out.log
-data/*.db
-data/*.db-*
-data/uvicorn.pid
-data/playwright-nav-check/
-data/playwright-*.png
+data/cloudflared*.log
+server-*.log
+
+# ── 一次性实验脚本（常驻脚本放 scripts/，实验放 scripts/experiments/）──
+/build_analysis.py
+/validate_output.py
+/build_review.py
+/.tx_quote.txt
+/inspect_data.py
+/inspect2.py

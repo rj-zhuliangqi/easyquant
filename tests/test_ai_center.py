@@ -5,6 +5,7 @@ from datetime import datetime
 import json
 
 import pandas as pd
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy import create_engine
@@ -15,9 +16,21 @@ from app.database import Base
 from app.main import create_app
 from app.main import create_session_factory
 from app.models import AiJob
+from app.models import AiRun
 from app.models import AiSkill
 from app.models import AiSkillRevision
+from app.models_auth import User
 from app.services.ai_center import AiCenterService
+
+
+def _reset_admin_password(app, session_factory) -> None:
+    """ensure_default_admin 现用随机密码；测试重置为 admin123 以便登录拿 token。"""
+    auth_service = app.state.auth_service
+    with session_factory() as session:
+        admin = session.query(User).filter(User.username == "admin").first()
+        if admin:
+            admin.hashed_password = auth_service.hash_password("admin123")
+            session.commit()
 
 
 class AiGateway:
@@ -33,7 +46,7 @@ class AiGateway:
             ]
         )
 
-    def fetch_stock_daily_history(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
+    def fetch_stock_daily_history(self, symbol: str, start_date: str, end_date: str, adjust: str = "") -> pd.DataFrame:
         return pd.DataFrame(
             [
                 {"date": date(2026, 5, 7), "open": 10.0, "close": 10.4, "high": 10.6, "low": 9.9},
@@ -80,7 +93,15 @@ def build_ai_client() -> tuple[TestClient, sessionmaker]:
         enable_scheduler=False,
         now_provider=lambda: datetime(2026, 5, 8, 15, 0, 0),
     )
-    return TestClient(app), session_factory
+    client = TestClient(app)
+    # ensure_default_admin 现用随机密码，测试重置为已知密码再登录
+    _reset_admin_password(app, session_factory)
+    # Login to get auth token
+    login_resp = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
+    if login_resp.status_code == 200:
+        token = login_resp.json().get("access_token", "")
+        client.headers["Authorization"] = f"Bearer {token}"
+    return client, session_factory
 
 
 def seed_skill(
@@ -323,6 +344,10 @@ def test_create_session_factory_upgrades_legacy_ai_center_schema(tmp_path) -> No
         now_provider=lambda: datetime(2026, 5, 8, 15, 0, 0),
     )
     client = TestClient(app)
+    _reset_admin_password(app, session_factory)
+    login_resp = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
+    assert login_resp.status_code == 200
+    client.headers["Authorization"] = f"Bearer {login_resp.json()['access_token']}"
 
     jobs = client.get("/api/ai/jobs")
     runs = client.get("/api/ai/runs")
@@ -866,3 +891,361 @@ def test_ai_experience_rulepack_can_feedback_into_stock_research_and_support_rol
     assert any(item["id"] == second_rulepack_id for item in rulepacks.json()["items"])
     assert any(item["id"] == research_job_id and item["active_rulepack_id"] == active_rulepack_id for item in jobs.json()["items"])
     assert skills.status_code == 200
+
+
+def test_builtin_jobs_have_engine_type_set() -> None:
+    """All builtin jobs should have engine_type populated, not NULL."""
+    client, _ = build_ai_client()
+
+    jobs = client.get("/api/ai/jobs")
+    assert jobs.status_code == 200
+    for item in jobs.json()["items"]:
+        assert item.get("engine_type") is not None, f"Job {item['name']} has no engine_type"
+
+
+def test_ai_scheduler_status_endpoint() -> None:
+    """The scheduler-status endpoint should return job registration info."""
+    client, _ = build_ai_client()
+
+    response = client.get("/api/ai/scheduler-status")
+    assert response.status_code == 200
+    payload = response.json()
+    # Scheduler is disabled in the test client, so it should report not running
+    assert "scheduler_running" in payload
+    assert "db_job_statuses" in payload
+
+
+def test_auto_schedule_field_is_respected_in_registry() -> None:
+    """Jobs with auto_schedule=False should still appear in jobs list but can be filtered."""
+    from sqlalchemy import select
+
+    client, session_factory = build_ai_client()
+
+    with session_factory() as session:
+        job = session.scalar(select(AiJob).where(AiJob.name == "08:20 盘前消息面挖掘"))
+        assert job is not None
+        assert job.auto_schedule is True
+
+    # The auto_schedule field should be visible via the API
+    jobs = client.get("/api/ai/jobs")
+    assert jobs.status_code == 200
+
+
+def test_build_prompt_sanitizes_colon_in_skill_name() -> None:
+    """Output filenames should not contain colons (invalid on macOS)."""
+    from app.services.skill_executor import _build_prompt
+
+    prompt = _build_prompt(
+        "08:20 盘前消息面挖掘",
+        date(2026, 6, 8),
+        "/tmp/data.json",
+        "/tmp/outbox",
+        "claude-code",
+    )
+    import re
+    m = re.search(r"写入:\s*(.+\.json)", prompt)
+    assert m is not None, "Output path not found in prompt"
+    output_path = m.group(1)
+    assert ":" not in output_path, f"Colon found in output path: {output_path}"
+    assert "0820" in output_path or "08_20" in output_path, f"Time prefix not sanitized: {output_path}"
+
+
+def test_catchup_mechanism_on_scheduler_startup() -> None:
+    """When the app starts after a job's scheduled time, catch-up jobs should be created."""
+    from sqlalchemy import select
+
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        future=True,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    session_factory = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+    Base.metadata.create_all(engine)
+    # Use current real time but offset to be after the earliest scheduled job
+    # Set now_provider to return a time after all cron schedules on a weekday
+    # Use a fixed time far enough in the future that APScheduler won't skip catch-up jobs
+    real_now = datetime.now()
+    # Use a time that is close to real time so APScheduler doesn't skip it
+    from datetime import timedelta
+    test_time = real_now.replace(hour=22, minute=4, second=0, microsecond=0)
+    # If test_time is in the past today, add a day
+    if test_time < real_now:
+        test_time = test_time + timedelta(days=1)
+    # cron 任务为周一至周五，确保测试时间落在 weekday（否则当天无 missed 任务）
+    while test_time.weekday() >= 5:
+        test_time = test_time + timedelta(days=1)
+    app = create_app(
+        session_factory=session_factory,
+        gateway=AiGateway(),
+        enable_scheduler=True,
+        now_provider=lambda: test_time,
+    )
+    with TestClient(app) as client:
+        scheduler = app.state.scheduler
+        assert scheduler is not None
+        assert scheduler.running
+
+        # Check that catch-up jobs were created
+        all_jobs = scheduler.get_jobs()
+        catchup_jobs = [j for j in all_jobs if j.id.startswith("ai-skill-catchup-")]
+        cron_jobs = [j for j in all_jobs if j.id.startswith("ai-skill-") and not j.id.startswith("ai-skill-catchup-")]
+        # At 22:04 on a weekday, several jobs should have been missed
+        assert len(catchup_jobs) >= 1, f"Expected catch-up jobs but found {len(catchup_jobs)}, all jobs: {[j.id for j in all_jobs]}"
+        # Cron jobs should also be registered
+        assert len(cron_jobs) >= 1
+
+
+def test_scan_import_directory_tolerates_name_drift_and_isolates_failures(tmp_path) -> None:
+    """Regression: production payloads sometimes carry ``skill_name`` /
+    ``job_name`` with a leading schedule prefix (``08:20 X``) or a trailing
+    revision tag (``X (v3)``), but the AiSkill row stores the bare name. The
+    importer must tolerate that drift; one bad file must not block the rest.
+    """
+
+    _, session_factory = build_ai_client()
+    skill_id, _, _ = seed_skill(session_factory)  # creates 'auction-scan' + job '09:26 auction-scan'
+
+    inbox = tmp_path / "inbox"
+    processed = tmp_path / "processed"
+    inbox.mkdir()
+    processed.mkdir()
+
+    # File 1: payload uses the job_name (with time prefix) in BOTH skill_name
+    # and job_name. Lookup must strip the "09:26 " prefix to find the skill.
+    pick = stock_pick_payload(stock_code="000001", level="watch", summary="drift recovered")
+    (inbox / "good_with_prefix.json").write_text(
+        json.dumps(
+            {
+                "skill_name": "09:26 auction-scan",
+                "job_name": "09:26 auction-scan",
+                "job_type": "stock_pick",
+                "trading_date": "2026-05-07",
+                "run_type": "production",
+                "raw_output": "ok",
+                "summary": {"headline": "ok"},
+                "push": {"status": "sent"},
+                "result_payload": {"structured_picks": [pick]},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    # File 2: malformed JSON. Must not abort the batch; goes to _failed/.
+    (inbox / "bad_json.json").write_text("{ not valid json", encoding="utf-8")
+
+    # File 3: skill_name matches nothing at all (also goes to _failed/).
+    (inbox / "unknown_skill.json").write_text(
+        json.dumps(
+            {
+                "skill_name": "nonexistent",
+                "trading_date": "2026-05-07",
+                "summary": {},
+                "push": {},
+                "result_payload": {"structured_picks": []},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    service = AiCenterService(gateway=AiGateway(), now_provider=lambda: datetime(2026, 5, 8, 15, 0, 0))
+    with session_factory() as session:
+        summary = service.scan_import_directory(session, inbox_dir=inbox, processed_dir=processed)
+
+    assert skill_id > 0
+    assert summary["imported"] == 1, summary
+    assert summary["failed"] == 2, summary
+    assert {f["file"] for f in summary["failures"]} == {"bad_json.json", "unknown_skill.json"}
+    assert (processed / "good_with_prefix.json").exists()
+    assert (inbox / "_failed" / "bad_json.json").exists()
+    assert (inbox / "_failed" / "unknown_skill.json").exists()
+    assert not (inbox / "good_with_prefix.json").exists()
+
+
+# ── Skill Chat SSE streaming ─────────────────────────────────────────────────
+
+
+class _FakePopen:
+    """Mock subprocess.Popen yielding a fixed line stream + small delays.
+
+    Mirrors the surface used by `_skill_chat_stream_generator`:
+      - stdout.readline() blocking call returning "" on EOF
+      - .poll() returning the exit code only after all lines drained
+      - .wait(timeout) / .kill()
+    """
+
+    def __init__(self, args, stdout=None, stderr=None, bufsize=1, text=True, **kwargs):
+        import threading as _threading
+        self.args = args
+        self._lines = ["你好", "，", "我", "是", " AI", " 助手", "。",
+                        "```json\n{\"name\": \"test\"}\n```", ""]
+        self._idx = 0
+        self._lock = _threading.Lock()
+        self.returncode = None
+        # Make `.stdout` / `.stderr` point to `self` so the generator's
+        # `proc.stdout.readline()` / `proc.stderr.read()` resolves to our mocked
+        # methods rather than the empty StringIO default.
+        self.stdout = self
+        self.stderr = self
+
+    def _next_line(self):
+        with self._lock:
+            if self._idx >= len(self._lines):
+                return ""
+            line = self._lines[self._idx]
+            self._idx += 1
+        return line
+
+    def readline(self):
+        import time as _time
+        line = self._next_line()
+        # Simulate a tiny pause between lines so the streaming generator yields
+        if line == "":
+            _time.sleep(0.01)
+        return line
+
+    def poll(self):
+        if self._idx >= len(self._lines):
+            self.returncode = 0
+            return 0
+        return None
+
+    def wait(self, timeout=None):
+        self.returncode = 0
+        return 0
+
+    def kill(self):
+        self.returncode = -9
+
+    def communicate(self, input=None, timeout=None):
+        # drain the (already consumed by .stdout.readline() if used) buffer; for non-stream
+        # branch (subprocess.run) we haven't consumed anything yet, so drain by index.
+        lines = []
+        while True:
+            with self._lock:
+                if self._idx >= len(self._lines):
+                    break
+                line = self._lines[self._idx]
+                self._idx += 1
+            lines.append(line)
+        self.returncode = 0
+        return ("".join(lines), "")
+
+    # `subprocess.run(..., capture_output=True)` 在 subprocess 内部用 `with Popen(...) as process:`
+    # 上下文协议 → 测试 mock 必须实现，否则非流式路径会 TypeError
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        try:
+            self.wait(timeout=5)
+        except Exception:
+            pass
+        return False
+
+
+@pytest.fixture
+def patched_skill_chat(monkeypatch):
+    """Inject fake claude CLI for skill-chat streaming tests."""
+    from app import main as app_main
+
+    monkeypatch.setattr(app_main, "_find_cli_path", lambda name: "/fake/claude")
+    monkeypatch.setattr(app_main.subprocess, "Popen", _FakePopen)
+    # Shrink heartbeat so tests are quick
+    monkeypatch.setattr(app_main, "_SKILL_CHAT_HEARTBEAT_SECONDS", 0.05)
+    return app_main
+
+
+def _parse_sse_events(raw_chunks):
+    """Concatenate raw SSE line chunks and yield parsed `data:` JSON payloads."""
+    import json as _json
+    buf = ""
+    for chunk in raw_chunks:
+        buf += chunk
+        while "\n\n" in buf:
+            raw_event, buf = buf.split("\n\n", 1)
+            for ln in raw_event.split("\n"):
+                if ln.startswith(":"):
+                    continue
+                if ln.startswith("data:"):
+                    try:
+                        yield _json.loads(ln[5:].strip())
+                    except Exception:
+                        pass
+
+
+def test_skill_chat_streams_deltas_and_done(patched_skill_chat):
+    client, _ = build_ai_client()
+    raw_text = ""
+    with client.stream("POST", "/api/ai/skill-chat", json={"message": "写一句问候"}) as response:
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/event-stream")
+        # TestClient/httpx 流式响应：iter_text() 累加原始字节流（不会按 HTTP chunk 切 SSE 事件）
+        for chunk in response.iter_text():
+            raw_text += chunk
+
+    events = list(_parse_sse_events([raw_text]))
+    types = [e.get("type") for e in events]
+
+    # 至少有一个 delta + 一个 done
+    assert "delta" in types, f"raw={raw_text!r} events={events}"
+    assert types.count("done") == 1, f"events={events}"
+
+    # delta 文本累积还原出原文
+    full_text = "".join(e["text"] for e in events if e.get("type") == "delta")
+    assert "你好" in full_text
+    assert "AI" in full_text
+
+    # done 事件里 skill_draft 必须解析到 JSON 草案
+    done = next(e for e in events if e.get("type") == "done")
+    assert done["skill_draft"] == {"name": "test"}
+    assert "duration_ms" in done
+    assert isinstance(done["duration_ms"], int)
+
+
+def test_skill_chat_non_stream_fallback(patched_skill_chat):
+    client, _ = build_ai_client()
+    response = client.post(
+        "/api/ai/skill-chat?stream=false",
+        json={"message": "写一句问候"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "你好" in data["response"]
+    assert data["skill_draft"] == {"name": "test"}
+    assert "duration_ms" in data
+
+
+def test_skill_chat_cli_missing(monkeypatch):
+    from app import main as app_main
+    monkeypatch.setattr(app_main, "_find_cli_path", lambda name: None)
+    client, _ = build_ai_client()
+    with client.stream("POST", "/api/ai/skill-chat", json={"message": "x"}) as response:
+        # CLI 缺失也会回 SSE（错误+done 两个事件）
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/event-stream")
+        raw_chunks = list(response.iter_lines())
+        raw_text = "\n".join(raw_chunks)
+
+    events = list(_parse_sse_events([raw_text + "\n"] if raw_text else []))
+    types = [e.get("type") for e in events]
+    assert "error" in types, f"events={events}, raw_text={raw_text!r}"
+    assert "done" in types, f"events={events}, raw_text={raw_text!r}"
+
+    error = next(e for e in events if e.get("type") == "error")
+    assert "未找到" in error["message"] or "Claude" in error["message"]
+
+
+def test_skill_chat_body_stream_false_overrides_default(patched_skill_chat):
+    client, _ = build_ai_client()
+    response = client.post(
+        "/api/ai/skill-chat",
+        json={"message": "hi", "stream": False},
+    )
+    # JSON fallback path returns application/json, not text/event-stream
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/json")
+    data = response.json()
+    assert "你好" in data["response"]

@@ -82,10 +82,12 @@ class DashboardService:
                 )
                 for sector_name in ranked_sector_names
             ]
+            labels = sorted({p["label"] for s in series for p in s.get("points", []) if p.get("label")})
             return {
                 "updated_at": latest_time.isoformat(),
                 "metric": metric,
                 "granularity": granularity,
+                "labels": labels,
                 "series": series,
                 "invalid_watchlist": resolved["invalid"],
                 "resolved_watchlist": resolved["mapped"],
@@ -98,10 +100,17 @@ class DashboardService:
                 "updated_at": None,
                 "metric": metric,
                 "granularity": granularity,
+                "labels": [],
                 "series": [],
                 "invalid_watchlist": include_sector_names,
                 "missing_labels_count": 0,
             }
+
+        # For minute granularity, check if the target date has sufficient data.
+        # If the latest date has very few timestamps (e.g., partial day),
+        # fall back to the previous trading date with more complete data.
+        if granularity == "minute" and trading_date is None:
+            target_date = self._resolve_minute_trading_date(session, sector_type, target_date)
 
         latest_time = self._latest_timestamp(session, sector_type, trading_date=target_date)
         if latest_time is None:
@@ -109,6 +118,7 @@ class DashboardService:
                 "updated_at": None,
                 "metric": metric,
                 "granularity": granularity,
+                "labels": [],
                 "series": [],
                 "invalid_watchlist": include_sector_names,
                 "missing_labels_count": 0,
@@ -140,10 +150,12 @@ class DashboardService:
         ]
         observed_labels = {row.captured_at.strftime("%Y-%m-%d %H:%M") for row in rows}
         missing_labels_count = max(len(timeline) - len(observed_labels), 0)
+        labels = [t.strftime("%Y-%m-%d %H:%M") for t in timeline]
         return {
             "updated_at": latest_time.isoformat(),
             "metric": metric,
             "granularity": granularity,
+            "labels": labels,
             "series": series,
             "invalid_watchlist": resolved["invalid"],
             "resolved_watchlist": resolved["mapped"],
@@ -690,6 +702,27 @@ class DashboardService:
                 continue
             result.append(row if isinstance(row, date) else date.fromisoformat(str(row)))
         return result
+
+    def _resolve_minute_trading_date(self, session: Session, sector_type: str, candidate_date: date) -> date:
+        """For minute-level comparisons, fall back to a previous date if the candidate has sparse data."""
+        # Count distinct timestamps on the candidate date
+        start_at, end_at = self._date_bounds(candidate_date)
+        timestamp_count = session.scalar(
+            select(func.count(func.distinct(FundFlowSnapshot.captured_at)))
+            .where(
+                FundFlowSnapshot.sector_type == sector_type,
+                FundFlowSnapshot.captured_at >= start_at,
+                FundFlowSnapshot.captured_at < end_at,
+            )
+        ) or 0
+        # If fewer than 100 distinct timestamps (roughly 40% of a full trading day),
+        # try the previous trading date
+        if timestamp_count >= 100:
+            return candidate_date
+        previous_dates = self._latest_trading_dates(session, sector_type, limit=2)
+        if len(previous_dates) >= 2:
+            return previous_dates[1]
+        return candidate_date
 
     @staticmethod
     def _date_bounds(trading_date: date) -> tuple[datetime, datetime]:
